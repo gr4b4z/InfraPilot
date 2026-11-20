@@ -17,7 +17,7 @@ requires:
   feature_flag: ServiceCatalog
   roles: []
 steps:
-  - text: Open **Service Catalog** to browse what the platform team offers.
+  - text: Open **Request Catalog** to browse what the platform team offers.
     anchor: nav-catalog
   - text: Choose the service you need to open its request form.
     anchor: catalog-item-grid

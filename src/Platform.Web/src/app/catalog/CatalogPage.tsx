@@ -18,7 +18,7 @@ export function CatalogPage() {
 
   // Category and search are local state, not URL state, so a link here is always the whole catalog —
   // and the title says so rather than reporting a narrowing the recipient won't get.
-  useDocumentTitle(['Service catalog']);
+  useDocumentTitle(['Request catalog']);
 
   useEffect(() => {
     api.getCatalog()
@@ -41,9 +41,9 @@ export function CatalogPage() {
         <div>
           <div className="flex items-center gap-1">
             <h1 className="text-xl font-semibold tracking-tight" style={{ color: 'var(--text-primary)' }}>
-              Service Catalog
+              Request Catalog
             </h1>
-            <HelpButton page="Service Catalog" context={{ servicesShown: filteredItems.length }} />
+            <HelpButton page="Request Catalog" context={{ servicesShown: filteredItems.length }} />
           </div>
           <p className="text-[13px] mt-1" style={{ color: 'var(--text-muted)' }}>
             Browse and request infrastructure services for your team

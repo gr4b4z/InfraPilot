@@ -260,7 +260,7 @@ executor:
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-[14px] font-semibold" style={{ color: 'var(--text-primary)' }}>
-            Service Catalog
+            Request Catalog
           </h2>
           <p className="text-[12px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
             Manage catalog items available for service requests

@@ -1,9 +1,17 @@
 # InfraPilot
 
 Infrastructure portal for self-service requests, approvals, deployments and promotions of
-service versions between environments. This glossary covers the promotions context.
+service versions between environments. This glossary covers the requests and promotions contexts.
 
 ## Language
+
+### Requests
+
+**Request Catalog**:
+The list of things people can request from the platform team (a namespace, a repository, a role
+assignment), each defined in YAML with its inputs, validations, approval rules and executor. A request
+raised from it shows under **My Requests**. Shown at `/catalog`; the code keeps the older `Catalog` names.
+_Avoid_: Service catalog (the former name), ticket catalog
 
 ### Promotions
 
