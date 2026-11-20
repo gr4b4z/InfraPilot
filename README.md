@@ -110,8 +110,8 @@ demo dataset back.
 ```
 
 Catches InfraPortal up after an outage or a restore. Reads the version manifests MKP publishes for
-[staging](https://acmetrixstagingdata.blob.core.windows.net/public/manifest/versions.json) and
-[production](https://acmetrixproddata.blob.core.windows.net/public/manifest/versions.json), confirms
+staging and production (`-StagingManifestUrl` / `-ProductionManifestUrl`, or the
+`STAGING_MANIFEST_URL` / `PRODUCTION_MANIFEST_URL` environment variables; there are no defaults), confirms
 each version against the AKS cluster behind the environment (`mkp-staging-r1-aks`,
 `mkp-prod-r1-aks`), and records a manual deployment for every component whose version has moved
 forward. It never creates services, never records an older version, and never writes a version the
@@ -358,7 +358,7 @@ A separate app registration used by the backend to call Microsoft Graph with cli
 1. Go to **API permissions > Add a permission > Microsoft Graph > Application permissions**
 2. Add:
    - `GroupMember.Read.All` — read group memberships
-   - `User.Read.All` — read user profiles
+   - `User.Read.All` — read user profiles, and whether an account is enabled (personal access tokens stop working once their owner is disabled or deleted)
 3. Click **Grant admin consent**
 
 #### Create a client secret

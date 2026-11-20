@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Platform.Api.Features.Settings.Models;
+using Platform.Api.Infrastructure;
 using Platform.Api.Infrastructure.Auth;
 using Platform.Api.Infrastructure.Features;
 using Platform.Api.Infrastructure.Persistence;
@@ -104,6 +105,75 @@ public class AppSettingsService
         }
     }
 
+    /// <summary>
+    /// The environment names the current-state read paths leave out — see
+    /// <see cref="EnvironmentConfigDto.Retired"/>. Read paths that already hold the request's
+    /// <see cref="EnvironmentAliasResolver"/> should ask it instead, which answers from the snapshot
+    /// alias resolution already loaded.
+    /// </summary>
+    public async Task<IReadOnlySet<string>> GetRetiredEnvironmentKeysAsync(CancellationToken ct = default)
+        => RetiredEnvironmentKeys((await GetSettings(ct)).Environments);
+
+    /// <summary>
+    /// Every name a retired environment's rows can be stored under: its key, plus its aliases. An
+    /// alias row that has not been merged yet is the same environment — the web client already
+    /// renders it under the retired label — so leaving it in would put the retired column straight
+    /// back on the matrix under another spelling. Case-insensitive, like every other environment
+    /// lookup. Empty when nothing is retired, which is what lets the query filter skip itself.
+    /// </summary>
+    public static IReadOnlySet<string> RetiredEnvironmentKeys(IEnumerable<EnvironmentConfigDto>? environments)
+    {
+        var retired = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var env in environments ?? [])
+        {
+            if (!env.Retired) continue;
+            var key = (env.Key ?? "").Trim();
+            if (key.Length == 0) continue;
+            retired.Add(key);
+            foreach (var alias in env.Aliases ?? [])
+            {
+                var name = (alias ?? "").Trim();
+                if (name.Length > 0) retired.Add(name);
+            }
+        }
+        return retired;
+    }
+
+    /// <summary>
+    /// Changes one configured role and saves, leaving every other setting as stored — what an agent
+    /// means by "set the QA team", which the whole-row PUT can only do by resending everything. The
+    /// key resolves through the role aliases; a role nobody configured is refused rather than added,
+    /// so a typo can't create one. Fields the patch leaves null are kept. The result is validated as
+    /// part of the whole role list, with the same messages as a settings save.
+    /// </summary>
+    public async Task<RoleUpdateResult> UpdateRoleAsync(string key, RoleConfigPatchDto patch, CancellationToken ct = default)
+    {
+        var current = await GetSettings(ct);
+        var roles = current.Roles ?? [];
+        var canonical = RoleAliasMap.Build(roles).Resolve(key);
+        var index = roles.FindIndex(r => RoleNormalizer.Normalize(r.Key) == canonical);
+        if (index < 0)
+        {
+            return RoleUpdateResult.Missing(
+                $"There is no '{key}' participant role. Configured roles: {string.Join(", ", roles.Select(r => r.Key))}.");
+        }
+
+        var stored = roles[index];
+        var updated = RoleConfigValidator.Clean(new RoleConfigDto(
+            stored.Key,
+            patch.DisplayName ?? stored.DisplayName,
+            patch.Aliases ?? stored.Aliases,
+            patch.AssigneeGroups ?? stored.AssigneeGroups,
+            patch.Team ?? stored.Team));
+        var next = roles.Select((r, i) => i == index ? updated : r).ToList();
+
+        var errors = RoleConfigValidator.Validate(next);
+        if (errors.Count > 0) return RoleUpdateResult.Invalid(errors);
+
+        await SaveSettings(current with { Roles = next }, ct);
+        return RoleUpdateResult.Saved(updated);
+    }
+
     public async Task SaveSettings(AppSettingsDto settings, CancellationToken ct = default)
     {
         var json = JsonSerializer.Serialize(settings, JsonOptions);
@@ -128,4 +198,12 @@ public class AppSettingsService
         }
         await _db.SaveChangesAsync(ct);
     }
+}
+
+/// <summary>What <see cref="AppSettingsService.UpdateRoleAsync"/> did: the role as saved, or why nothing was.</summary>
+public sealed record RoleUpdateResult(RoleConfigDto? Role, string? NotFound, IReadOnlyList<string> Errors)
+{
+    public static RoleUpdateResult Saved(RoleConfigDto role) => new(role, null, []);
+    public static RoleUpdateResult Missing(string message) => new(null, message, []);
+    public static RoleUpdateResult Invalid(IReadOnlyList<string> errors) => new(null, null, errors);
 }

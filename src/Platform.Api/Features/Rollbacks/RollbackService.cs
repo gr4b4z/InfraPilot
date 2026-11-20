@@ -49,6 +49,7 @@ public class RollbackService
     private readonly PlatformDbContext _db;
     private readonly RollbackPolicyResolver _policies;
     private readonly PromotionApprovalAuthorizer _auth;
+    private readonly PromotionService _promotions;
     private readonly ICurrentUser _user;
     private readonly IAuditLogger _audit;
     private readonly IWebhookDispatcher _webhooks;
@@ -67,6 +68,7 @@ public class RollbackService
         PlatformDbContext db,
         RollbackPolicyResolver policies,
         PromotionApprovalAuthorizer auth,
+        PromotionService promotions,
         ICurrentUser user,
         IAuditLogger audit,
         IWebhookDispatcher webhooks,
@@ -78,6 +80,7 @@ public class RollbackService
         _db = db;
         _policies = policies;
         _auth = auth;
+        _promotions = promotions;
         _user = user;
         _audit = audit;
         _webhooks = webhooks;
@@ -201,10 +204,25 @@ public class RollbackService
         {
             foreach (var input in dto.Items ?? new())
             {
-                var current = await CurrentVersionAsync(dto.Product, input.Service, dto.TargetEnv, ct);
+                // Empty means "remove the service from the environment" (see EvaluateTarget).
+                var toVersion = input.ToVersion?.Trim() ?? "";
+                var running = await LatestSucceededAsync(dto.Product, input.Service, dto.TargetEnv, ct);
+                var current = running?.Version;
                 var history = await VersionHistoryAsync(dto.Product, input.Service, dto.TargetEnv, ct);
-                var (eligible, reason) = EvaluateTarget(input.ToVersion, current, history);
-                result.Add(new ResolvedRollbackItem(input.Service, current ?? "", input.ToVersion, eligible, reason));
+                // A manual rollback is most often raised because the newest deploy failed. The failed
+                // version is what the release pipeline now declares (and what the cluster may half be
+                // running), so the item is written against it, and the last version that succeeded is
+                // a real target: putting it back means deploying it again. Align keeps reading
+                // succeeded deploys only; a bulk align over a failed release is the 2026-09-21 case.
+                var failed = await FailedReplacementAsync(dto.Product, input.Service, dto.TargetEnv, running, ct);
+                var (eligible, reason) = EvaluateTarget(toVersion, current, failed?.Version, history);
+                if (eligible && await IsRetiredAsync(dto.Product, input.Service, toVersion, ct))
+                    (eligible, reason) = (false, RetiredReason);
+                var note = failed is null
+                    ? await FailedAttemptNoteAsync(dto.Product, input.Service, dto.TargetEnv, running, ct)
+                    : RestoreNote(failed, running);
+                result.Add(new ResolvedRollbackItem(
+                    input.Service, failed?.Version ?? current ?? "", toVersion, eligible, reason, note));
             }
             return result;
         }
@@ -218,38 +236,72 @@ public class RollbackService
 
         foreach (var service in services)
         {
-            var current = await CurrentVersionAsync(dto.Product, service, dto.TargetEnv, ct);
+            var running = await LatestSucceededAsync(dto.Product, service, dto.TargetEnv, ct);
+            // Taken out of the environment since it last ran: there is nothing here to align.
+            if (running is null) continue;
+            var current = running.Version;
             var refVersion = await CurrentVersionAsync(dto.Product, service, dto.ReferenceEnv, ct);
+            var note = await FailedAttemptNoteAsync(dto.Product, service, dto.TargetEnv, running, ct);
 
             if (exclude.Contains(service))
             {
-                result.Add(new ResolvedRollbackItem(service, current ?? "", refVersion ?? "", false, "excluded"));
+                result.Add(new ResolvedRollbackItem(service, current ?? "", refVersion ?? "", false, "excluded", note));
                 continue;
             }
             if (refVersion is null)
             {
-                result.Add(new ResolvedRollbackItem(service, current ?? "", "", false, $"not present in {dto.ReferenceEnv}"));
+                result.Add(new ResolvedRollbackItem(service, current ?? "", "", false, $"not present in {dto.ReferenceEnv}", note));
                 continue;
             }
             // Same version in both envs — not part of the diff, so not a candidate at all. Emitting it
             // as a skipped item padded the preview with rows the operator can do nothing about (and
             // inflated the "N of M" denominator); align is defined by the diff, so it's omitted.
+            // The exception is a service whose newest deploy failed: deploy history shows that failed
+            // version, so the row is kept to say why the service is not in the diff.
             if (string.Equals(refVersion, current, StringComparison.OrdinalIgnoreCase))
+            {
+                if (note is not null)
+                    result.Add(new ResolvedRollbackItem(service, current ?? "", refVersion, false, "already running this version", note));
                 continue;
+            }
             var history = await VersionHistoryAsync(dto.Product, service, dto.TargetEnv, ct);
-            var (eligible, reason) = EvaluateTarget(refVersion, current, history);
-            result.Add(new ResolvedRollbackItem(service, current ?? "", refVersion, eligible, reason));
+            var (eligible, reason) = EvaluateTarget(refVersion, current, failedVersion: null, history);
+            if (eligible && await IsRetiredAsync(dto.Product, service, refVersion, ct))
+                (eligible, reason) = (false, RetiredReason);
+            result.Add(new ResolvedRollbackItem(service, current ?? "", refVersion, eligible, reason, note));
         }
 
         return result;
     }
 
-    // The safety rule: target must be a version that previously ran in this env, and not equal to
-    // what's already running (that would be a no-op).
-    private static (bool eligible, string? reason) EvaluateTarget(string toVersion, string? current, HashSet<string> history)
+    // The safety rule: target must be a version that previously ran successfully in this env, and not
+    // equal to what's already running (that would be a no-op). Both inputs come from succeeded deploys
+    // only — see LatestSucceededAsync. The exception is a manual rollback over a failed deploy
+    // (failedVersion set): the running version is then exactly what to restore, and the failed
+    // version is the one target that would change nothing.
+    //
+    // An empty target uninstalls the service: it leaves the environment altogether. Anything that is
+    // there can go: a running version, or a failed deploy with nothing running behind it. A service
+    // with nothing in the environment (never deployed, or removed already) has nothing to remove.
+    private const string RetiredReason = "its image was removed from the container registry";
+
+    // A version the registry cleanup retired (see RetiredVersion): deploying it again would pull an
+    // image that no longer exists. Checked after EvaluateTarget, so the other reasons keep priority.
+    private Task<bool> IsRetiredAsync(string product, string service, string version, CancellationToken ct) =>
+        string.IsNullOrWhiteSpace(version)
+            ? Task.FromResult(false)
+            : _db.RetiredVersions.AsNoTracking()
+                .AnyAsync(r => r.Product == product && r.Service == service && r.Version == version, ct);
+
+    private static (bool eligible, string? reason) EvaluateTarget(
+        string toVersion, string? current, string? failedVersion, HashSet<string> history)
     {
-        if (string.IsNullOrWhiteSpace(toVersion)) return (false, "no target version");
-        if (string.Equals(toVersion, current, StringComparison.OrdinalIgnoreCase)) return (false, "already running this version");
+        if (string.IsNullOrWhiteSpace(toVersion))
+            return current is not null || failedVersion is not null
+                ? (true, null)
+                : (false, "not deployed in this environment, so there is nothing to uninstall");
+        if (SameVersion(toVersion, failedVersion)) return (false, "this is the version whose deploy failed");
+        if (failedVersion is null && SameVersion(toVersion, current)) return (false, "already running this version");
         if (!history.Contains(toVersion)) return (false, "version never ran in this environment");
         return (true, null);
     }
@@ -311,6 +363,8 @@ public class RollbackService
         // previous implementation let a product with no promotion policy revert prod ungated.
         var autoApprove = snapshot.PolicyId is not null && snapshot.IsAutoApprove;
 
+        // Auto-approval needs no SettleOnApprovalAsync pass: the items were resolved against the running
+        // versions a moment ago, and EvaluateTarget already dropped any that were at their target.
         var now = DateTimeOffset.UtcNow;
         var request = new RollbackRequest
         {
@@ -369,9 +423,41 @@ public class RollbackService
             request.Id, LogSanitizer.Clean(request.Product), LogSanitizer.Clean(request.TargetEnv), request.Items.Count, request.Status);
 
         if (request.Status == RollbackStatus.Approved)
+        {
+            await ReopenRolledBackPromotionsAsync(request, "approved automatically by its rollback policy", ct);
             await DispatchWebhookAsync(request, "rollback.approved", ct);
+        }
 
         return request;
+    }
+
+    /// <summary>
+    /// Raises the rollback the failed-deployment page offers (see <see cref="GetLastKnownGoodAsync"/>):
+    /// back to the last version that deployed successfully, or, for a service that never deployed
+    /// successfully there, out of the environment altogether (an item with an empty target). The
+    /// target is resolved here rather than taken from the caller, so the button can never put a
+    /// version the server did not offer in the request. Refused with
+    /// <see cref="RollbackAlreadyOpenException"/> while another open request already carries the
+    /// service, which is also what makes a double click harmless.
+    /// </summary>
+    public async Task<RollbackRequest> CreateLastKnownGoodAsync(Guid eventId, string? reason, CancellationToken ct = default)
+    {
+        var offer = await GetLastKnownGoodAsync(eventId, ct);
+        if (!offer.Available) throw new InvalidOperationException(offer.Reason);
+        if (offer.OpenRollback is { } open) throw new RollbackAlreadyOpenException(open.Id, open.Status);
+
+        var remove = offer.Action == LastKnownGoodActions.Remove;
+        var trimmed = string.IsNullOrWhiteSpace(reason) ? null : RequireReason(reason, remove ? "remove the service" : "roll back");
+        trimmed ??= remove
+            ? $"Remove {offer.Service} from {offer.TargetEnv}: no version of it has deployed successfully there, " +
+              $"and the deploy of {offer.FailedVersion} on {offer.FailedAt:u} failed."
+            : $"Back to the last known good version {offer.LastGoodVersion}: the deploy of " +
+              $"{offer.FailedVersion} on {offer.FailedAt:u} failed.";
+
+        return await CreateAsync(new CreateRollbackRequestDto(
+            offer.Product, offer.TargetEnv, nameof(RollbackMode.Manual),
+            Items: new() { new RollbackItemInput(offer.Service, remove ? "" : offer.LastGoodVersion!) },
+            Reason: trimmed), ct);
     }
 
     // ---------------------------------------------------------------------
@@ -443,16 +529,20 @@ public class RollbackService
             || req.Groups.Count > 0);
         if (!match.AllSatisfied) return request;
 
+        var now = DateTimeOffset.UtcNow;
         request.Status = RollbackStatus.Approved;
-        request.ApprovedAt = DateTimeOffset.UtcNow;
+        request.ApprovedAt = now;
+        var settled = await SettleOnApprovalAsync(request, now, ct);
         await _db.SaveChangesAsync(ct);
 
         await _audit.Log("rollbacks", "rollback.approved",
             "system", "System (gate satisfied)", "system", "RollbackRequest", id, null,
             new { approvedCount = distinct.Count, requirements = requirements.Count });
-        _logger.LogInformation("Rollback request {Id} → Approved", id);
+        _logger.LogInformation("Rollback request {Id} → {Status}", id, request.Status);
 
+        await ReopenRolledBackPromotionsAsync(request, $"approved by {ActorName}", ct);
         await DispatchWebhookAsync(request, "rollback.approved", ct);
+        if (settled) await DispatchWebhookAsync(request, "rollback.deployed", ct);
         return request;
     }
 
@@ -537,6 +627,7 @@ public class RollbackService
         request.Status = RollbackStatus.Approved;
         request.ApprovedAt = now;
         request.ApprovalOverridden = true;
+        var settled = await SettleOnApprovalAsync(request, now, ct);
         await _db.SaveChangesAsync(ct);
 
         await _audit.Log("rollbacks", "rollback.approval.overridden",
@@ -554,30 +645,134 @@ public class RollbackService
         _logger.LogWarning("Rollback request {Id} approval gate overridden by {Actor} ({Requirements} requirements bypassed)",
             id, LogSanitizer.Clean(_user.Email), snapshot.AllRequirements.Count);
 
+        await ReopenRolledBackPromotionsAsync(request, $"approved by {ActorName} with an admin override", ct);
         await DispatchWebhookAsync(request, "rollback.approved", ct);
+        if (settled) await DispatchWebhookAsync(request, "rollback.deployed", ct);
         return request;
     }
 
-    public async Task<RollbackRequest> CancelAsync(Guid id, CancellationToken ct = default)
+    /// <summary>
+    /// Cancels a request. A Pending one may be cancelled by its creator or an admin, with an optional
+    /// reason.
+    ///
+    /// <para>An Approved or RollingBack one may be cancelled by an admin only, and only with a reason.
+    /// The <c>rollback.approved</c> webhook has already fired, so cancelling cannot recall a deploy that
+    /// is already under way. What it does stop is the release pipeline: that reads the open items of
+    /// Approved and RollingBack requests on every run, so a stuck request would otherwise keep
+    /// reapplying its versions. Before this action existed, a stuck request could only be fixed in the
+    /// database.</para>
+    ///
+    /// <para>Items still open are closed as Skipped, so no open item is left under a closed request.</para>
+    /// </summary>
+    public async Task<RollbackRequest> CancelAsync(Guid id, string? reason = null, CancellationToken ct = default)
     {
         var request = await _db.RollbackRequests.FirstOrDefaultAsync(r => r.Id == id, ct)
             ?? throw new KeyNotFoundException($"Rollback request {id} not found");
-        // Only Pending requests can be cancelled. Once Approved, the rollback.approved webhook has
-        // already fired and the executor may be acting — cancelling here would change our record
-        // without stopping reality, which is worse than not offering it.
-        if (request.Status != RollbackStatus.Pending)
+        var trimmed = string.IsNullOrWhiteSpace(reason) ? null : reason.Trim();
+        var inFlight = request.Status is RollbackStatus.Approved or RollbackStatus.RollingBack;
+
+        if (inFlight)
+        {
+            if (!_user.IsAdmin)
+                throw new UnauthorizedAccessException(
+                    $"Rollback request is {request.Status}; only an admin can cancel an approved rollback");
+            trimmed = RequireReason(trimmed, "cancel an approved rollback");
+        }
+        else if (request.Status != RollbackStatus.Pending)
+        {
             throw new InvalidOperationException(
-                $"Rollback request is {request.Status}; only Pending requests can be cancelled " +
-                "(an approved rollback has already been dispatched).");
-        if (!string.Equals(request.CreatedBy, _user.Email, StringComparison.OrdinalIgnoreCase) && !_user.IsAdmin)
+                $"Rollback request is {request.Status}; only Pending, Approved or RollingBack requests can be cancelled");
+        }
+        else if (!string.Equals(request.CreatedBy, _user.Email, StringComparison.OrdinalIgnoreCase) && !_user.IsAdmin)
+        {
             throw new UnauthorizedAccessException("Only the creator or an admin can cancel this rollback");
+        }
+        else if (trimmed is not null)
+        {
+            trimmed = RequireReason(trimmed, "cancel this rollback");
+        }
+
+        var previousStatus = request.Status;
+        var now = DateTimeOffset.UtcNow;
+        // All of them, not just the open ones: the response renders the request's full item list.
+        // The note stays short because who cancelled and why are on the request itself.
+        var items = await _db.RollbackItems.Where(i => i.RequestId == id).ToListAsync(ct);
+        var skipped = items.Where(i => !IsTerminal(i.Status)).ToList();
+        foreach (var item in skipped)
+            Close(item, RollbackItemStatus.Skipped, null, now, "The request was cancelled.");
 
         request.Status = RollbackStatus.Cancelled;
+        request.CancelledBy = _user.Email;
+        request.CancelledByName = _user.Name;
+        request.CancelledAt = now;
+        request.CancelReason = trimmed;
         await _db.SaveChangesAsync(ct);
+
         await _audit.Log("rollbacks", "rollback.cancelled",
-            _user.Id, _user.Name, "user", "RollbackRequest", id, null, null);
+            _user.Id, _user.Name, "user", "RollbackRequest", id, null,
+            new
+            {
+                reason = trimmed,
+                previousStatus = previousStatus.ToString(),
+                skippedItems = skipped.Select(i => i.Service).ToList(),
+            });
+        if (inFlight)
+            _logger.LogWarning("Rollback request {Id} cancelled while {Status} by {Actor} ({Count} open items skipped)",
+                id, previousStatus, LogSanitizer.Clean(_user.Email), skipped.Count);
+
         await DispatchWebhookAsync(request, "rollback.cancelled", ct);
         return request;
+    }
+
+    /// <summary>
+    /// Admin escape hatch for one item of an Approved or RollingBack request: closes it as Skipped with
+    /// a mandatory reason, so the release pipeline stops carrying it. This is for an item that will never
+    /// land on its own, such as a revert nobody wants any more, when the rest of the request should
+    /// still go out. Skipping the last open item settles the request, as a landing would.
+    /// </summary>
+    public async Task<RollbackRequest> SkipItemAsync(Guid id, Guid itemId, string? reason, CancellationToken ct = default)
+    {
+        if (!_user.IsAdmin)
+            throw new UnauthorizedAccessException("Only an admin can skip a rollback item");
+        var trimmed = RequireReason(reason, "skip a rollback item");
+
+        var request = await _db.RollbackRequests.FirstOrDefaultAsync(r => r.Id == id, ct)
+            ?? throw new KeyNotFoundException($"Rollback request {id} not found");
+        if (request.Status is not (RollbackStatus.Approved or RollbackStatus.RollingBack))
+            throw new InvalidOperationException(
+                $"Rollback request is {request.Status}; items can only be skipped on an Approved or RollingBack request " +
+                "(reject or cancel a Pending one instead)");
+
+        var item = await _db.RollbackItems.FirstOrDefaultAsync(i => i.Id == itemId && i.RequestId == id, ct)
+            ?? throw new KeyNotFoundException($"Item {itemId} is not part of rollback request {id}");
+        if (IsTerminal(item.Status))
+            throw new InvalidOperationException($"{item.Service} is already {item.Status} and cannot be skipped");
+
+        Close(item, RollbackItemStatus.Skipped, null, DateTimeOffset.UtcNow, $"Skipped by {_user.Name}: {trimmed}");
+        await _db.SaveChangesAsync(ct);
+
+        await _audit.Log("rollbacks", "rollback.item.skipped",
+            _user.Id, _user.Name, "user", "RollbackRequest", id, null,
+            new { itemId, item.Service, item.FromVersion, item.ToVersion, reason = trimmed });
+        _logger.LogWarning("Rollback item {Service} on request {Id} skipped by {Actor}",
+            LogSanitizer.Clean(item.Service), id, LogSanitizer.Clean(_user.Email));
+
+        await SettleRequestsAsync(new[] { request }, $"{item.Service} skipped", ct);
+        return request;
+    }
+
+    // Reasons end up in item notes and on the request card, so they are kept short. The ticket or
+    // incident they point at is where the detail belongs.
+    private const int MaxReasonLength = 500;
+
+    private static string RequireReason(string? reason, string action)
+    {
+        if (string.IsNullOrWhiteSpace(reason))
+            throw new ArgumentException($"A reason is required to {action}", nameof(reason));
+        var trimmed = reason.Trim();
+        if (trimmed.Length > MaxReasonLength)
+            throw new ArgumentException($"The reason must be at most {MaxReasonLength} characters", nameof(reason));
+        return trimmed;
     }
 
     // ---------------------------------------------------------------------
@@ -591,9 +786,20 @@ public class RollbackService
     /// Returns <c>true</c> if any item matched, so the caller can suppress forward-promotion of this
     /// (older) version. The <c>IsRollback</c> flag is treated as corroboration, not a requirement —
     /// a human-triggered rollback often won't set it.
+    ///
+    /// <para>Only a succeeded deploy counts. A failed attempt at the target version did not put it live,
+    /// so the item stays open and the release keeps carrying it.</para>
+    ///
+    /// <para>A removal item (empty target) is completed by a <see cref="DeployEventStatuses.Removed"/>
+    /// event for its service instead: the executor reports it once the service is out of the
+    /// environment.</para>
     /// </summary>
     public async Task<bool> MatchCompletionAsync(DeployEvent landing, CancellationToken ct = default)
     {
+        var removal = IsRemoval(landing);
+        if (!IsSucceeded(landing) && !removal) return false;
+        var target = removal ? "" : landing.Version;
+
         var openRequests = await _db.RollbackRequests
             .Where(r => r.Product == landing.Product
                      && r.TargetEnv == landing.Environment
@@ -607,7 +813,7 @@ public class RollbackService
         var items = await _db.RollbackItems
             .Where(i => requestIds.Contains(i.RequestId)
                      && i.Service == landing.Service
-                     && i.ToVersion == landing.Version
+                     && i.ToVersion == target
                      && (i.Status == RollbackItemStatus.Pending || i.Status == RollbackItemStatus.RollingBack))
             .ToListAsync(ct);
         // Only count events that landed after the relevant request was approved.
@@ -615,42 +821,190 @@ public class RollbackService
         if (items.Count == 0) return false;
 
         var now = DateTimeOffset.UtcNow;
-        var touchedRequestIds = new HashSet<Guid>();
         foreach (var item in items)
-        {
-            item.Status = RollbackItemStatus.RolledBack;
-            item.CompletedDeployEventId = landing.Id;
-            item.CompletedAt = now;
-            touchedRequestIds.Add(item.RequestId);
-        }
+            Close(item, RollbackItemStatus.RolledBack, landing.Id, now, null);
         await _db.SaveChangesAsync(ct);
 
-        // Flip a request to RollingBack/RolledBack based on its items' aggregate state.
-        foreach (var reqId in touchedRequestIds)
-        {
-            var req = openRequests.First(r => r.Id == reqId);
-            var allItems = await _db.RollbackItems.Where(i => i.RequestId == reqId).ToListAsync(ct);
-            var allTerminal = allItems.All(i => i.Status is RollbackItemStatus.RolledBack
-                or RollbackItemStatus.Failed or RollbackItemStatus.Skipped);
-            if (allTerminal)
-            {
-                req.Status = RollbackStatus.RolledBack;
-                req.CompletedAt = now;
-            }
-            else if (req.Status == RollbackStatus.Approved)
-            {
-                req.Status = RollbackStatus.RollingBack;
-            }
-            await _db.SaveChangesAsync(ct);
-
-            _logger.LogInformation("Rollback request {Id} → {Status} (item for {Service} landed)",
-                reqId, req.Status, LogSanitizer.Clean(landing.Service));
-            if (req.Status == RollbackStatus.RolledBack)
-                await DispatchWebhookAsync(req, "rollback.deployed", ct);
-        }
-
+        var touched = items.Select(i => i.RequestId).ToHashSet();
+        await SettleRequestsAsync(openRequests.Where(r => touched.Contains(r.Id)),
+            $"item for {landing.Service} landed", ct);
         return true;
     }
+
+    /// <summary>
+    /// Called from the deployment ingest hook after <see cref="MatchCompletionAsync"/>. A succeeded deploy
+    /// of another version, landing after a request was approved, means the environment has moved on
+    /// from the state the rollback was written against. Reverting now would undo a change nobody
+    /// decided to undo: the release pipeline rebuilds its manifest from the open items on every run, so
+    /// a stale item stays hidden behind a newer approved promotion and reverts it the moment that
+    /// promotion deploys. Every such open item is closed as Superseded. Unlike promotions this needs no
+    /// version ordering: the rollback no longer describes the environment whichever way the version
+    /// moved.
+    ///
+    /// <para>The exception is a deploy of the item's <c>FromVersion</c>. That is the version the
+    /// rollback exists to remove landing again, from a retry or an overlapping pipeline run finishing
+    /// late. The rollback still describes the environment, so it stays open.</para>
+    ///
+    /// <para>Returns the number of items superseded.</para>
+    /// </summary>
+    public async Task<int> SupersedeOvertakenAsync(DeployEvent landing, CancellationToken ct = default)
+    {
+        // A failed attempt moved the environment nowhere.
+        if (!IsSucceeded(landing)) return 0;
+
+        var openRequests = await _db.RollbackRequests
+            .Where(r => r.Product == landing.Product
+                     && r.TargetEnv == landing.Environment
+                     && (r.Status == RollbackStatus.Approved || r.Status == RollbackStatus.RollingBack))
+            .ToListAsync(ct);
+        // Only what this deploy overtook: a request approved after the deploy landed was decided with
+        // the deploy already in view.
+        openRequests = openRequests.Where(r => r.ApprovedAt is { } a && landing.DeployedAt >= a).ToList();
+        if (openRequests.Count == 0) return 0;
+
+        var requestIds = openRequests.Select(r => r.Id).ToList();
+        var items = (await _db.RollbackItems
+                .Where(i => requestIds.Contains(i.RequestId)
+                         && i.Service == landing.Service
+                         && (i.Status == RollbackItemStatus.Pending || i.Status == RollbackItemStatus.RollingBack))
+                .ToListAsync(ct))
+            .Where(i => !SameVersion(i.ToVersion, landing.Version) && !SameVersion(i.FromVersion, landing.Version))
+            .ToList();
+        if (items.Count == 0) return 0;
+
+        var now = DateTimeOffset.UtcNow;
+        foreach (var item in items)
+            Close(item, RollbackItemStatus.Superseded, landing.Id, now,
+                $"{landing.Service} {landing.Version} was deployed to {landing.Environment} " +
+                $"on {landing.DeployedAt:u}, after this rollback was approved, so the rollback to " +
+                $"{item.ToVersion} is no longer going out.");
+        await _db.SaveChangesAsync(ct);
+
+        _logger.LogInformation(
+            "Deploy event {EventId} superseded {Count} rollback item(s) for {Service}: {Environment} moved on to {Version}",
+            landing.Id, items.Count, LogSanitizer.Clean(landing.Service),
+            LogSanitizer.Clean(landing.Environment), LogSanitizer.Clean(landing.Version));
+
+        var touched = items.Select(i => i.RequestId).ToHashSet();
+        await SettleRequestsAsync(openRequests.Where(r => touched.Contains(r.Id)),
+            $"item for {landing.Service} superseded", ct);
+        return items.Count;
+    }
+
+    /// <summary>
+    /// Run when a request clears its gate (approval or override), before the approval is dispatched.
+    /// Closes the open items that no longer describe the environment, so the release pipeline never
+    /// sees them:
+    /// <list type="bullet">
+    ///   <item>already running the target version: RolledBack, pointing at the deploy that put it there
+    ///     (a diff deploy skips it, so no deploy event of its own would ever arrive);</item>
+    ///   <item>moved to some third version since the request was raised: Superseded, the approval-time
+    ///     version of <see cref="SupersedeOvertakenAsync"/>, for a request that waited Pending while
+    ///     the environment moved on.</item>
+    /// </list>
+    /// Returns <c>true</c> when that left nothing open and settled the request. The caller saves.
+    /// </summary>
+    private async Task<bool> SettleOnApprovalAsync(RollbackRequest request, DateTimeOffset now, CancellationToken ct)
+    {
+        var items = await _db.RollbackItems.Where(i => i.RequestId == request.Id).ToListAsync(ct);
+        foreach (var item in items.Where(i => !IsTerminal(i.Status)))
+        {
+            var running = await LatestSucceededAsync(request.Product, item.Service, request.TargetEnv, ct);
+            if (running is null)
+            {
+                // A removal whose service was taken out some other way while the request waited.
+                if (item.ToVersion.Length == 0
+                    && await NewestDeployAsync(request.Product, item.Service, request.TargetEnv, ct) is { } newest
+                    && IsRemovalStatus(newest.Status))
+                    Close(item, RollbackItemStatus.RolledBack, newest.Id, now,
+                        $"{item.Service} was already removed from {request.TargetEnv} on {newest.DeployedAt:u}, " +
+                        "so there was nothing left to remove.");
+                continue;
+            }
+
+            if (SameVersion(running.Version, item.ToVersion))
+            {
+                // Putting the running version back after a failed deploy of another one: the release
+                // pipeline still declares the failed version, so the redeploy is the whole point. The
+                // item closes when the target lands, like any other.
+                if (await FailedReplacementAsync(request.Product, item.Service, request.TargetEnv, running, ct) is not null)
+                    continue;
+                Close(item, RollbackItemStatus.RolledBack, running.Id, now,
+                    $"Already running {item.ToVersion} when the rollback was approved " +
+                    $"(deployed {running.DeployedAt:u}), so there was nothing to deploy.");
+            }
+            // DeployedAt is checked as well as the version: an item from before failed deploys stopped
+            // counting may carry a failed version as FromVersion, and that environment never moved.
+            else if (!SameVersion(running.Version, item.FromVersion) && running.DeployedAt > request.CreatedAt)
+            {
+                Close(item, RollbackItemStatus.Superseded, running.Id, now,
+                    $"{request.TargetEnv} moved from {item.FromVersion} to {running.Version} " +
+                    $"on {running.DeployedAt:u}, after this rollback was raised. Raise a new rollback if " +
+                    "it is still needed.");
+            }
+        }
+        return Reaggregate(request, items, now);
+    }
+
+    /// <summary>
+    /// Re-derives each request's status from its items after some of them closed, saves, and fires
+    /// <c>rollback.deployed</c> for each request that this settled.
+    /// </summary>
+    private async Task SettleRequestsAsync(IEnumerable<RollbackRequest> requests, string trigger, CancellationToken ct)
+    {
+        var now = DateTimeOffset.UtcNow;
+        foreach (var request in requests)
+        {
+            var items = await _db.RollbackItems.Where(i => i.RequestId == request.Id).ToListAsync(ct);
+            var settled = Reaggregate(request, items, now);
+            await _db.SaveChangesAsync(ct);
+
+            _logger.LogInformation("Rollback request {Id} → {Status} ({Trigger})",
+                request.Id, request.Status, LogSanitizer.Clean(trigger));
+            if (settled)
+                await DispatchWebhookAsync(request, "rollback.deployed", ct);
+        }
+    }
+
+    /// <summary>
+    /// A request's status follows its items: RolledBack once every item is terminal, however each one
+    /// closed, and RollingBack once any is. Returns <c>true</c> when this call moved it to RolledBack.
+    /// </summary>
+    private static bool Reaggregate(RollbackRequest request, IReadOnlyCollection<RollbackItem> items, DateTimeOffset now)
+    {
+        if (items.Count > 0 && items.All(i => IsTerminal(i.Status)))
+        {
+            request.Status = RollbackStatus.RolledBack;
+            request.CompletedAt = now;
+            return true;
+        }
+        if (request.Status == RollbackStatus.Approved && items.Any(i => IsTerminal(i.Status)))
+            request.Status = RollbackStatus.RollingBack;
+        return false;
+    }
+
+    private static bool IsTerminal(RollbackItemStatus status) => status is RollbackItemStatus.RolledBack
+        or RollbackItemStatus.Failed or RollbackItemStatus.Skipped or RollbackItemStatus.Superseded;
+
+    private static void Close(RollbackItem item, RollbackItemStatus status, Guid? deployEventId, DateTimeOffset at, string? note)
+    {
+        item.Status = status;
+        item.CompletedDeployEventId = deployEventId;
+        item.CompletedAt = at;
+        // Notes embed service names and versions, so a long pair could overrun the column.
+        item.Note = note is { Length: > 1000 } ? note[..1000] : note;
+    }
+
+    private static bool IsSucceeded(DeployEvent e)
+        => string.Equals(e.Status, "succeeded", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsRemoval(DeployEvent e) => IsRemovalStatus(e.Status);
+
+    private static bool IsRemovalStatus(string status)
+        => string.Equals(status, DeployEventStatuses.Removed, StringComparison.OrdinalIgnoreCase);
+
+    private static bool SameVersion(string? a, string? b)
+        => string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
 
     // ---------------------------------------------------------------------
     // Queries
@@ -672,6 +1026,227 @@ public class RollbackService
 
     public async Task<RollbackRequest?> GetByIdAsync(Guid id, CancellationToken ct = default)
         => await _db.RollbackRequests.AsNoTracking().Include(r => r.Items).FirstOrDefaultAsync(r => r.Id == id, ct);
+
+    /// <summary>
+    /// What the failed-deployment page offers: rolling the service back to the last version that
+    /// deployed successfully in the environment, or, when no version of it ever did, removing it from
+    /// the environment (<see cref="LastKnownGoodOffer.Action"/> says which). Available while the
+    /// failure is still the environment's latest word on the service, that is, while no succeeded
+    /// deploy or removal has landed after it. When not available,
+    /// <see cref="LastKnownGoodOffer.Reason"/> says why in a sentence the page shows as it is.
+    ///
+    /// <para>Everything the confirmation needs comes back with it, so the page explains the
+    /// consequences before anyone clicks: whether the caller may raise it, who has to approve it,
+    /// whether an open rollback already carries the service, which promotions its approval would
+    /// reopen, and whether anything subscribes to <c>rollback.approved</c> to carry it out. That last
+    /// one is not a formality: an approved rollback nobody executes changes nothing.</para>
+    /// </summary>
+    public async Task<LastKnownGoodOffer> GetLastKnownGoodAsync(Guid eventId, CancellationToken ct = default)
+    {
+        if (!await _flags.IsEnabled(FeatureFlagKeys.Rollbacks, ct))
+            throw new InvalidOperationException("Rollbacks are not enabled on this platform");
+
+        var evt = await _db.DeployEvents.AsNoTracking()
+            .Where(e => e.Id == eventId)
+            .Select(e => new { e.Id, e.Product, e.Service, e.Environment, e.Version, e.Status, e.DeployedAt })
+            .FirstOrDefaultAsync(ct)
+            ?? throw new KeyNotFoundException($"Deploy event {eventId} not found");
+
+        LastKnownGoodOffer Unavailable(string reason) => new(
+            evt.Id, evt.Product, evt.Service, evt.Environment, false, reason,
+            null, null, null, null, null, null, false, null, null, Array.Empty<string>(), null, false,
+            Array.Empty<PromotionToReopen>(), null);
+
+        if (!string.Equals(evt.Status, "failed", StringComparison.OrdinalIgnoreCase))
+            return Unavailable("This deployment did not fail.");
+
+        var running = await LatestSucceededAsync(evt.Product, evt.Service, evt.Environment, ct);
+        if (running is not null && running.DeployedAt > evt.DeployedAt)
+            return Unavailable($"{evt.Service} {running.Version} deployed successfully in {evt.Environment} " +
+                               $"after this failure ({running.DeployedAt:u}), so this failure is no longer what needs undoing.");
+
+        var failed = await FailedReplacementAsync(evt.Product, evt.Service, evt.Environment, running, ct);
+        if (failed is null && running is null)
+        {
+            // Nothing runs here and the newest deploy is not a failure: it was removed already, or a
+            // deploy is still under way.
+            var latest = await NewestDeployAsync(evt.Product, evt.Service, evt.Environment, ct);
+            return Unavailable(latest is not null && IsRemovalStatus(latest.Status)
+                ? $"{evt.Service} was removed from {evt.Environment} on {latest.DeployedAt:u}, so there is nothing left to undo."
+                : $"A newer deploy of {evt.Service} in {evt.Environment} has not finished yet.");
+        }
+        if (failed is null)
+        {
+            if (SameVersion(evt.Version, running!.Version))
+                return Unavailable($"{running.Version} is also the last version that deployed successfully in {evt.Environment}, " +
+                                   "so there is no earlier good version to go back to. Redeploy it instead.");
+
+            // A later deploy put the last good version back (a rollback, or a redeploy) and that failed
+            // too: the version that worked no longer does, which points at something around the service
+            // rather than at what this deploy changed. Saying "not finished" here sent people waiting.
+            var newest = await NewestDeployAsync(evt.Product, evt.Service, evt.Environment, ct);
+            return Unavailable(newest is not null && string.Equals(newest.Status, "failed", StringComparison.OrdinalIgnoreCase)
+                ? $"{newest.Version}, the last version that deployed successfully in {evt.Environment}, failed too " +
+                  $"when it was deployed again on {newest.DeployedAt:u}, so there is no known good version left to roll back to. " +
+                  "When the version that worked fails as well, look at what changed around the service: configuration, " +
+                  "secrets, credentials or a dependency."
+                : $"A newer deploy of {evt.Service} in {evt.Environment} has not finished yet.");
+        }
+
+        if (running is not null && await IsRetiredAsync(evt.Product, evt.Service, running.Version, ct))
+            return Unavailable($"{running.Version}, the last version that deployed successfully in {evt.Environment}, " +
+                               "can't be deployed again: its image was removed from the container registry.");
+
+        var (canCreate, createReason) = await CanCreateAsync(evt.Product, evt.Environment, ct);
+
+        var snapshot = await _policies.SnapshotAsync(evt.Product, evt.Environment, ct);
+        var approval = snapshot.PolicyId is null ? "unconfigured" : snapshot.IsAutoApprove ? "auto" : "required";
+        var approvers = snapshot.ApprovalSteps
+            .SelectMany(s => s.Requirements.Count == 0
+                ? Array.Empty<string>()
+                : new[] { string.IsNullOrWhiteSpace(s.Name) ? string.Join(", ", s.Requirements.Select(r => r.Name)) : s.Name })
+            .Where(n => !string.IsNullOrWhiteSpace(n))
+            .Distinct()
+            .ToList();
+
+        var open = await _db.RollbackRequests.AsNoTracking()
+            .Where(r => r.Product == evt.Product && r.TargetEnv == evt.Environment
+                     && (r.Status == RollbackStatus.Pending || r.Status == RollbackStatus.Approved
+                         || r.Status == RollbackStatus.RollingBack)
+                     && r.Items.Any(i => i.Service == evt.Service
+                                      && (i.Status == RollbackItemStatus.Pending || i.Status == RollbackItemStatus.RollingBack)))
+            .OrderByDescending(r => r.CreatedAt)
+            .Select(r => new { r.Id, r.Status, r.CreatedAt })
+            .FirstOrDefaultAsync(ct);
+
+        var reopen = (await PromotionsToReopenQuery(evt.Product, evt.Service, evt.Environment, failed.Version)
+                .OrderByDescending(c => c.CreatedAt)
+                .Select(c => new { c.Id, c.SourceEnv, c.Version, c.Status })
+                .ToListAsync(ct))
+            .Select(c => new PromotionToReopen(c.Id, c.SourceEnv, c.Version, c.Status.ToString()))
+            .ToList();
+
+        // A service that never deployed successfully here has no good version to go back to: its
+        // known good state is not being in the environment at all, so the offer is to remove it.
+        return new LastKnownGoodOffer(
+            evt.Id, evt.Product, evt.Service, evt.Environment, true, null,
+            failed.Version, failed.Id, failed.DeployedAt,
+            running?.Version, running?.Id, running?.DeployedAt,
+            canCreate, createReason, approval, approvers,
+            open is null ? null : new OpenRollbackRef(open.Id, open.Status.ToString(), open.CreatedAt),
+            await HasRollbackExecutorAsync(evt.Product, evt.Environment, ct),
+            reopen,
+            running is null ? LastKnownGoodActions.Remove : LastKnownGoodActions.Restore);
+    }
+
+    // The promotions a rollback away from fromVersion takes back: they put that version in the
+    // environment (or are about to) and nothing else will ever close them.
+    private IQueryable<PromotionCandidate> PromotionsToReopenQuery(
+        string product, string service, string env, string fromVersion)
+        => _db.PromotionCandidates.AsNoTracking()
+            .Where(c => c.Product == product && c.Service == service && c.TargetEnv == env
+                     && c.Version == fromVersion
+                     && (c.Status == PromotionStatus.Approved || c.Status == PromotionStatus.Deploying));
+
+    /// <summary>
+    /// Run once a request has cleared its gate and been saved, before <c>rollback.approved</c> goes
+    /// out: every open item takes its <c>FromVersion</c> back out of the environment, so the
+    /// promotions still Approved or Deploying for that version are reopened
+    /// (<see cref="PromotionService.ReopenForRollbackAsync"/>). The usual case is a deploy that
+    /// failed: its promotion never reaches Deployed, and a rollback to an older version supersedes
+    /// nothing, so without this it would stay Approved, cleared to go out again, indefinitely.
+    /// Reopening first means a pipeline that rebuilds its manifest from the approved set on
+    /// <c>rollback.approved</c> already sees the promotion gone.
+    ///
+    /// <para>Best effort, like webhook dispatch: the approval is already saved, and a promotion that
+    /// could not be reopened is logged rather than turned into a failed approval.</para>
+    /// </summary>
+    private async Task ReopenRolledBackPromotionsAsync(RollbackRequest request, string how, CancellationToken ct)
+    {
+        try
+        {
+            var items = await _db.RollbackItems.AsNoTracking()
+                .Where(i => i.RequestId == request.Id
+                         && (i.Status == RollbackItemStatus.Pending || i.Status == RollbackItemStatus.RollingBack))
+                .ToListAsync(ct);
+
+            var outcomes = new List<object>();
+            foreach (var item in items.Where(i => !string.IsNullOrEmpty(i.FromVersion)))
+            {
+                var ids = await PromotionsToReopenQuery(request.Product, item.Service, request.TargetEnv, item.FromVersion)
+                    .Select(c => c.Id)
+                    .ToListAsync(ct);
+                if (ids.Count == 0) continue;
+
+                var change = item.ToVersion.Length == 0
+                    ? $"removing {item.FromVersion} from the environment"
+                    : $"{item.FromVersion} → {item.ToVersion}";
+                var summary = $"Rollback {request.Id.ToString()[..8]} of {item.Service} in {request.TargetEnv} " +
+                              $"({change}) was {how}.";
+                foreach (var id in ids)
+                {
+                    var outcome = await _promotions.ReopenForRollbackAsync(id, request.Id, summary, ct);
+                    outcomes.Add(new { candidateId = id, item.Service, item.FromVersion, outcome.Reopened, outcome.Reason });
+                    _logger.LogInformation("Rollback {Id} {Action} promotion {CandidateId} for {Service} {Version}{Why}",
+                        request.Id, outcome.Reopened ? "reopened" : "left", id, LogSanitizer.Clean(item.Service),
+                        LogSanitizer.Clean(item.FromVersion), outcome.Reason is null ? "" : $": {outcome.Reason}");
+                }
+            }
+
+            if (outcomes.Count > 0)
+                await _audit.Log("rollbacks", "rollback.promotions.reopened",
+                    _user.Id, _user.Name, "user", "RollbackRequest", request.Id, null, new { promotions = outcomes });
+        }
+        catch (Exception ex)
+        {
+            // The context is shared with the webhook dispatch that follows; a half-staged reopen must
+            // not ride along on its save. Everything this request needed is already persisted.
+            _db.ChangeTracker.Clear();
+            _logger.LogWarning(ex, "Reopening the promotions rolled back by request {Id} failed", request.Id);
+        }
+    }
+
+    /// <summary>
+    /// The newest failed deploy of each open item's target version since its request was approved,
+    /// keyed by item id. A failed attempt never completes an item, so without this an item the
+    /// executor already tried would look as if nothing had happened.
+    /// </summary>
+    public async Task<Dictionary<Guid, FailedDeployAttempt>> GetFailedAttemptsAsync(
+        IReadOnlyCollection<RollbackRequest> requests, CancellationToken ct = default)
+    {
+        var open = requests
+            .Where(r => r.ApprovedAt is not null
+                     && r.Status is RollbackStatus.Approved or RollbackStatus.RollingBack)
+            .SelectMany(r => r.Items.Where(i => !IsTerminal(i.Status)).Select(i => (Request: r, Item: i)))
+            .ToList();
+        if (open.Count == 0) return new();
+
+        var products = open.Select(o => o.Request.Product).Distinct().ToList();
+        var services = open.Select(o => o.Item.Service).Distinct().ToList();
+        var versions = open.Select(o => o.Item.ToVersion).Distinct().ToList();
+        var failed = await _db.DeployEvents.AsNoTracking()
+            .Where(e => e.Status == "failed"
+                     && products.Contains(e.Product)
+                     && services.Contains(e.Service)
+                     && versions.Contains(e.Version))
+            .Select(e => new { e.Id, e.Product, e.Service, e.Environment, e.Version, e.DeployedAt })
+            .ToListAsync(ct);
+
+        var result = new Dictionary<Guid, FailedDeployAttempt>();
+        foreach (var (request, item) in open)
+        {
+            var latest = failed
+                .Where(e => e.Product == request.Product
+                         && e.Environment == request.TargetEnv
+                         && e.Service == item.Service
+                         && SameVersion(e.Version, item.ToVersion)
+                         && e.DeployedAt >= request.ApprovedAt)
+                .MaxBy(e => e.DeployedAt);
+            if (latest is not null)
+                result[item.Id] = new FailedDeployAttempt(latest.Id, latest.DeployedAt);
+        }
+        return result;
+    }
 
     public async Task<List<RollbackApproval>> GetApprovalsAsync(Guid id, CancellationToken ct = default)
         => await _db.RollbackApprovals.AsNoTracking().Where(a => a.RequestId == id).OrderBy(a => a.CreatedAt).ToListAsync(ct);
@@ -732,17 +1307,91 @@ public class RollbackService
     // Helpers
     // ---------------------------------------------------------------------
 
+    /// <summary>The deploy that put the running version in place.</summary>
+    private sealed record RunningDeploy(Guid Id, string Version, DateTimeOffset DeployedAt);
+
+    // The version queries below read succeeded deploys only. A failed deploy never replaced what was
+    // running: a rollback that took it as the current version would "revert" services already at
+    // their target, and those items could never close. Failed deploys stay in deploy history and are
+    // reported on previews (FailedAttemptNoteAsync); they just never count as what is running.
+    //
+    // A removal does replace what was running: once the newest of the succeeded deploys and removals
+    // is a removal, nothing runs. Version history still lists what ran before it.
+
+    private async Task<RunningDeploy?> LatestSucceededAsync(string product, string service, string env, CancellationToken ct)
+    {
+        var newest = await _db.DeployEvents.AsNoTracking()
+            .Where(e => e.Product == product && e.Service == service && e.Environment == env
+                     && (e.Status == "succeeded" || e.Status == DeployEventStatuses.Removed))
+            .OrderByDescending(e => e.DeployedAt)
+            .Select(e => new { e.Id, e.Version, e.DeployedAt, e.Status })
+            .FirstOrDefaultAsync(ct);
+        return newest is null || IsRemovalStatus(newest.Status)
+            ? null
+            : new RunningDeploy(newest.Id, newest.Version, newest.DeployedAt);
+    }
+
     private async Task<string?> CurrentVersionAsync(string product, string service, string env, CancellationToken ct)
+        => (await LatestSucceededAsync(product, service, env, ct))?.Version;
+
+    /// <summary>A failed deploy that tried to replace the running version.</summary>
+    private sealed record FailedDeploy(Guid Id, string Version, DateTimeOffset DeployedAt);
+
+    /// <summary>
+    /// The service's newest deploy in the environment, when it failed while trying to put a different
+    /// version in place of the running one. A failed deploy does not change what InfraPortal counts as
+    /// running, but it does change what the release pipeline declares, and the workload may be half
+    /// rolled out on it. So a rollback raised after one starts from the failed version, and the running
+    /// version is something to put back rather than something already there.
+    /// </summary>
+    private async Task<FailedDeploy?> FailedReplacementAsync(
+        string product, string service, string env, RunningDeploy? running, CancellationToken ct)
+    {
+        var newest = await NewestDeployAsync(product, service, env, ct);
+        if (newest is null || !string.Equals(newest.Status, "failed", StringComparison.OrdinalIgnoreCase))
+            return null;
+        if (running is not null && SameVersion(newest.Version, running.Version))
+            return null;
+        return new FailedDeploy(newest.Id, newest.Version, newest.DeployedAt);
+    }
+
+    /// <summary>The service's newest deploy in the environment, whatever its status.</summary>
+    private sealed record NewestDeploy(Guid Id, string Version, string Status, DateTimeOffset DeployedAt);
+
+    private async Task<NewestDeploy?> NewestDeployAsync(string product, string service, string env, CancellationToken ct)
         => await _db.DeployEvents.AsNoTracking()
             .Where(e => e.Product == product && e.Service == service && e.Environment == env)
             .OrderByDescending(e => e.DeployedAt)
-            .Select(e => e.Version)
+            .Select(e => new NewestDeploy(e.Id, e.Version, e.Status, e.DeployedAt))
             .FirstOrDefaultAsync(ct);
+
+    private static string RestoreNote(FailedDeploy failed, RunningDeploy? running) => running is null
+        ? $"The deploy of {failed.Version} on {failed.DeployedAt:u} failed, and no deploy has succeeded here yet."
+        : $"The deploy of {failed.Version} on {failed.DeployedAt:u} failed, so the rollback starts from it. " +
+          $"{running.Version} is the last version that deployed successfully here.";
+
+    /// <summary>
+    /// Whether any active webhook subscription delivers <c>rollback.approved</c> for this scope. The
+    /// portal has no executor of its own: a release pipeline that subscribes is what turns an approved
+    /// rollback into a deploy, so a scope with none would approve a rollback that changes nothing.
+    /// </summary>
+    private async Task<bool> HasRollbackExecutorAsync(string product, string env, CancellationToken ct)
+    {
+        var subscriptions = await _db.WebhookSubscriptions.AsNoTracking().Where(s => s.Active).ToListAsync(ct);
+        var filters = new WebhookEventFilters(Product: product, Environment: env);
+        return subscriptions.Any(s =>
+            (JsonSerializer.Deserialize<List<string>>(s.EventsJson) ?? new()).Contains("rollback.approved")
+            && WebhookSubscriptionFilters.Matches(s, filters));
+    }
+
+    /// <summary>How the current user is named in text other people read (promotion comments).</summary>
+    private string ActorName => string.IsNullOrWhiteSpace(_user.Name) ? _user.Email : _user.Name;
 
     private async Task<HashSet<string>> VersionHistoryAsync(string product, string service, string env, CancellationToken ct)
     {
         var versions = await _db.DeployEvents.AsNoTracking()
-            .Where(e => e.Product == product && e.Service == service && e.Environment == env)
+            .Where(e => e.Product == product && e.Service == service && e.Environment == env
+                     && e.Status == "succeeded")
             .Select(e => e.Version)
             .Distinct()
             .ToListAsync(ct);
@@ -751,11 +1400,32 @@ public class RollbackService
 
     private async Task<List<string>> ServicesInEnvAsync(string product, string env, CancellationToken ct)
         => await _db.DeployEvents.AsNoTracking()
-            .Where(e => e.Product == product && e.Environment == env)
+            .Where(e => e.Product == product && e.Environment == env && e.Status == "succeeded")
             .Select(e => e.Service)
             .Distinct()
             .OrderBy(s => s)
             .ToListAsync(ct);
+
+    /// <summary>
+    /// When the newest deploy of a service failed after the running version landed, says so. That
+    /// failed version is the first thing deploy history shows, and the preview has to explain why it
+    /// reports something else as current.
+    /// </summary>
+    private async Task<string?> FailedAttemptNoteAsync(
+        string product, string service, string env, RunningDeploy? running, CancellationToken ct)
+    {
+        var newest = await _db.DeployEvents.AsNoTracking()
+            .Where(e => e.Product == product && e.Service == service && e.Environment == env)
+            .OrderByDescending(e => e.DeployedAt)
+            .Select(e => new { e.Version, e.Status, e.DeployedAt })
+            .FirstOrDefaultAsync(ct);
+        if (newest is null || !string.Equals(newest.Status, "failed", StringComparison.OrdinalIgnoreCase))
+            return null;
+
+        return running is null
+            ? $"The deploy of {newest.Version} on {newest.DeployedAt:u} failed, and no deploy has succeeded here yet."
+            : $"The deploy of {newest.Version} on {newest.DeployedAt:u} failed, so {running.Version} is still running.";
+    }
 
     private static RollbackMode ParseMode(string mode)
         => Enum.TryParse<RollbackMode>(mode, ignoreCase: true, out var m)
@@ -801,7 +1471,12 @@ public class RollbackService
         {
             var items = await _db.RollbackItems.AsNoTracking()
                 .Where(i => i.RequestId == request.Id)
-                .Select(i => new { i.Service, i.FromVersion, i.ToVersion, status = i.Status.ToString() })
+                .Select(i => new
+                {
+                    i.Service, i.FromVersion, i.ToVersion, status = i.Status.ToString(),
+                    // "remove" for an item with no target: take the service out of the environment.
+                    action = i.ToVersion == "" ? "remove" : "restore",
+                })
                 .ToListAsync(ct);
 
             var payload = new

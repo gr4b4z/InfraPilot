@@ -10,7 +10,11 @@ import {
   Undo2,
   Wrench,
   ScrollText,
+  Snowflake,
   Shuffle,
+  KeyRound,
+  Gauge,
+  Milestone,
 } from 'lucide-react';
 
 interface NavItem {
@@ -47,7 +51,7 @@ const NAV: NavItem[] = [
   },
   {
     to: 'catalog',
-    label: 'Service Catalog',
+    label: 'Request Catalog',
     icon: Package,
     description: 'Catalog YAML source, sync and definitions',
   },
@@ -56,6 +60,18 @@ const NAV: NavItem[] = [
     label: 'Promotions',
     icon: GitPullRequest,
     description: 'Approval policies and gating',
+  },
+  {
+    to: 'freeze',
+    label: 'Freeze',
+    icon: Snowflake,
+    description: 'Hold promotions for a product into an environment',
+  },
+  {
+    to: 'releases',
+    label: 'Releases',
+    icon: Milestone,
+    description: 'Which promotion gate requirement makes someone a release manager',
   },
   {
     to: 'rollbacks',
@@ -70,11 +86,23 @@ const NAV: NavItem[] = [
     description: 'Override which product a service’s deploys, builds and promotions belong to',
   },
   {
+    to: 'agent-tokens',
+    label: 'Agent Tokens',
+    icon: KeyRound,
+    description: 'Personal access tokens people created for their agents: find and revoke any of them',
+  },
+  {
     to: 'maintenance',
     label: 'Maintenance',
     icon: Wrench,
     description:
       'Data repair: duplicates, stranded promotions and work items, log retention, webhook deliveries and re-sends',
+  },
+  {
+    to: 'analytics',
+    label: 'Delivery Metrics',
+    icon: Gauge,
+    description: 'How the delivery report ties incidents to the deploys that caused them',
   },
   {
     to: 'release-notes-template',

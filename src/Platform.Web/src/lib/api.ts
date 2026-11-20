@@ -1,6 +1,14 @@
 import { acquireToken, isMsalEnabled, reauthenticate } from './auth';
 import { buildApiUrl } from './runtimeConfig';
 import { authHeaders } from './authHeaders';
+import {
+  GATEWAY_STATUSES,
+  httpProblem,
+  isAbortError,
+  networkProblem,
+  reportConnectionHealthy,
+  reportConnectionProblem,
+} from './connection';
 
 /**
  * A webhook subscription's filter dimensions as written. Each is a set; an omitted or empty one
@@ -52,10 +60,23 @@ class ApiClient {
       this.token,
     );
 
-    const response = await fetch(buildApiUrl(path), {
-      ...options,
-      headers,
-    });
+    const url = buildApiUrl(path);
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        ...options,
+        headers,
+      });
+    } catch (err) {
+      // No HTTP answer at all. A caller cancelling its own request says nothing about the API.
+      if (!isAbortError(err)) reportConnectionProblem(networkProblem(url, err));
+      throw err;
+    }
+
+    // Feeds the shell's connection banner: a gateway status means the API behind nginx is down;
+    // any other answer, even an error, proves it is up.
+    if (GATEWAY_STATUSES.has(response.status)) reportConnectionProblem(httpProblem(url, response));
+    else reportConnectionHealthy();
 
     if (!response.ok) {
       // A 401 under MSAL means the API rejected the token — revoked, or the session ended early.
@@ -598,6 +619,8 @@ class ApiClient {
       approvalProgress: PromotionApprovalProgress;
       eligibleRequirements: EligibleRequirement[];
       bypass: { byName: string; at: string; reason: string | null } | null;
+      /** The Promotion Freeze holding this Pending candidate; null when not frozen (or not Pending). */
+      freeze: Omit<PromotionFreeze, 'heldCandidates'> | null;
       /** Whether the current user may undo this promotion's approval right now. */
       canCancelApproval: boolean;
       /**
@@ -606,25 +629,34 @@ class ApiClient {
        * the matching event has since been pruned from deploy history.
        */
       deploymentEventId: string | null;
+      /**
+       * Failed attempts to deploy this version to the target environment, newest first (capped at 20).
+       * A failed deploy never completes a promotion, so this is the only sign that one was tried.
+       */
+      failedDeployments: { id: string; deployedAt: string; source: string }[];
     }>(`/promotions/${id}`);
   }
 
   /**
    * Directory search for the assignment pickers. With `role`, a role an admin restricted to
    * directory groups (Settings → Participant Roles) only returns their members, and `restrictedTo`
-   * names those groups.
+   * names those groups. `directoryUnavailable` is set when the directory itself failed (Graph
+   * unreachable, an expired app secret) — the empty `users` then means "couldn't look", not
+   * "nobody matches".
    */
   searchPromotionUsers(q: string, role?: string | null) {
     const roleParam = role ? `&role=${encodeURIComponent(role)}` : '';
     return this.request<{
       users: Array<{ id: string; displayName: string; email: string }>;
       restrictedTo?: PromotionPolicyGroupRef[];
+      directoryUnavailable?: boolean;
     }>(`/promotions/users/search?q=${encodeURIComponent(q)}${roleParam}`);
   }
 
   searchPromotionGroups(q: string) {
     return this.request<{
       groups: Array<{ id: string; displayName: string }>;
+      directoryUnavailable?: boolean;
     }>(`/promotions/groups/search?q=${encodeURIComponent(q)}`);
   }
 
@@ -682,6 +714,22 @@ class ApiClient {
       `/promotions/${candidateId}/work-items/participants`,
       { method: 'PATCH', body: JSON.stringify({ role, assignee, onlyMissing }) },
     );
+  }
+
+  /**
+   * "Approve all" on a promotion: signs off every work item still waiting for a decision (nobody has
+   * ruled on it, or it only carries a bypass mark). `dryRun` lists them without writing — the
+   * confirmation shows that list — and the apply passes back the `keys` it showed, so only those are
+   * signed. Items already approved, or with an issue or a block, come back in `unchanged`. QA/Admin.
+   */
+  approveAllPromotionWorkItems(
+    candidateId: string,
+    body: { dryRun: boolean; keys?: string[]; comment?: string | null },
+  ) {
+    return this.request<ApproveAllWorkItemsResult>(`/promotions/${candidateId}/work-items/approvals`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
   }
 
   upsertPromotionParticipant(
@@ -778,6 +826,19 @@ class ApiClient {
   }
 
   /**
+   * Admin override of {@link rejectPromotion}: rejects a Pending promotion without the caller being
+   * one of its approvers. Requires a reason. Admin-only endpoint (CatalogAdmin); the effects are a
+   * normal rejection's (decision row, promotion.rejected webhook), marked as an administrator reject
+   * in the audit trail. No bulk counterpart here — the UI deliberately has no bulk reject.
+   */
+  adminRejectPromotion(id: string, reason: string) {
+    return this.request<{ id: string; status: string }>(
+      `/promotions/admin/candidates/${id}/reject`,
+      { method: 'POST', body: JSON.stringify({ reason }) },
+    );
+  }
+
+  /**
    * Settles open promotions that deploy history has already decided: closes the ones whose version
    * shipped, supersedes the ones a newer version overtook, leaves everything ambiguous alone.
    * Admin-only. `dryRun` reports what would happen without writing — the UI always runs it first so
@@ -820,8 +881,8 @@ class ApiClient {
 
   /**
    * Signs off every work item stranded in the "No live promotion" state — its promotions were all
-   * superseded or rejected, so nothing will ever consume the sign-off and the row sits in the
-   * work-item queue as pending work forever. Items a live promotion still carries are untouched, and
+   * superseded or rejected, so it is out of the work-item lists, yet it stays pending forever and
+   * holds its ticket's roll-up across services. Items a live promotion still carries are untouched, and
    * so is anything somebody already decided (an Issue or a Block is somebody's call). Admin-only;
    * `dryRun` reports the list without writing, which the Maintenance card always does first.
    */
@@ -1034,6 +1095,45 @@ class ApiClient {
     return this.request<void>(`/promotions/admin/policies/${id}`, { method: 'DELETE' });
   }
 
+  listPromotionFreezes() {
+    return this.request<{ freezes: PromotionFreeze[] }>(`/promotions/freezes`);
+  }
+
+  listPromotionFreezeWindows(product?: string) {
+    const qs = product ? `?product=${encodeURIComponent(product)}` : '';
+    return this.request<{ windows: PromotionFreezeWindow[] }>(`/promotions/freezes/windows${qs}`);
+  }
+
+  /** `service` omitted or null freezes the whole product; a name freezes just that service. */
+  createPromotionFreeze(freeze: { product: string; targetEnv: string; reason: string; service?: string | null }) {
+    return this.request<PromotionFreeze>(`/promotions/admin/freezes`, {
+      method: 'POST',
+      body: JSON.stringify(freeze),
+    });
+  }
+
+  /** Lifts the whole-product freeze, or — with `service` — that service's freeze. */
+  liftPromotionFreeze(product: string, targetEnv: string, service?: string | null) {
+    const base = `/promotions/admin/freezes/${encodeURIComponent(product)}/${encodeURIComponent(targetEnv)}`;
+    return this.request<void>(service ? `${base}/services/${encodeURIComponent(service)}` : base, {
+      method: 'DELETE',
+    });
+  }
+
+  /** The services of `product` a service freeze may name (known from its candidates and deploy events). */
+  listPromotionFreezeServices(product: string) {
+    return this.request<{ services: string[] }>(
+      `/promotions/admin/freezes/services?product=${encodeURIComponent(product)}`,
+    );
+  }
+
+  listPromotionFreezeHistory(limit?: number) {
+    const qs = limit ? `?limit=${limit}` : '';
+    return this.request<{ entries: PromotionFreezeHistoryEntry[] }>(
+      `/promotions/admin/freezes/history${qs}`,
+    );
+  }
+
   // ── Rollbacks ──────────────────────────────────────────────────────────
 
   listRollbacks(params?: {
@@ -1069,6 +1169,19 @@ class ApiClient {
     });
   }
 
+  // What "roll back to the last known good version" would do for one failed deploy event.
+  getLastKnownGoodRollback(eventId: string) {
+    return this.request<LastKnownGoodOffer>(`/rollbacks/last-known-good/${eventId}`);
+  }
+
+  // Raises it. The server picks the target version, so it is always the one the offer named.
+  createLastKnownGoodRollback(eventId: string, reason?: string) {
+    return this.request<RollbackRequest>(`/rollbacks/last-known-good/${eventId}`, {
+      method: 'POST',
+      body: JSON.stringify({ reason }),
+    });
+  }
+
   approveRollback(id: string, comment?: string) {
     return this.request<RollbackRequest>(`/rollbacks/${id}/approve`, {
       method: 'POST',
@@ -1083,9 +1196,20 @@ class ApiClient {
     });
   }
 
-  cancelRollback(id: string) {
+  // A Pending request: its creator or an admin, reason optional. An Approved or RollingBack one: admin
+  // only, and the reason is mandatory — it is shown on the request card and written to the audit log.
+  cancelRollback(id: string, reason?: string) {
     return this.request<RollbackRequest>(`/rollbacks/${id}/cancel`, {
       method: 'POST',
+      body: JSON.stringify({ reason }),
+    });
+  }
+
+  // Admin-only: close one open item of an approved rollback so the release stops carrying it.
+  skipRollbackItem(id: string, itemId: string, reason: string) {
+    return this.request<RollbackRequest>(`/rollbacks/${id}/items/${itemId}/skip`, {
+      method: 'POST',
+      body: JSON.stringify({ reason }),
     });
   }
 
@@ -1256,6 +1380,14 @@ class ApiClient {
     });
   }
 
+  /**
+   * Whether the directory (Microsoft Graph) app can sign in. Admin-only. `credentialFailure` is set
+   * while it can't — every directory read then comes back empty — and null once one gets through.
+   */
+  getDirectoryHealth() {
+    return this.request<DirectoryHealth>('/settings/directory-health');
+  }
+
   // ── The signed-in user's own preferences ───────────────────────────────────
 
   /**
@@ -1308,6 +1440,14 @@ class ApiClient {
   }
 
   /**
+   * Every address that is the signed-in user: the sign-in name first, then the directory's other
+   * addresses for them (their mail, when it differs). See `AuthUser.emails`.
+   */
+  getMyEmails() {
+    return this.request<{ email: string; emails: string[] }>(`/me/emails`);
+  }
+
+  /**
    * Everything the hidden-products control needs. `products` is deliberately the UNFILTERED list —
    * every other product-bearing endpoint already has the hidden set applied, so this is the only
    * call that can still see a hidden product and therefore the only one that can offer to unhide it.
@@ -1320,6 +1460,50 @@ class ApiClient {
     return this.request<UserPreferencesPayload>(`/me/preferences/hidden-products`, {
       method: 'PUT',
       body: JSON.stringify({ products }),
+    });
+  }
+
+  // ── The signed-in user's personal access tokens (agent access) ─────────────
+
+  /** Newest first. Revoked and expired tokens are included, so the list doubles as history. */
+  listMyTokens() {
+    return this.request<{ tokens: PersonalAccessToken[]; allowedAccess: TokenAccess[] }>(`/me/tokens`);
+  }
+
+  /** The response carries the plaintext secret — the only time the server will ever return it. */
+  createMyToken(body: { name: string; expiresInDays: TokenLifetimeDays; access: TokenAccess }) {
+    return this.request<CreatedPersonalAccessToken>(`/me/tokens`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  }
+
+  revokeMyToken(id: string) {
+    return this.request<void>(`/me/tokens/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  }
+
+  // ── Everyone's personal access tokens (admin: Settings → Agent Tokens) ───────
+
+  /** Active tokens, newest first; with `includeInactive` also those that ended in the last 90 days. */
+  listAllTokens(includeInactive = false) {
+    return this.request<{ tokens: AdminPersonalAccessToken[] }>(
+      `/tokens/admin?includeInactive=${includeInactive}`,
+    );
+  }
+
+  /** `reason` is recorded in the audit log. Revoking a revoked token succeeds and changes nothing. */
+  adminRevokeToken(id: string, reason?: string) {
+    return this.request<void>(`/tokens/admin/${encodeURIComponent(id)}/revoke`, {
+      method: 'POST',
+      body: JSON.stringify({ reason: reason || null }),
+    });
+  }
+
+  /** Revokes every active token `email` holds; answers how many that was. */
+  adminRevokeOwnerTokens(email: string, reason?: string) {
+    return this.request<{ revoked: number }>(`/tokens/admin/revoke-owner`, {
+      method: 'POST',
+      body: JSON.stringify({ email, reason: reason || null }),
     });
   }
 
@@ -1403,32 +1587,261 @@ class ApiClient {
     const query = entries.length ? '?' + new URLSearchParams(entries).toString() : '';
     return this.request<LeadTimeResponse>(`/analytics/lead-time${query}`);
   }
+
+  // ── Migrations (read-only) ──────────────────────────────────────────────
+
+  /** `status`: `attention` (pending, running, failed), `all`, or a comma-separated list. */
+  listMigrations(params?: {
+    product?: string;
+    service?: string;
+    environment?: string;
+    kind?: string;
+    status?: string;
+    version?: string;
+    deployEventId?: string;
+    limit?: number;
+    offset?: number;
+  }) {
+    const entries = Object.entries(params ?? {})
+      .filter(([, v]) => v !== undefined && v !== '')
+      .map(([k, v]) => [k, String(v)] as [string, string]);
+    const query = entries.length ? '?' + new URLSearchParams(entries).toString() : '';
+    return this.request<import('./types').MigrationRunList>(`/migrations/runs${query}`);
+  }
+
+  getMigration(id: string) {
+    return this.request<import('./types').MigrationRunDetail>(`/migrations/runs/${id}`);
+  }
+
+  getMigrationLog(runId: string, logId: string) {
+    return this.request<import('./types').DeployLogContent>(`/migrations/runs/${runId}/logs/${logId}`);
+  }
+
+  /** Migrations needing attention, for the flares on deployment views. */
+  getMigrationFlags(params: { product?: string; service?: string; environment?: string }) {
+    const entries = Object.entries(params)
+      .filter(([, v]) => v)
+      .map(([k, v]) => [k, String(v)] as [string, string]);
+    const query = entries.length ? '?' + new URLSearchParams(entries).toString() : '';
+    return this.request<import('./types').MigrationFlag[]>(`/migrations/flags${query}`);
+  }
+
+  /** "Has this migration run on staging?" — partial and fuzzy over every migration name on record. */
+  searchMigrations(q: string, params?: { product?: string; environment?: string; kind?: string; limit?: number }, signal?: AbortSignal) {
+    const entries: [string, string][] = [['q', q]];
+    for (const [k, v] of Object.entries(params ?? {})) if (v !== undefined && v !== '') entries.push([k, String(v)]);
+    return this.request<import('./types').MigrationSearchResult>(
+      `/migrations/search?${new URLSearchParams(entries).toString()}`, { signal });
+  }
+
+  // ── Incidents (admin) ───────────────────────────────────────────────────
+
+  listIncidents(params?: {
+    product?: string;
+    environment?: string;
+    open?: boolean;
+    from?: string;
+    to?: string;
+    limit?: number;
+    offset?: number;
+  }) {
+    const entries: [string, string][] = [];
+    if (params?.product) entries.push(['product', params.product]);
+    if (params?.environment) entries.push(['environment', params.environment]);
+    if (params?.open !== undefined) entries.push(['open', String(params.open)]);
+    if (params?.from) entries.push(['from', params.from]);
+    if (params?.to) entries.push(['to', params.to]);
+    if (params?.limit) entries.push(['limit', String(params.limit)]);
+    if (params?.offset) entries.push(['offset', String(params.offset)]);
+    const query = entries.length ? '?' + new URLSearchParams(entries).toString() : '';
+    return this.request<IncidentList>(`/incidents${query}`);
+  }
+
+  createIncident(payload: IncidentInput) {
+    return this.request<Incident>(`/incidents`, { method: 'POST', body: JSON.stringify(payload) });
+  }
+
+  updateIncident(id: string, payload: IncidentInput) {
+    return this.request<Incident>(`/incidents/${id}`, { method: 'PUT', body: JSON.stringify(payload) });
+  }
+
+  deleteIncident(id: string) {
+    return this.request<void>(`/incidents/${id}`, { method: 'DELETE' });
+  }
+
+  // ── Releases ────────────────────────────────────────────────────────────
+
+  listReleases(params?: { status?: string; product?: string; limit?: number; offset?: number }) {
+    const entries: [string, string][] = [];
+    if (params?.status) entries.push(['status', params.status]);
+    if (params?.product) entries.push(['product', params.product]);
+    if (params?.limit) entries.push(['limit', String(params.limit)]);
+    if (params?.offset) entries.push(['offset', String(params.offset)]);
+    const query = entries.length ? '?' + new URLSearchParams(entries).toString() : '';
+    return this.request<ReleaseList>(`/releases${query}`);
+  }
+
+  getRelease(id: string) {
+    return this.request<Release>(`/releases/${id}`);
+  }
+
+  getReleaseManagers(params?: { product?: string; environment?: string }) {
+    const entries: [string, string][] = [];
+    if (params?.product) entries.push(['product', params.product]);
+    if (params?.environment) entries.push(['environment', params.environment]);
+    const query = entries.length ? '?' + new URLSearchParams(entries).toString() : '';
+    return this.request<ReleaseManagers>(`/releases/managers${query}`);
+  }
+
+  updateReleaseManagers(payload: { requirement?: string; qaStep?: string }) {
+    return this.request<ReleaseManagers>(`/releases/managers`, { method: 'PUT', body: JSON.stringify(payload) });
+  }
+
+  /** What the portal's records say about the release — computed on every call. */
+  getReleaseProgress(id: string) {
+    return this.request<ReleaseProgress>(`/releases/${id}/progress`);
+  }
+
+  createRelease(payload: ReleaseInput) {
+    return this.request<Release>(`/releases`, { method: 'POST', body: JSON.stringify(payload) });
+  }
+
+  updateRelease(id: string, payload: ReleaseInput) {
+    return this.request<Release>(`/releases/${id}`, { method: 'PUT', body: JSON.stringify(payload) });
+  }
+
+  updateReleaseStep(id: string, stepId: string, payload: ReleaseStepUpdate) {
+    return this.request<Release>(`/releases/${id}/steps/${stepId}`, { method: 'PATCH', body: JSON.stringify(payload) });
+  }
+
+  addReleaseStep(id: string, payload: { title: string; description?: string; owner?: string; afterStepId?: string }) {
+    return this.request<Release>(`/releases/${id}/steps`, { method: 'POST', body: JSON.stringify(payload) });
+  }
+
+  deleteReleaseStep(id: string, stepId: string) {
+    return this.request<Release>(`/releases/${id}/steps/${stepId}`, { method: 'DELETE' });
+  }
+
+  /** Replace the services left out of the release (product/service); every other service of its products ships. */
+  setReleaseServices(id: string, excluded: string[]) {
+    return this.request<Release>(`/releases/${id}/services`, { method: 'PUT', body: JSON.stringify({ excluded }) });
+  }
+
+  completeRelease(id: string, completedAt?: string) {
+    return this.request<Release>(`/releases/${id}/complete`, { method: 'POST', body: JSON.stringify({ completedAt }) });
+  }
+
+  cancelRelease(id: string, reason: string) {
+    return this.request<Release>(`/releases/${id}/cancel`, { method: 'POST', body: JSON.stringify({ reason }) });
+  }
+
+  reopenRelease(id: string) {
+    return this.request<Release>(`/releases/${id}/reopen`, { method: 'POST' });
+  }
+
+  deleteRelease(id: string) {
+    return this.request<void>(`/releases/${id}`, { method: 'DELETE' });
+  }
+
+  /**
+   * The Delivery metrics report: DORA plus flow, quality, cadence and data-quality metrics over the
+   * given products pooled as one population (empty = every product), with per-product and
+   * per-service breakdowns. Production is resolved by the server and echoed in `production`.
+   */
+  getDeliveryMetrics(params?: {
+    products?: string[];
+    from?: string;
+    to?: string;
+    bucket?: 'day' | 'week' | 'month';
+    tz?: string;
+  }) {
+    const entries: [string, string][] = [];
+    if (params?.products && params.products.length > 0) entries.push(['products', params.products.join(',')]);
+    if (params?.from) entries.push(['from', params.from]);
+    if (params?.to) entries.push(['to', params.to]);
+    if (params?.bucket) entries.push(['bucket', params.bucket]);
+    if (params?.tz) entries.push(['tz', params.tz]);
+    const query = entries.length ? '?' + new URLSearchParams(entries).toString() : '';
+    return this.request<DeliveryMetricsResponse>(`/analytics/delivery${query}`);
+  }
 }
 
 export interface UserPreferencesPayload {
   hiddenProducts: string[];
 }
 
+/** The lifetimes the token endpoint accepts. */
+export type TokenLifetimeDays = 7 | 30 | 90 | 180 | 365;
+
+/**
+ * What a token may decide. `Standard`: the owner's roles minus Admin, no decisions. `QA`: adds the
+ * QA role and work-item sign-off. `Admin`: keeps Admin and makes every decision the owner can.
+ * Nobody may create one above their own role; the list response says which they may.
+ */
+export type TokenAccess = 'Standard' | 'QA' | 'Admin';
+
+/**
+ * A personal access token as listed — never the secret itself. `prefix` (`ipt_ab12cd34`) is the
+ * public part, safe to show so a user can tell which token an agent is holding.
+ */
+export interface PersonalAccessToken {
+  id: string;
+  name: string;
+  prefix: string;
+  createdAt: string;
+  expiresAt: string;
+  lastUsedAt: string | null;
+  revokedAt: string | null;
+  /** The creator's roles at creation time, shaped by `access`: Admin only on an Admin token. */
+  roles: string[];
+  access: TokenAccess;
+}
+
+export interface CreatedPersonalAccessToken extends PersonalAccessToken {
+  /** The plaintext secret. Returned once, on creation; not retrievable afterwards. */
+  token: string;
+}
+
+/** A token as an administrator sees it: anyone's, with its owner. */
+export interface AdminPersonalAccessToken extends PersonalAccessToken {
+  /** Lower-cased email: what tokens are owned by, and what "revoke all" takes. */
+  ownerEmail: string;
+  /** The owner's display name when the token was created. */
+  ownerName: string;
+}
+
 export interface AppSettingsPayload {
   /** `color` is `#rrggbb` or null/absent — the server normalises and drops unparseable values.
    *  `aliases` are the other names producers call this same environment; every write path resolves
-   *  through them, so one environment stops arriving under three names. */
+   *  through them, so one environment stops arriving under three names. `retired` takes the
+   *  environment out of every current-state view while keeping its history; absent means false. */
   environments: {
     key: string;
     displayName: string;
     color?: string | null;
     isProduction?: boolean;
     aliases?: string[] | null;
+    retired?: boolean;
   }[];
   /** `aliases` are other names producers send for the role; `assigneeGroups` narrow the person
-   *  picker for it to members of those directory groups. */
+   *  picker for it to members of those directory groups; `team` is the people offered first for it. */
   roles: {
     key: string;
     displayName: string;
     aliases?: string[] | null;
     assigneeGroups?: PromotionPolicyGroupRef[] | null;
+    team?: { email: string; displayName: string }[] | null;
   }[];
   activityTemplate: { template: string; style: 'primary' | 'secondary' | 'muted' }[];
+  /** How the delivery report ties incidents to deploys. Absent means the defaults (7 days, 15 min). */
+  analytics?: AnalyticsSettings | null;
+}
+
+export interface AnalyticsSettings {
+  /** An incident this many days after a deploy still counts against it (0 = no cap). */
+  attributionWindowDays: number;
+  /** An incident starting this many minutes before a deploy finished is still blamed on it (mid-rollout). */
+  rolloutToleranceMinutes: number;
 }
 
 /**
@@ -1439,6 +1852,26 @@ export interface AppSettingsPayload {
  * `resolvesTo` non-null means an alias already redirects this name, but its history has not been
  * merged yet: new deploys land on the canonical key while these rows stay behind.
  */
+/** `GET /settings/directory-health` (admin-only). */
+export interface DirectoryHealth {
+  credentialFailure: DirectoryCredentialFailure | null;
+}
+
+/**
+ * The directory app's sign-in failing, as the API's Graph reads have seen it since the last one that
+ * got through. Never carries the secret.
+ */
+export interface DirectoryCredentialFailure {
+  /** First failure of this outage (ISO-8601, UTC). */
+  since: string;
+  /** Latest failure (ISO-8601, UTC). */
+  lastFailedAt: string;
+  /** Entra's error code when it gave one — `AADSTS7000222` is an expired client secret. */
+  code: string | null;
+  /** The first sentence of Entra's explanation. */
+  message: string;
+}
+
 export interface EnvironmentUsage {
   key: string;
   deployments: number;
@@ -1590,6 +2023,9 @@ interface ApprovalListResponse {
 
 interface ApprovalDetailResponse {
   approval: import('./types').ApprovalRequest;
+  /** Whether the signed-in user may decide on it now; false with a reason otherwise. */
+  canDecide?: boolean;
+  cannotDecideReason?: string | null;
 }
 
 interface AuditLogResponse {
@@ -1652,6 +2088,8 @@ export interface PromotionCandidate {
   sourceEventParticipants: PromotionParticipant[];
   sourceEventReferences: PromotionSourceEventReference[];
   canApprove: boolean;
+  /** Pending and held by an active Promotion Freeze on (product, targetEnv). */
+  frozen: boolean;
   /**
    * Whether approving this promotion is the **last** gate before the version is live.
    *
@@ -1780,13 +2218,16 @@ export interface PromotionAuditEntry {
 
   /** What the actor typed, on the actions that take a comment. */
   comment: string | null;
-  /** Required on a bypass — why the gate was skipped. */
+  /** Required on a bypass and an administrator reject — why the gate was overridden. */
   reason: string | null;
   /** The ticket a work-item action was about. */
   workItemKey: string | null;
   role: string | null;
   referenceKey: string | null;
-  /** How an approval came about, e.g. `gate-evaluator`, `administrator-bypass`. */
+  /**
+   * How an approval or rejection came about, e.g. `gate-evaluator`, `administrator-bypass`,
+   * `administrator-reject`.
+   */
   trigger: string | null;
   /**
    * On a gate-opening row: the people whose approvals opened it. The row's own actor is the evaluator
@@ -1831,8 +2272,12 @@ export interface WorkItemRoleGap {
  * item unresolved, which stalls the gate without terminating the candidate. `Issue` says "something's
  * wrong here" about a change that is still going out, so it clears the gate like `Approved` does.
  * All three are reversible, and vetoing belongs to the promotion, not to a single work item.
+ *
+ * `Bypassed` is not a sign-off: an admin bypassed the gate of a promotion that was waiting for the
+ * item, and it went out unreviewed. Only the bypass records it (no endpoint does), it clears no gate,
+ * a person's decision replaces it, and cancelling that promotion's approval removes it.
  */
-export type WorkItemDecision = 'Approved' | 'Issue' | 'Blocked';
+export type WorkItemDecision = 'Approved' | 'Issue' | 'Blocked' | 'Bypassed';
 
 export interface WorkItemApproval {
   id: string;
@@ -1911,10 +2356,11 @@ export interface WorkItemEnvironment {
 
 /**
  * The sign-off state of one work item instance, derived from its decisions with display precedence:
- * a block outranks an issue, either outranks a sibling approval, and an undecided item is Pending.
- * For the gate only `Blocked` (and an undecided item) holds a promotion — `Issue` clears it.
+ * a block outranks an issue, either outranks a sibling approval, any decision outranks a bypass, and
+ * an undecided item is Pending. For the gate only `Blocked` (and an undecided or `Bypassed` item)
+ * holds a promotion — `Issue` clears it.
  */
-export type WorkItemInstanceState = 'Pending' | 'Approved' | 'Issue' | 'Blocked';
+export type WorkItemInstanceState = 'Pending' | 'Approved' | 'Issue' | 'Blocked' | 'Bypassed';
 
 /** One per-service instance of a ticket, from `GET /api/work-items/{key}/instances`. */
 export interface WorkItemInstance {
@@ -1932,6 +2378,26 @@ export interface WorkItemInstance {
  * promotion's own instance: it waits for every instance to be decided with none blocked, which an
  * `Issue` roll-up satisfies but a `Pending` one does not.
  */
+/** One work item in the answer of `POST /api/promotions/{id}/work-items/approvals`. */
+export interface ApproveAllWorkItemRow {
+  workItemKey: string;
+  title: string | null;
+  /** The item's own state — after the sign-off on an approved row, the one that kept it out otherwise. */
+  state: WorkItemInstanceState | 'Unknown';
+  error: string | null;
+}
+
+/**
+ * Result of "Approve all". On a dry run `approved` is what would be approved and nothing was written;
+ * otherwise it is what was. `unchanged` were left as they are; `failed` were refused, with `error`.
+ */
+export interface ApproveAllWorkItemsResult {
+  dryRun: boolean;
+  approved: ApproveAllWorkItemRow[];
+  unchanged: ApproveAllWorkItemRow[];
+  failed: ApproveAllWorkItemRow[];
+}
+
 export interface WorkItemOverallStatus {
   state: WorkItemInstanceState;
   instances: number;
@@ -1939,6 +2405,8 @@ export interface WorkItemOverallStatus {
   issues: number;
   blocked: number;
   pending: number;
+  /** Instances that went out under an admin bypass and nobody has reviewed since. */
+  bypassed: number;
   /** Every instance with its own state, sorted by service. */
   instanceStatuses: WorkItemInstance[];
 }
@@ -2075,10 +2543,9 @@ export interface PendingTicket {
   /** The subset of `requiredRoles` nobody holds — non-empty means the work item needs attention. */
   missingRoles?: string[];
   /**
-   * Status of the candidate this row represents. "Pending" for a live promotion; anything else means
-   * the row is either decision history or an orphan — a work item whose promotion died (Superseded /
-   * Rejected) and which nobody has signed off, kept in the queue so the work isn't lost.
-   * "Unknown" when no candidate could be linked to the row.
+   * Status of the candidate this row represents. Always "Pending" on the pending views — a work item
+   * no live promotion carries is not listed. On the decided view it is whatever that promotion has
+   * moved on to, or "Unknown" when no candidate could be linked to the row.
    */
   candidateStatus?: string;
   /**
@@ -2238,6 +2705,10 @@ export interface PromotionApprovalProgress {
   steps: PromotionStepProgress[];
   /** The "all work items resolved" gate condition, when the policy gates on it; null otherwise. */
   workItems: PromotionWorkItemGate | null;
+  /** True when a Promotion Freeze holds this Pending candidate; allSatisfied is then false. */
+  frozen: boolean;
+  /** The freeze's reason when frozen; null otherwise. */
+  blockedReason: string | null;
 }
 
 export interface PromotionWorkItemGate {
@@ -2509,6 +2980,44 @@ export interface PromotionPolicy {
   reappliedCandidates: number | null;
 }
 
+/**
+ * An active Promotion Freeze on a product's promotions into targetEnv — the whole product when
+ * `service` is null, else that one service; heldCandidates = Pending candidates it holds.
+ */
+export interface PromotionFreeze {
+  product: string;
+  service: string | null;
+  targetEnv: string;
+  reason: string;
+  frozenBy: string;
+  frozenAt: string;
+  heldCandidates: number;
+}
+
+/** One period a freeze scope was frozen; `until` / `liftedBy` are null while it is active. */
+export interface PromotionFreezeWindow {
+  product: string;
+  /** null = the whole product. */
+  service: string | null;
+  targetEnv: string;
+  reason: string;
+  frozenBy: string;
+  from: string;
+  until: string | null;
+  liftedBy: string | null;
+}
+
+export interface PromotionFreezeHistoryEntry {
+  action: 'frozen' | 'unfrozen';
+  product: string;
+  /** null = the whole product. */
+  service: string | null;
+  targetEnv: string;
+  reason: string | null;
+  actor: string;
+  at: string;
+}
+
 export interface UpsertPromotionPolicyPayload {
   product: string;
   service: string | null;
@@ -2563,7 +3072,9 @@ export type RollbackItemStatus =
   | 'RollingBack'
   | 'RolledBack'
   | 'Failed'
-  | 'Skipped';
+  | 'Skipped'
+  /** A different version was deployed after approval, so this revert is no longer going out. */
+  | 'Superseded';
 
 export interface RollbackItem {
   id: string;
@@ -2571,9 +3082,16 @@ export interface RollbackItem {
   fromVersion: string;
   toVersion: string;
   status: RollbackItemStatus;
+  /** The deploy that closed the item: its landing, the deploy already running it, or what superseded it. */
   completedDeployEventId: string | null;
   externalRunUrl: string | null;
   completedAt: string | null;
+  /** Why the item closed when the status alone doesn't say (superseded, already running, skip reason). */
+  note: string | null;
+  /** Open items only: the newest failed deploy of the target version since the request was approved. */
+  lastFailedAttempt: { deployEventId: string; deployedAt: string } | null;
+  /** No target version: the item takes the service out of the environment. */
+  remove: boolean;
 }
 
 export interface RollbackRequest {
@@ -2590,6 +3108,10 @@ export interface RollbackRequest {
   createdAt: string;
   approvedAt: string | null;
   completedAt: string | null;
+  cancelledByName: string | null;
+  cancelledAt: string | null;
+  /** Mandatory when an admin cancelled an already-approved request; optional while Pending. */
+  cancelReason: string | null;
   canApprove: boolean;
   /** Admin, still pending, and gated — i.e. the override action would succeed. */
   canOverride: boolean;
@@ -2616,6 +3138,43 @@ export interface RollbackGateRequirement {
   matched: number;
   required: number;
   satisfied: boolean;
+}
+
+/**
+ * The failed-deployment page's "roll back to the last known good version" offer. `available` false ⇒
+ * `reason` says why, in a sentence the page shows as it is, and the version fields are null.
+ */
+export interface LastKnownGoodOffer {
+  eventId: string;
+  product: string;
+  service: string;
+  targetEnv: string;
+  available: boolean;
+  reason: string | null;
+  /** The newest failed deploy: this event, or a later failed one. */
+  failedVersion: string | null;
+  failedEventId: string | null;
+  failedAt: string | null;
+  /** What the rollback restores: the last version that deployed successfully here. */
+  lastGoodVersion: string | null;
+  lastGoodEventId: string | null;
+  lastGoodAt: string | null;
+  canCreate: boolean;
+  createBlockedReason: string | null;
+  /** 'auto' approves at once, 'required' waits on `approvers`, 'unconfigured' needs an admin override. */
+  approval: 'auto' | 'required' | 'unconfigured' | null;
+  approvers: string[];
+  /** An open rollback that already carries this service. */
+  openRollback: { id: string; status: RollbackStatus; createdAt: string } | null;
+  /** Whether anything subscribes to rollback.approved here — without it, approving deploys nothing. */
+  executorConfigured: boolean;
+  /** Promotions of the failed version that approving the rollback sends back to Pending. */
+  promotionsToReopen: { id: string; sourceEnv: string; version: string; status: string }[];
+  /**
+   * 'restore' redeploys `lastGoodVersion`. 'remove' takes the service out of the environment: no
+   * version of it ever deployed successfully there, so `lastGoodVersion` is null. Null when unavailable.
+   */
+  action: 'restore' | 'remove' | null;
 }
 
 /** Detail shape: the list fields plus the gate, its progress, and the decision history. */
@@ -2676,6 +3235,11 @@ export interface ResolvedItem {
   toVersion: string;
   eligible: boolean;
   skipReason: string | null;
+  /**
+   * Set when the service's newest deploy failed: says which version failed and what is still running.
+   * The preview's `fromVersion` is always the last succeeded deploy.
+   */
+  note?: string | null;
 }
 
 export interface RollbackPreview {
@@ -2802,6 +3366,449 @@ export interface LeadTimeResponse {
   buckets: { start: string; environment: string; n: number; p50Hours: number | null }[];
   slowest: { workItemKey: string; environment: string; hours: number; deployEventId: string }[];
   range: AnalyticsRange;
+}
+
+// ── Incidents ─────────────────────────────────────────────────────────────
+
+/**
+ * A production incident as delivery metrics need it — a pointer to the real incident (source,
+ * externalId, url) plus what the metrics read: where, when it started, when service was restored,
+ * and which deploy caused it when known. Admin-only records; the aggregates are on the report.
+ */
+export interface Incident {
+  id: string;
+  product: string;
+  service: string;
+  environment: string;
+  startedAt: string;
+  resolvedAt: string | null;
+  durationHours: number | null;
+  version: string | null;
+  causedByDeployEventId: string | null;
+  source: string;
+  externalId: string | null;
+  url: string | null;
+  createdBy: string;
+  createdByName: string;
+  createdAt: string;
+  updatedBy: string | null;
+  updatedAt: string;
+}
+
+export interface IncidentInput {
+  product: string;
+  service: string;
+  environment: string;
+  startedAt: string;
+  resolvedAt?: string | null;
+  version?: string | null;
+  causedByDeployEventId?: string | null;
+  source?: string | null;
+  externalId?: string | null;
+  url?: string | null;
+}
+
+export interface IncidentList {
+  items: Incident[];
+  total: number;
+}
+
+// ── Releases ──────────────────────────────────────────────────────────────
+
+export type ReleaseStatus = 'planned' | 'in_progress' | 'completed' | 'cancelled';
+export type ReleaseStepStatus = 'pending' | 'in_progress' | 'done' | 'skipped';
+export type ReleaseCheckKey = 'staging-builds' | 'staging-qa' | 'production-promotions' | 'production-deploys' | 'production-migrations';
+export type ReleaseCheckState = 'waiting' | 'in_progress' | 'complete' | 'attention';
+
+/** A link with an optional label; without one the page names it from the address. */
+export interface ReleaseLink {
+  label: string | null;
+  url: string;
+}
+
+/** One step of a release's checklist. `check` names the measurement the portal makes for it, if any. */
+export interface ReleaseStep {
+  id: string;
+  order: number;
+  key: string;
+  title: string;
+  description: string | null;
+  owner: string | null;
+  check: ReleaseCheckKey | null;
+  status: ReleaseStepStatus;
+  startedAt: string | null;
+  completedAt: string | null;
+  completedBy: string | null;
+  completedByName: string | null;
+  note: string | null;
+  links: ReleaseLink[];
+  custom: boolean;
+  /** Only some releases need it (the maintenance page); while still to do it doesn't count. */
+  optional: boolean;
+}
+
+export interface ReleaseSummary {
+  id: string;
+  version: string;
+  title: string;
+  products: string[];
+  status: ReleaseStatus;
+  /** yyyy-MM-dd */
+  targetDate: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  cancelledAt: string | null;
+  stepsClosed: number;
+  stepsTotal: number;
+  currentStep: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ReleaseList {
+  items: ReleaseSummary[];
+  total: number;
+  /** Whether the caller may open a release: an admin or a release manager. */
+  canCreate: boolean;
+}
+
+/** One gate requirement whose approvers are release managers: a product's promotion gate into production. */
+export interface ReleaseManagerGate {
+  policyId: string;
+  product: string;
+  service: string | null;
+  sourceEnv: string;
+  targetEnv: string;
+  step: string;
+  requirement: string;
+  groups: PromotionPolicyGroupRef[];
+  users: string[];
+}
+
+/**
+ * Who besides admins opens and runs releases: the approvers of `requirement` ("Release Manager")
+ * on the production promotion gates. Which requirement it is, is set in Settings → Releases.
+ */
+export interface ReleaseManagers {
+  requirement: string;
+  /** The approval step that is the QA gate, for the Test on staging check. */
+  qaStep: string;
+  /** Every approval step name the gates use. */
+  knownSteps: string[];
+  gates: ReleaseManagerGate[];
+  /** Every requirement name the promotion gates use. */
+  knownRequirements: string[];
+  /** The caller may change which requirement it is (admins). */
+  canEdit: boolean;
+  /** The caller is a release manager — of the product asked about, or of any product. */
+  isReleaseManager: boolean;
+}
+
+/**
+ * A versioned release: a version line ("5.10") shipping a set of products from staging to
+ * production, with the checklist the release manager drives.
+ */
+export interface Release {
+  id: string;
+  version: string;
+  title: string;
+  products: string[];
+  stagingEnvironment: string;
+  productionEnvironment: string;
+  targetDate: string | null;
+  status: ReleaseStatus;
+  notes: string | null;
+  /** Where the release lives outside the portal: the issue-tracker version, the plan, the retro. */
+  links: ReleaseLink[];
+  /** Services of the products left out of the release, as product/service. */
+  excludedServices: string[];
+  startedAt: string | null;
+  completedAt: string | null;
+  cancelledAt: string | null;
+  cancelReason: string | null;
+  createdBy: string;
+  createdByName: string;
+  createdAt: string;
+  updatedBy: string | null;
+  updatedAt: string;
+  steps: ReleaseStep[];
+  canManage: boolean;
+}
+
+export interface ReleaseInput {
+  version: string;
+  products: string[];
+  title?: string | null;
+  stagingEnvironment?: string | null;
+  productionEnvironment?: string | null;
+  targetDate?: string | null;
+  notes?: string | null;
+  startedAt?: string | null;
+  links?: ReleaseLink[];
+}
+
+/** Null or absent leaves a field as it is; an empty string clears a text field, an empty list the links. */
+export interface ReleaseStepUpdate {
+  status?: ReleaseStepStatus;
+  note?: string;
+  links?: ReleaseLink[];
+  startedAt?: string | null;
+  completedAt?: string | null;
+  title?: string;
+  description?: string;
+  owner?: string;
+}
+
+/** The pipeline run behind a deploy or a migration; `url` goes to the service's own job when known. */
+export interface ReleaseRunRef {
+  provider: string | null;
+  label: string;
+  url: string;
+}
+
+export interface ReleaseDeploy {
+  eventId: string;
+  version: string;
+  status: string;
+  deployedAt: string;
+  run: ReleaseRunRef | null;
+}
+
+export interface ReleasePromotion {
+  id: string;
+  sourceEnv: string;
+  version: string;
+  status: 'Pending' | 'Approved' | 'Deploying' | 'Deployed' | 'Superseded' | 'Rejected';
+  createdAt: string;
+  approvedAt: string | null;
+  deployedAt: string | null;
+  externalRunUrl: string | null;
+  /** Approval steps a pending promotion is still short of ("QA Review", "Release Approval"). */
+  outstandingSteps: string[];
+  /** A pending promotion held by its work-item gate. */
+  workItemsOutstanding: boolean;
+  workItems: ReleaseWorkItems | null;
+  /** The QA gate. */
+  qaReview: 'approved' | 'pending' | 'rejected' | 'not-required';
+  qaApprovedAt: string | null;
+  qaApprovedBy: string | null;
+}
+
+export interface ReleaseWorkItems {
+  total: number;
+  approved: number;
+  issues: number;
+  blocked: number;
+}
+
+/** The newest registered build of the release for a service. */
+export interface ReleaseBuild {
+  id: string;
+  version: string;
+  branch: string;
+  buildId: string | null;
+  buildUrl: string | null;
+  createdAt: string;
+}
+
+export interface ReleaseMigration {
+  id: string;
+  kind: 'schema' | 'data';
+  version: string;
+  status: string;
+  queuedAt: string;
+  completedAt: string | null;
+  appliedCount: number;
+  failedCount: number;
+  failureReason: string | null;
+  run: ReleaseRunRef | null;
+}
+
+export interface ReleaseService {
+  product: string;
+  service: string;
+  /** Left out of the release by a release manager: listed, not counted by the checks. */
+  excluded: boolean;
+  /** Has a build or promotion of the version line; false for a service on a version scheme of its own. */
+  onLine: boolean;
+  build: ReleaseBuild | null;
+  staging: ReleaseDeploy | null;
+  promotion: ReleasePromotion | null;
+  production: ReleaseDeploy | null;
+  productionFailures: number;
+  migrations: ReleaseMigration[];
+}
+
+export interface ReleaseCheckIssue {
+  product: string;
+  service: string;
+  problem: string;
+}
+
+/** One pipeline run behind a check, with how many of the release's services it handled. */
+export interface ReleaseRun {
+  provider: string | null;
+  label: string;
+  url: string;
+  services: number;
+  succeeded: number;
+  failed: number;
+  firstAt: string | null;
+  lastAt: string | null;
+}
+
+export interface ReleaseCheck {
+  key: ReleaseCheckKey;
+  state: ReleaseCheckState;
+  done: number;
+  total: number;
+  summary: string;
+  firstAt: string | null;
+  lastAt: string | null;
+  issues: ReleaseCheckIssue[];
+  /** The pipeline runs the measurement read, oldest first. */
+  runs: ReleaseRun[];
+  /**
+   * What the people running the release should know that the numbers don't say, one sentence each —
+   * e.g. that a failed deploy held a run's data migrations back until the next run.
+   */
+  warnings: string[];
+}
+
+export interface ReleaseProgress {
+  releaseId: string;
+  version: string;
+  /** The approval step that is the QA gate ("QA Review"). */
+  qaStep: string;
+  computedAt: string;
+  from: string;
+  to: string;
+  services: ReleaseService[];
+  checks: ReleaseCheck[];
+}
+
+// ── Delivery metrics ──────────────────────────────────────────────────────
+
+export type DeliveryMetricUnit = 'count' | 'hours' | 'ratio';
+export type DeliveryGoodWhen = 'up' | 'down' | 'none';
+
+/**
+ * One metric of the Delivery metrics report. Every metric has this shape, so the page renders them
+ * generically. `available: false` means the installation cannot measure it at all — `reason` says
+ * what data would; an available metric with nothing in the window has `n: 0` and a null value.
+ */
+export interface DeliveryMetric {
+  key: string;
+  title: string;
+  available: boolean;
+  reason: string | null;
+  unit: DeliveryMetricUnit;
+  value: number | null;
+  n: number;
+  percentiles: { p50: number | null; p75: number | null; p90: number | null } | null;
+  /** Same metric over the equal-length window before; `change` = value − previous. */
+  delta: { previous: number | null; change: number | null; previousN: number } | null;
+  trend: DeliveryTrendPoint[];
+  /** The same series over the previous window, aligned by position (bucket i under bucket i). */
+  previousTrend: DeliveryTrendPoint[];
+  coverage: { label: string; numerator: number; denominator: number; ratio: number } | null;
+  /** How the number was counted — quote it beside the figure. */
+  definition: string;
+  goodWhen: DeliveryGoodWhen;
+}
+
+/** One bucket of a metric's trend. `coverage` says how much of the bucket the value could see, where that notion applies. */
+export interface DeliveryTrendPoint {
+  start: string;
+  value: number | null;
+  n: number;
+  coverage?: number | null;
+}
+
+export interface DeliverySection {
+  key: string;
+  title: string;
+  metrics: DeliveryMetric[];
+}
+
+export interface DeliveryProductRow {
+  product: string;
+  services: number;
+  deploys: number;
+  previousDeploys: number;
+  storiesShipped: number;
+  leadTimeP50Hours: number | null;
+  leadTimeCoverage: number | null;
+  deployFailureRate: number | null;
+  rollbackRate: number | null;
+  storyCoverage: number | null;
+  staleServices: number;
+  incidents: number;
+  changeFailureRate: number | null;
+  timeToRestoreP50Hours: number | null;
+  /** The DORA four over this product alone, per bucket of the current window, keyed by metric key. */
+  trends: Record<string, DeliveryTrendPoint[]>;
+}
+
+export type DeliveryAttribution = 'explicit' | 'version' | 'inferred' | 'outside-window' | 'none';
+
+/** One incident as the report saw it — admin-only drill-down behind change failure rate and time to restore. */
+export interface DeliveryIncident {
+  id: string;
+  product: string;
+  service: string;
+  environment: string;
+  startedAt: string;
+  resolvedAt: string | null;
+  durationHours: number | null;
+  attribution: DeliveryAttribution;
+  deployEventId: string | null;
+  deployedAt: string | null;
+  version: string | null;
+  url: string | null;
+}
+
+export interface DeliveryServiceRow {
+  product: string;
+  service: string;
+  deploys: number;
+  previousDeploys: number;
+  perWeek: number;
+  lastDeployedAt: string | null;
+  medianIntervalHours: number | null;
+  failed: number;
+  rollbacks: number;
+  batchSizeP50: number | null;
+  leadTimeP50Hours: number | null;
+  incidents: number;
+}
+
+export interface DeliveryMetricsResponse {
+  asOf: string;
+  range: AnalyticsRange;
+  previousRange: AnalyticsRange;
+  products: string[];
+  production: {
+    environments: string[];
+    source: 'marked' | 'default-name' | 'convention';
+    explanation: string;
+    /** Prod-like names the resolution left out — deploys there count nowhere until an admin marks or aliases them. */
+    ignoredProductionLike: string[];
+  };
+  definition: {
+    bucket: string;
+    tz: string;
+    deploy: string;
+    production: string;
+    storyShipped: string;
+    leadTime: string;
+  };
+  sections: DeliverySection[];
+  leadTimeByEnvironment: LeadTimeEnvStats[];
+  byProduct: DeliveryProductRow[];
+  byService: DeliveryServiceRow[];
+  /** The incidents behind the DORA figures, with how each was tied to a deploy. Null for non-admins. */
+  incidents: DeliveryIncident[] | null;
 }
 
 export const api = new ApiClient();

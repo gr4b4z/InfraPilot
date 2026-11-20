@@ -6,6 +6,7 @@ import {
   ArrowLeft,
   ArrowRight,
   Clock,
+  Database,
   ExternalLink,
   FileCode2,
   GitBranch,
@@ -22,6 +23,7 @@ import {
   User,
   Users,
   Workflow,
+  Siren,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { EnvBadge } from '@/components/environments/EnvBadge';
@@ -29,6 +31,9 @@ import { BranchBadge } from '@/components/artifacts/BranchBadge';
 import { artifactRegistryPath } from '@/lib/artifactPath';
 import { CopyEmailButton } from '@/components/deployments/CopyEmailButton';
 import { DeploymentLogViewer } from '@/components/deployments/DeploymentLogViewer';
+import { MigrationFlare } from '@/components/migrations/MigrationFlare';
+import { MigrationCounts } from '@/components/migrations/MigrationCounts';
+import { KIND_LABEL, migrationPath, migrationStatusStyle } from '@/components/migrations/migrationStatus';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useFeatureFlagsStore, FeatureFlag } from '@/stores/featureFlagsStore';
 import { useAuthStore } from '@/stores/authStore';
@@ -36,6 +41,10 @@ import { deploymentHistoryPath } from '@/lib/deploymentPath';
 import { resolveReferenceHref } from '@/lib/refUrl';
 import { useEntityRefresh, useIsBackgroundRefresh } from '@/hooks/useEntityEvents';
 import { useDocumentTitle } from '@/lib/pageTitle';
+import { DuringFreezeMark } from './FreezeCues';
+import { LastKnownGoodRollback } from './LastKnownGoodRollback';
+import { IncidentForm } from '@/app/incidents/IncidentForm';
+import { freezeWindowAt, useFreezeWindows } from './freezeWindows';
 import { ROW_ACTION_ATTR } from '@/lib/keys';
 import { KeyboardList } from '@/components/ui/KeyboardList';
 import { useKeyboardListRow } from '@/hooks/keyboardList';
@@ -49,6 +58,7 @@ import type {
   DeployReference,
   DeployRun,
   DeploymentDetail,
+  MigrationRunSummary,
   RelatedPromotion,
   RelatedWorkItem,
 } from '@/lib/types';
@@ -71,6 +81,7 @@ const STATUS_STYLES: Record<string, { bg: string; fg: string; label: string }> =
   succeeded: { bg: 'var(--success-bg)', fg: 'var(--success)', label: 'Succeeded' },
   failed: { bg: 'var(--danger-bg)', fg: 'var(--danger)', label: 'Failed' },
   in_progress: { bg: 'var(--warning-bg)', fg: 'var(--warning)', label: 'In Progress' },
+  removed: { bg: 'var(--bg-secondary)', fg: 'var(--text-muted)', label: 'Removed' },
 };
 
 const PROMOTION_STATUS_COLOR: Record<string, string> = {
@@ -101,6 +112,8 @@ export function DeploymentDetailPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showManualForm, setShowManualForm] = useState(false);
+  const [showIncidentForm, setShowIncidentForm] = useState(false);
+  const [incidentRecorded, setIncidentRecorded] = useState(false);
 
   const promotionsEnabled = useFeatureFlagsStore((s) => s.isEnabled(FeatureFlag.Promotions));
   const rollbacksEnabled = useFeatureFlagsStore((s) => s.isEnabled(FeatureFlag.Rollbacks));
@@ -131,6 +144,14 @@ export function DeploymentDetailPage() {
   useEffect(() => {
     void load({ silent: isBackgroundRefresh(id ?? '') });
   }, [load, realtimeTick, id, isBackgroundRefresh]);
+
+  // Freeze periods of this deployment's product: the header says when it landed during one.
+  const freezeProduct = detail?.event.product;
+  const freezeTick = useEntityRefresh(['promotion'], {
+    filter: (evt) => !evt.product || evt.product === freezeProduct,
+  });
+  const freezeWindows = useFreezeWindows(freezeProduct, promotionsEnabled, freezeTick);
+  const { getDisplayName } = useSettingsStore();
 
   // The registry row this deployment shipped, looked up on the triple the two records share
   // (product, service, version). A separate request rather than part of the event payload: the
@@ -190,7 +211,11 @@ export function DeploymentDetailPage() {
   }
 
   const { event: evt, logs, history, promotions, workItems } = detail;
+  const migrations = detail.migrations ?? [];
+  // What the header flags: a migration of this deployment that is still pending, running or failed.
+  const openMigrations = migrations.filter((m) => m.status === 'pending' || m.status === 'running' || m.status === 'failed');
   const failed = evt.status === 'failed';
+  const duringFreeze = freezeWindowAt(freezeWindows, evt.product, evt.environment, evt.deployedAt, evt.service);
   const status = STATUS_STYLES[evt.status] ?? STATUS_STYLES.succeeded;
 
   // The release repository's record of what this version is built from. The version number hangs off
@@ -226,6 +251,14 @@ export function DeploymentDetailPage() {
                 <Undo2 size={10} /> Rollback
               </span>
             )}
+            {duringFreeze && (
+              <DuringFreezeMark
+                freeze={duringFreeze}
+                envLabel={getDisplayName(evt.environment)}
+                variant="badge"
+              />
+            )}
+            <MigrationFlare flags={openMigrations} />
           </div>
           <div className="flex items-center gap-2 flex-wrap mt-1.5 text-[13px]" style={{ color: 'var(--text-secondary)' }}>
             <VersionLink version={evt.version} manifest={manifest} />
@@ -268,9 +301,20 @@ export function DeploymentDetailPage() {
           {/* Admin-only. Records a NEW deployment based on this one, attributed to the signed-in user
               rather than to CI — the only way to reflect something done by hand. It used to live in the
               deployments drawer; this page replaced that drawer, so the action moved with it. */}
+          {/* Admin-only. Recording from here pre-fills the service, environment and version, which is
+              exactly the attribution that makes change failure rate and time to restore trustworthy. */}
           {isAdmin && (
             <button
-              onClick={() => setShowManualForm((v) => !v)}
+              onClick={() => { setShowIncidentForm((v) => !v); setShowManualForm(false); }}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[13px] font-medium transition-opacity hover:opacity-80"
+              style={{ border: '1px solid var(--border-color)', color: 'var(--text-secondary)' }}
+            >
+              <Siren size={13} /> Record incident
+            </button>
+          )}
+          {isAdmin && (
+            <button
+              onClick={() => { setShowManualForm((v) => !v); setShowIncidentForm(false); }}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[13px] font-medium transition-opacity hover:opacity-80"
               style={{ border: '1px solid var(--border-color)', color: 'var(--text-secondary)' }}
             >
@@ -279,6 +323,29 @@ export function DeploymentDetailPage() {
           )}
         </div>
       </div>
+
+      {isAdmin && showIncidentForm && (
+        <IncidentForm
+          locked
+          initial={{
+            product: evt.product,
+            service: evt.service,
+            environment: evt.environment,
+            version: evt.version,
+            causedByDeployEventId: evt.id,
+            startedAt: evt.deployedAt,
+          }}
+          onSaved={() => { setShowIncidentForm(false); setIncidentRecorded(true); }}
+          onCancel={() => setShowIncidentForm(false)}
+        />
+      )}
+      {incidentRecorded && (
+        <p className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
+          Incident recorded — it now counts toward change failure rate and time to restore on the{' '}
+          <Link to="/analytics/delivery" className="underline">Delivery metrics</Link> report; manage it under{' '}
+          <Link to="/incidents" className="underline">Incidents</Link>.
+        </p>
+      )}
 
       {isAdmin && showManualForm && (
         <ManualDeployCard
@@ -290,7 +357,12 @@ export function DeploymentDetailPage() {
 
       {/* The specific error, as the pipeline itself named it — above everything else, because on a
           failed deployment this one sentence is what the page is for. */}
-      {failed && <FailureCallout run={evt.run} hasLogs={logs.length > 0} />}
+      {failed && (
+        <FailureCallout run={evt.run} hasLogs={logs.length > 0}>
+          {/* The way out sits with the failure: back to the version that last deployed here. */}
+          <LastKnownGoodRollback eventId={evt.id} />
+        </FailureCallout>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2 space-y-4">
@@ -299,6 +371,8 @@ export function DeploymentDetailPage() {
           <Card title="Pipeline output" icon={ScrollText}>
             <DeploymentLogViewer eventId={evt.id} logs={logs} defaultOpen={failed} />
           </Card>
+
+          {migrations.length > 0 && <MigrationsCard migrations={migrations} eventId={evt.id} />}
 
           <CreationCard event={evt} />
 
@@ -405,7 +479,11 @@ function RunLink({ run }: { run: DeployRun | null | undefined }) {
  * identified as the cause — not something inferred here — so it's quoted verbatim. When the producer
  * didn't send one, the callout says so and points at the logs rather than inventing a reason.
  */
-function FailureCallout({ run, hasLogs }: { run: DeployRun | null | undefined; hasLogs: boolean }) {
+function FailureCallout({ run, hasLogs, children }: {
+  run: DeployRun | null | undefined;
+  hasLogs: boolean;
+  children?: React.ReactNode;
+}) {
   const reason = run?.failureReason?.trim();
   const href = runHref(run);
 
@@ -444,11 +522,53 @@ function FailureCallout({ run, hasLogs }: { run: DeployRun | null | undefined; h
           Open the failing run <ExternalLink size={11} />
         </a>
       )}
+      {children}
     </div>
   );
 }
 
 // ── Cards ─────────────────────────────────────────────────────────────
+
+/**
+ * The deployment's migrations: the schema migration that ran inside it and the data migration due
+ * after it, each linking to its own page with the individual migrations and their output.
+ */
+function MigrationsCard({ migrations, eventId }: { migrations: MigrationRunSummary[]; eventId: string }) {
+  const back = `?from=${encodeURIComponent(`/deployments/events/${eventId}`)}&fromLabel=${encodeURIComponent('Deployment')}`;
+  return (
+    <Card title="Migrations" icon={Database}>
+      <ul className="space-y-1.5">
+        {migrations.map((m) => {
+          const st = migrationStatusStyle(m.status);
+          return (
+            <li key={m.id}>
+              <Link
+                to={`${migrationPath(m.id)}${back}`}
+                className="flex items-center justify-between gap-3 px-3 py-2 rounded-lg border transition-colors hover:border-[var(--accent)]"
+                style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)' }}
+              >
+                <span className="flex items-center gap-2 min-w-0">
+                  <span className="text-[13px] font-medium" style={{ color: 'var(--text-primary)' }}>
+                    {KIND_LABEL[m.kind]} migration
+                  </span>
+                  <span className="badge text-[10px]" style={{ backgroundColor: st.bg, color: st.fg }}>{st.label}</span>
+                  {m.failureReason && (
+                    <span className="text-[12px] font-mono truncate" style={{ color: 'var(--danger)' }} title={m.failureReason}>
+                      {m.failureReason}
+                    </span>
+                  )}
+                </span>
+                <span className="text-[12px] shrink-0" style={{ color: 'var(--text-secondary)' }}>
+                  <MigrationCounts run={m} />
+                </span>
+              </Link>
+            </li>
+          );
+        })}
+      </ul>
+    </Card>
+  );
+}
 
 function Card({ title, icon: Icon, children, action }: {
   title: string;

@@ -5,8 +5,11 @@ import {
   FileText,
   CheckCircle,
   ChartColumn,
+  Gauge,
+  Siren,
   ChevronLeft,
   ChevronRight,
+  Database,
   Settings,
   X,
   Zap,
@@ -16,6 +19,7 @@ import {
   History,
   Inbox,
   ListTodo,
+  Milestone,
   Package,
   ScrollText,
   Undo2,
@@ -90,7 +94,7 @@ const navGroups: NavGroup[] = [
     label: 'Catalog',
     featureFlag: FeatureFlag.ServiceCatalog,
     items: [
-      { to: '/catalog',   label: 'Service Catalog', icon: LayoutGrid  },
+      { to: '/catalog',   label: 'Request Catalog', icon: LayoutGrid  },
       { to: '/requests',  label: 'My Requests',     icon: FileText    },
       { to: '/approvals', label: 'Approvals',        icon: CheckCircle, badge: 0, featureFlag: FeatureFlag.Approvals },
     ],
@@ -99,9 +103,22 @@ const navGroups: NavGroup[] = [
     label: 'Deployments',
     items: [
       { to: '/deployments', label: 'Deployments', icon: Rocket },
-      { to: '/analytics', label: 'Analytics', icon: ChartColumn, featureFlag: FeatureFlag.Analytics },
+      // Schema migrations run inside each deploy, data migrations after it — read-only.
+      { to: '/migrations', label: 'Migrations', icon: Database },
+      { to: '/analytics', label: 'Analytics', icon: ChartColumn, featureFlag: FeatureFlag.Analytics,
+        activeExcept: ['/analytics/delivery'] },
+      // The report next to the operational view: several products pooled, fixed windows, DORA.
+      { to: '/analytics/delivery', label: 'Delivery metrics', icon: Gauge, featureFlag: FeatureFlag.Analytics },
       { to: '/release-notes', label: 'Release Notes', icon: ScrollText, featureFlag: FeatureFlag.ReleaseNotes },
       { to: '/artifacts', label: 'Artifacts', icon: Package },
+    ],
+  },
+  {
+    // Versioned release trains, version cut to production sign-off. Built on promotions, so gated with them.
+    label: 'Releases',
+    featureFlag: FeatureFlag.Promotions,
+    items: [
+      { to: '/releases', label: 'Releases', icon: Milestone },
     ],
   },
   {
@@ -126,6 +143,8 @@ const navGroups: NavGroup[] = [
     label: 'System',
     adminOnly: true,
     items: [
+      // Admin-only records behind change failure rate and time to restore on the delivery report.
+      { to: '/incidents', label: 'Incidents', icon: Siren },
       { to: '/webhooks', label: 'Webhooks', icon: Webhook  },
       { to: '/settings', label: 'Settings', icon: Settings },
     ],
@@ -385,13 +404,16 @@ export function Sidebar() {
               >
                 <KeyboardHints />
               </div>
-              <p
-                className="text-[10px] text-center mt-1 font-mono"
+              {/* The version is where people look for "what changed in it", so it opens the
+                  changelog. */}
+              <NavLink
+                to="/whats-new"
+                className="block text-[10px] text-center mt-1 font-mono hover:underline"
                 style={{ color: 'var(--text-muted)' }}
-                title="Build version"
+                title="Build version — see what's new"
               >
                 {__APP_VERSION__}
-              </p>
+              </NavLink>
             </>
           )}
         </div>

@@ -2,6 +2,9 @@
 
 Endpoint for CI/CD pipelines to report deployment events to InfraPilot.
 
+Systems that report in their own format have adapters under `/api/integrations/` that map onto this
+model. Flux: `notes/integrations/flux.md`.
+
 ```
 POST /api/deployments/events
 ```
@@ -71,12 +74,38 @@ Rate limiting is applied per key.
 | `version` | string | **yes** | — | Version identifier. Any format is accepted (semver, git SHA, build tag). |
 | `source` | string | **yes** | — | Identifies the CI/CD system sending the event. |
 | `deployedAt` | DateTimeOffset | **yes** | — | UTC timestamp of the deployment. Must not be the zero value. |
-| `status` | string | no | `"succeeded"` | One of: `succeeded`, `failed`, `in_progress`. Case-insensitive. |
+| `status` | string | no | `"succeeded"` | One of: `succeeded`, `failed`, `in_progress`, `removed`. Case-insensitive. |
 | `isRollback` | boolean | no | `false` | Whether this deployment is a rollback to a previous version. |
 | `previousVersion` | string | no | _server-derived_ | The predecessor version the caller observed. When omitted, the server derives it from the most recent event for the same product/service/environment. Supplying this lets integrators assert the predecessor they saw and detect drift vs. the server's history. |
 | `references` | array | no | `[]` | Links to external resources (repos, pipelines, PRs, tickets). |
 | `participants` | array | no | `[]` | People involved in the deployment. |
 | `metadata` | object | no | `{}` | Free-form key-value pairs for custom data. |
+| `run` | object | no | — | The CI run that performed the deployment (provider, run/job URLs, `failureReason`). |
+| `logs` | array | no | — | Captured output blocks `{ name, source, content, truncated }`, shown on the deployment page. See below. |
+
+### `logs[]` blocks
+
+Blocks are keyed by name (`helm upgrade output`, `helm hook logs`, `failure diagnostics`): a repeated
+name replaces the stored copy, an unmentioned one is kept. At most 20 per event; content over 512 KiB
+keeps the tail.
+
+Everyone signed in can read these blocks, so **secrets are redacted before storage**: connection-string
+keys (`SharedAccessKey=`, `AccountKey=`, `Password=`, `Pwd=`), `key: value` / `key=value` / JSON pairs
+whose key names a password, secret, token, API key or connection string, Kubernetes env entries
+(`- name: DB_PASSWORD` / `value: …`), bearer and `Authorization` header values, credentials in URLs,
+SAS `sig=`, JWTs, GitHub tokens and PEM private keys keep their name and lose their value to
+`[redacted]` (`Platform.Api.Infrastructure.SecretRedactor`). It is a safety net, not a licence:
+producers should not print secrets (`kubectl describe pod` prints container environments — redact
+`Environment:` values before sending). Migration logs (`POST /api/migrations/runs`) get the same
+treatment.
+
+Logs stored before redaction existed, or before a pattern was added, are scrubbed with the admin pair
+(CatalogAdmin; safe to repeat):
+
+| Endpoint | Effect |
+|---|---|
+| `GET /api/deployments/admin/logs/secrets` | Preview: `{ deployLogs, migrationLogs }` that would change. Writes nothing. |
+| `POST /api/deployments/admin/logs/secrets/redact` | Redacts every stored deploy and migration log; returns what changed. Audited as `deployment.logs.redacted`. |
 
 ### `status` values
 
@@ -85,6 +114,7 @@ Rate limiting is applied per key.
 | `succeeded` | Deployment completed successfully. Eligible as a rollback target, and the status that completes a matching in-flight promotion when the version lands on its target environment. |
 | `failed` | Deployment failed. Recorded for tracking and dashboards. |
 | `in_progress` | Deployment is still running. Can be updated later by sending a new event with the same version and a final status. |
+| `removed` | The service was taken out of the environment: uninstalled, and no longer declared by the release pipeline. `version` is the version that was removed. As the newest event of a cell it means nothing of the service runs there, so the state matrix, product summaries, search and service detail drop that environment for it. It is not a deploy: analytics leave it out, it completes no promotion, it does not bring back a retired service, and the next deploy there has no `previousVersion`. It completes an approved rollback item that removes the service (an item with no target version). |
 
 ### `references[]` object
 
@@ -230,6 +260,10 @@ Aliases are **forward-only** — they fix what arrives next and leave rows that 
 
 `recordAliases` defaults to `true`. Without it the merge is a one-off tidy-up that the next run of a pipeline still posting the old name undoes.
 
+### Retired environments
+
+An environment nothing deploys to any more can be marked **Retired** in **Settings → Environments** (`"retired": true` on its entry in `PUT /api/settings`; absent means `false`). Its last events would otherwise keep showing as the version "currently" there, so every current-state read leaves it out: `GET /api/deployments/state` (both views, even with `?environment=` naming it), `/api/deployments/products`, `/services/search` (a service seen only there is not a hit), `/services/{product}/{service}` (state and each version's environments; a version seen only there is not listed), the per-environment analytics (frequency `groupBy=environment`, lead time, the work-item matrix's columns and cells) and work items' deployed-to ("testable in") environments. Rows stored under one of its aliases count as the retired environment too. History is untouched — `/history`, event detail, the recent-activity feeds, `/versions`, promotions and rollbacks still return its rows, and the UI still labels them with its display name. Ingest is unaffected as well: a deploy to it, or to one of its aliases, is still stored under its key. Un-retiring restores everything, since nothing was deleted.
+
 ## Response
 
 ### 201 Created
@@ -250,7 +284,7 @@ Aliases are **forward-only** — they fix what arrives next and leave rows that 
 {
   "errors": [
     "'product' is required",
-    "'status' must be one of: succeeded, failed, in_progress"
+    "'status' must be one of: succeeded, failed, in_progress, removed"
   ]
 }
 ```
@@ -466,9 +500,10 @@ back.
 
 Returns an array with one row per (product, service, environment): the newest event there by
 `deployedAt`, **whatever its `status`** — a `failed` or `in_progress` deploy on top is what that cell
-shows, and a rollback is an event like any other. Two events sharing the newest `deployedAt` are not
+shows, and a rollback is an event like any other. The one exception is `removed`: a cell whose newest
+event is a removal is left out, because the service no longer runs there. Two events sharing the newest `deployedAt` are not
 ordered further, so send distinct timestamps when it matters which one is current. Retired services
-are left out. Rows are sorted by product, service, environment. Each row is the event's `id`,
+and retired environments (see "Retired environments" above) are left out. Rows are sorted by product, service, environment. Each row is the event's `id`,
 `product`, `service`, `environment`, `version`, `previousVersion`, `isRollback`, `status`, `source`,
 `deployedAt`, plus `references` (with operator overrides merged in — see below), `participants`,
 `enrichment` and `run`.

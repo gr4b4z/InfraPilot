@@ -4,6 +4,18 @@ public record UserInfo(string Id, string DisplayName, string Email);
 
 public record GroupInfo(string Id, string DisplayName);
 
+/// <summary>What the directory says about an account right now (see <see cref="IIdentityService.GetAccountStatus"/>).</summary>
+public enum AccountStatus
+{
+    /// <summary>The directory could not say: unreachable, throttled, or not the authority for this id.</summary>
+    Unknown,
+    Active,
+    /// <summary>The account exists but may not sign in (Entra <c>accountEnabled</c> false, or an inactive local user).</summary>
+    Disabled,
+    /// <summary>The directory positively reports that no such account exists (deleted).</summary>
+    Missing,
+}
+
 public interface IIdentityService
 {
     /// <summary>
@@ -13,6 +25,29 @@ public interface IIdentityService
     /// </summary>
     Task<IReadOnlyList<UserInfo>> GetGroupMembers(string groupId, CancellationToken ct = default);
     Task<UserInfo?> GetUser(string userId, CancellationToken ct = default);
+
+    /// <summary>
+    /// Whether account <paramref name="userId"/> may still sign in. A personal access token outlives
+    /// its owner's sign-ins, so this is how it finds out its owner was disabled or deleted (see
+    /// <see cref="Platform.Api.Infrastructure.Auth.PersonalTokenOwnerCheck"/>). Never throws for a
+    /// lookup that fails: it answers <see cref="AccountStatus.Unknown"/>, because only a positive
+    /// answer may stop a credential.
+    /// </summary>
+    Task<AccountStatus> GetAccountStatus(string userId, CancellationToken ct = default);
+
+    /// <summary>
+    /// Every email address the directory knows account <paramref name="userId"/> by: its mail, its
+    /// sign-in name and its other mail addresses. Records name a person by whichever address their
+    /// source had (a ticket's QA owner arrives as their mail, the people picker stores mail), while
+    /// the person signs in with a sign-in name that need not be the same: a long name cut short, or
+    /// a name change. This is how the portal still recognises them (see
+    /// <see cref="Platform.Api.Infrastructure.Auth.DirectoryEmailClaimsTransformation"/>).
+    ///
+    /// <para>Null when the directory cannot say (unreachable, throttled, an id it does not issue);
+    /// an empty list when it says the account has none. Never throws for a lookup that fails.</para>
+    /// </summary>
+    Task<IReadOnlyList<string>?> GetEmailAddresses(string userId, CancellationToken ct = default);
+
     Task<IReadOnlyList<UserInfo>> SearchUsers(string query, CancellationToken ct = default);
     Task<IReadOnlyList<GroupInfo>> SearchGroups(string query, CancellationToken ct = default);
 

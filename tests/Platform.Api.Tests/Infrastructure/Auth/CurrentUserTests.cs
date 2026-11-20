@@ -71,4 +71,53 @@ public class CurrentUserTests
 
         Assert.Equal("", sut.Email);
     }
+
+    // ── Every address (sign-in name and the directory's others) ──────────────
+
+    [Fact]
+    public void Emails_are_the_sign_in_name_then_the_directory_addresses()
+    {
+        var sut = BuildFor(
+            new Claim("upn", "firstname.longlast@example.com"),
+            new Claim(DirectoryEmailClaimsTransformation.ClaimType, "Firstname.Longlastname@example.com"),
+            new Claim(DirectoryEmailClaimsTransformation.ClaimType, "FIRSTNAME.LONGLAST@example.com"));
+
+        Assert.Equal("firstname.longlast@example.com", sut.Email);
+        Assert.Equal(["firstname.longlast@example.com", "Firstname.Longlastname@example.com"], sut.Emails);
+    }
+
+    [Fact]
+    public void Emails_are_just_the_sign_in_name_without_directory_addresses()
+    {
+        var sut = BuildFor(new Claim("preferred_username", "plain@example.com"));
+
+        Assert.Equal(["plain@example.com"], sut.Emails);
+    }
+
+    [Fact]
+    public void IsMe_matches_any_address_in_any_case_and_nobody_else()
+    {
+        var sut = BuildFor(
+            new Claim("upn", "firstname.longlast@example.com"),
+            new Claim(DirectoryEmailClaimsTransformation.ClaimType, "Firstname.Longlastname@example.com"));
+
+        Assert.True(sut.IsMe("firstname.longlast@example.com"));
+        Assert.True(sut.IsMe(" firstname.longlastname@EXAMPLE.com "));
+        Assert.False(sut.IsMe("someone.else@example.com"));
+        Assert.False(sut.IsMe(""));
+        Assert.False(sut.IsMe(null));
+    }
+
+    [Fact]
+    public void SamePersonAs_widens_only_the_current_users_own_address()
+    {
+        var sut = BuildFor(
+            new Claim("upn", "firstname.longlast@example.com"),
+            new Claim(DirectoryEmailClaimsTransformation.ClaimType, "Firstname.Longlastname@example.com"));
+
+        Assert.Equal(
+            ["firstname.longlast@example.com", "Firstname.Longlastname@example.com"],
+            sut.SamePersonAs("firstname.longlast@example.com"));
+        Assert.Equal(["someone.else@example.com"], sut.SamePersonAs("someone.else@example.com"));
+    }
 }

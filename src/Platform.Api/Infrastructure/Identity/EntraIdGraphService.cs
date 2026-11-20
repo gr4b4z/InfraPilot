@@ -1,7 +1,9 @@
 using System.Collections.Concurrent;
+using Azure.Identity;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Graph;
 using Microsoft.Graph.Models;
+using Microsoft.Graph.Models.ODataErrors;
 
 namespace Platform.Api.Infrastructure.Identity;
 
@@ -9,6 +11,11 @@ namespace Platform.Api.Infrastructure.Identity;
 /// Entra ID directory reads through Microsoft Graph. Registered as a singleton: group member lists
 /// are cached process-wide (see <see cref="GetGroupMembers"/>), so one Graph read answers every
 /// user and request that checks the same group.
+///
+/// <para>Every read goes through <see cref="ReadGraphAsync{T}"/>, which tells
+/// <see cref="GraphCredentialHealth"/> whether the app's own sign-in is working — the one failure
+/// every caller here swallows (empty searches, "not a member", "unknown") but an admin has to act
+/// on.</para>
 /// </summary>
 public class EntraIdGraphService : IIdentityService
 {
@@ -27,18 +34,77 @@ public class EntraIdGraphService : IIdentityService
 
     private readonly GraphServiceClient _graphClient;
     private readonly IMemoryCache _cache;
+    private readonly GraphCredentialHealth _credentialHealth;
     private readonly ILogger<EntraIdGraphService> _logger;
 
     // Concurrent misses for one group share a single Graph read.
     private readonly ConcurrentDictionary<string, Lazy<Task<IReadOnlyList<UserInfo>>>> _inFlight = new();
 
     public EntraIdGraphService(
-        GraphServiceClient graphClient, IMemoryCache cache, ILogger<EntraIdGraphService> logger)
+        GraphServiceClient graphClient, IMemoryCache cache, GraphCredentialHealth credentialHealth,
+        ILogger<EntraIdGraphService> logger)
     {
         _graphClient = graphClient;
         _cache = cache;
+        _credentialHealth = credentialHealth;
         _logger = logger;
     }
+
+    // ── Credential health ────────────────────────────────────────────────────
+
+    private const string CredentialFailedLogKey = "graph-credential-failed";
+
+    /// <summary>
+    /// Runs one Graph read and keeps <see cref="GraphCredentialHealth"/> current. A credential
+    /// failure (Azure.Identity's <see cref="AuthenticationFailedException"/>: an expired or wrong
+    /// client secret) is recorded and logged before it propagates; Graph answering — even with an
+    /// error, like a 404 for a deleted group — proves the credential works and clears it.
+    /// </summary>
+    private async Task<T> ReadGraphAsync<T>(Func<Task<T>> read)
+    {
+        try
+        {
+            var result = await read();
+            CredentialWorked();
+            return result;
+        }
+        catch (Exception ex)
+        {
+            if (GraphCredentialHealth.CredentialFailureIn(ex) is { } credentialFailure)
+                CredentialFailed(credentialFailure);
+            // Any answer took a token to get, except a 401: that is Graph refusing the token.
+            else if (ex is ODataError { ResponseStatusCode: not (int)System.Net.HttpStatusCode.Unauthorized })
+                CredentialWorked();
+            throw;
+        }
+    }
+
+    // Error, once per MembershipTtl however many reads hit it: this one stops every directory read,
+    // and nothing else surfaces it — each caller deliberately carries on with an empty answer.
+    private void CredentialFailed(AuthenticationFailedException ex)
+    {
+        var failure = _credentialHealth.RecordFailure(ex);
+        if (FirstInWindow(CredentialFailedLogKey))
+            _logger.LogError(ex,
+                "Microsoft Graph sign-in is failing ({Code}) since {Since:u}; directory search, group-membership " +
+                "approval checks and account checks get no answers until the Graph app's client secret " +
+                "(GRAPH_CLIENT_SECRET) is fixed",
+                failure.Code ?? "no AADSTS code", failure.Since);
+        else
+            _logger.LogDebug(ex, "Microsoft Graph sign-in failed again ({Code})", failure.Code);
+    }
+
+    private void CredentialWorked()
+    {
+        if (_credentialHealth.RecordSuccess() is not { } cleared) return;
+        // So that a later failure is a new outage and logs at Error straight away.
+        _cache.Remove(CredentialFailedLogKey);
+        _logger.LogInformation(
+            "Microsoft Graph sign-in works again; it had been failing ({Code}) since {Since:u}",
+            cleared.Code ?? "no AADSTS code", cleared.Since);
+    }
+
+    // ── Group membership ─────────────────────────────────────────────────────
 
     /// <summary>
     /// The users that are members of the group with object id <paramref name="groupId"/>, directly
@@ -54,8 +120,9 @@ public class EntraIdGraphService : IIdentityService
     /// not something an approval decision should key off.</para>
     ///
     /// <para>A failed read is logged (Warning, at most once per group per
-    /// <see cref="MembershipTtl"/>), remembered for <see cref="FailureTtl"/>, and answered with no
-    /// members — the same "not a member" the approval check reached before by catching the
+    /// <see cref="MembershipTtl"/>; a credential failure is logged once for all groups instead, see
+    /// <see cref="ReadGraphAsync{T}"/>), remembered for <see cref="FailureTtl"/>, and answered with
+    /// no members — the same "not a member" the approval check reached before by catching the
     /// error.</para>
     /// </summary>
     public async Task<IReadOnlyList<UserInfo>> GetGroupMembers(string groupId, CancellationToken ct = default)
@@ -84,13 +151,17 @@ public class EntraIdGraphService : IIdentityService
     {
         try
         {
-            var members = await ReadAllMembersAsync(objectId.ToString("D"));
+            var members = await ReadGraphAsync(() => ReadAllMembersAsync(objectId.ToString("D")));
             _cache.Set(key, members, MembershipTtl);
             return members;
         }
         catch (Exception ex)
         {
-            if (FirstInWindow($"graph-members-failed:{objectId:D}"))
+            if (GraphCredentialHealth.CredentialFailureIn(ex) is not null)
+                _logger.LogDebug(ex,
+                    "Group membership lookup failed for {Group} because Graph sign-in is failing; " +
+                    "treating it as having no members for {RetryAfter}", objectId, FailureTtl);
+            else if (FirstInWindow($"graph-members-failed:{objectId:D}"))
                 _logger.LogWarning(ex,
                     "Group membership lookup failed for {Group}; treating it as having no members for {RetryAfter}",
                     objectId, FailureTtl);
@@ -151,20 +222,105 @@ public class EntraIdGraphService : IIdentityService
         return true;
     }
 
+    /// <summary>
+    /// <c>users/{id}?$select=id,mail,userPrincipalName,proxyAddresses</c> — within the
+    /// <c>User.Read.All</c> the Graph app already holds. Not cached here: the caller decides how long
+    /// an answer holds. A 404 is an account with no addresses; anything else that goes wrong is null
+    /// (cannot say), logged, never thrown.
+    /// </summary>
+    public async Task<IReadOnlyList<string>?> GetEmailAddresses(string userId, CancellationToken ct = default)
+    {
+        // An Entra object id is a GUID; anything else is not this directory's to answer for.
+        if (!Guid.TryParse(userId, out var objectId)) return null;
+
+        try
+        {
+            var user = await ReadGraphAsync(() => _graphClient.Users[objectId.ToString("D")].GetAsync(r =>
+                r.QueryParameters.Select = ["id", "mail", "userPrincipalName", "proxyAddresses"], cancellationToken: ct));
+            return user?.Id is null ? null : EmailAddressesOf(user);
+        }
+        catch (ODataError ex) when (ex.ResponseStatusCode == (int)System.Net.HttpStatusCode.NotFound)
+        {
+            return [];
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            // A credential failure is already logged, once for every lookup (ReadGraphAsync).
+            if (GraphCredentialHealth.CredentialFailureIn(ex) is null
+                && FirstInWindow($"graph-addresses-failed:{objectId:D}"))
+                _logger.LogWarning(ex,
+                    "Email address lookup failed for {User}; recognising them by their sign-in name only", objectId);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// The account's mail, sign-in name and SMTP proxy addresses (<c>smtp:</c> entries, the primary
+    /// one included), trimmed and without duplicates. Other proxy kinds (<c>SIP:</c>, <c>X500:</c>)
+    /// are not mail addresses.
+    /// </summary>
+    internal static IReadOnlyList<string> EmailAddressesOf(User user)
+    {
+        const string smtp = "smtp:";
+        var proxies = (user.ProxyAddresses ?? [])
+            .Where(p => p is not null && p.StartsWith(smtp, StringComparison.OrdinalIgnoreCase))
+            .Select(p => p![smtp.Length..]);
+        return new[] { user.Mail, user.UserPrincipalName }
+            .Concat(proxies)
+            .Select(a => a?.Trim())
+            .Where(a => !string.IsNullOrEmpty(a))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList()!;
+    }
+
     public async Task<UserInfo?> GetUser(string userId, CancellationToken ct = default)
     {
-        var user = await _graphClient.Users[userId].GetAsync(cancellationToken: ct);
+        var user = await ReadGraphAsync(() => _graphClient.Users[userId].GetAsync(cancellationToken: ct));
         if (user?.Id is null) return null;
         return new UserInfo(user.Id, user.DisplayName ?? "", user.Mail ?? user.UserPrincipalName ?? "");
     }
 
+    /// <summary>
+    /// <c>users/{id}?$select=id,accountEnabled</c> — one small read, within the <c>User.Read.All</c>
+    /// the Graph app already holds. A 404 means the user was deleted; <c>accountEnabled</c> false
+    /// means disabled. Anything else that goes wrong (throttling, an outage, a missing permission
+    /// that leaves <c>accountEnabled</c> out) is <see cref="AccountStatus.Unknown"/>, logged, never
+    /// thrown. Not cached here: the caller decides how long an answer holds.
+    /// </summary>
+    public async Task<AccountStatus> GetAccountStatus(string userId, CancellationToken ct = default)
+    {
+        // An Entra object id is a GUID. Anything else (an API key's "apikey:name", a local id from
+        // another mode) is not this directory's to judge, and users/{name} would only 404 on it.
+        if (!Guid.TryParse(userId, out var objectId)) return AccountStatus.Unknown;
+
+        try
+        {
+            var user = await ReadGraphAsync(() => _graphClient.Users[objectId.ToString("D")].GetAsync(r =>
+                r.QueryParameters.Select = ["id", "accountEnabled"], cancellationToken: ct));
+            if (user?.Id is null) return AccountStatus.Unknown;
+            return user.AccountEnabled == false ? AccountStatus.Disabled : AccountStatus.Active;
+        }
+        catch (ODataError ex) when (ex.ResponseStatusCode == (int)System.Net.HttpStatusCode.NotFound)
+        {
+            return AccountStatus.Missing;
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            // A credential failure is already logged, once for every lookup (ReadGraphAsync).
+            if (GraphCredentialHealth.CredentialFailureIn(ex) is null
+                && FirstInWindow($"graph-account-failed:{objectId:D}"))
+                _logger.LogWarning(ex, "Account status lookup failed for {User}; treating it as unknown", objectId);
+            return AccountStatus.Unknown;
+        }
+    }
+
     public async Task<IReadOnlyList<UserInfo>> SearchUsers(string query, CancellationToken ct = default)
     {
-        var users = await _graphClient.Users.GetAsync(r =>
+        var users = await ReadGraphAsync(() => _graphClient.Users.GetAsync(r =>
         {
             r.QueryParameters.Filter = UserStartsWith(query);
             r.QueryParameters.Top = SearchLimit;
-        }, cancellationToken: ct);
+        }, cancellationToken: ct));
 
         return ToUserInfos(users?.Value);
     }
@@ -185,13 +341,13 @@ public class EntraIdGraphService : IIdentityService
             var groupId = await ResolveGroupIdAsync(group, ct);
             if (groupId is null) continue;
 
-            var page = await _graphClient.Groups[groupId].TransitiveMembers.GraphUser.GetAsync(r =>
+            var page = await ReadGraphAsync(() => _graphClient.Groups[groupId].TransitiveMembers.GraphUser.GetAsync(r =>
             {
                 r.QueryParameters.Filter = UserStartsWith(query);
                 r.QueryParameters.Count = true;
                 r.QueryParameters.Top = SearchLimit;
                 r.Headers.Add("ConsistencyLevel", "eventual");
-            }, cancellationToken: ct);
+            }, cancellationToken: ct));
 
             foreach (var user in ToUserInfos(page?.Value))
             {
@@ -216,11 +372,11 @@ public class EntraIdGraphService : IIdentityService
         if (Guid.TryParse(group.Id, out _)) return group.Id;
 
         var name = string.IsNullOrWhiteSpace(group.DisplayName) ? group.Id : group.DisplayName;
-        var matches = await _graphClient.Groups.GetAsync(r =>
+        var matches = await ReadGraphAsync(() => _graphClient.Groups.GetAsync(r =>
         {
             r.QueryParameters.Filter = $"displayName eq '{ODataString(name)}'";
             r.QueryParameters.Top = 1;
-        }, cancellationToken: ct);
+        }, cancellationToken: ct));
         return matches?.Value?.FirstOrDefault()?.Id;
     }
 
@@ -244,11 +400,11 @@ public class EntraIdGraphService : IIdentityService
 
     public async Task<IReadOnlyList<GroupInfo>> SearchGroups(string query, CancellationToken ct = default)
     {
-        var groups = await _graphClient.Groups.GetAsync(r =>
+        var groups = await ReadGraphAsync(() => _graphClient.Groups.GetAsync(r =>
         {
             r.QueryParameters.Filter = $"startsWith(displayName, '{ODataString(query)}')";
             r.QueryParameters.Top = SearchLimit;
-        }, cancellationToken: ct);
+        }, cancellationToken: ct));
 
         return (groups?.Value ?? [])
             .Where(g => g.Id is not null)

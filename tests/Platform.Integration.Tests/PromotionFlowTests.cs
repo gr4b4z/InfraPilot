@@ -618,34 +618,16 @@ public class PromotionFlowTests : IClassFixture<PromotionFlowTests.FlowFactory>,
     }
 
     [Fact]
-    public async Task Create_WithoutPolicy_IsRejected()
-    {
-        // Was Ingest_WithoutPolicy_DoesNotCreateCandidate. With topology gone, the policy-resolution
-        // miss is the edge guard: a create for a product with no policy is rejected (422) rather
-        // than silently dropped, and no candidate is recorded.
-        await SeedPoliciesAsync();
-
-        var createResponse = await CreatePromotionAsync(
-            sourceEnv: "dev", targetEnv: "staging", version: "v3.0.0", product: "no-policy-product");
-        Assert.Equal(HttpStatusCode.UnprocessableEntity, createResponse.StatusCode);
-
-        // Assert: no candidates for this product.
-        var listResponse = await _adminClient.GetAsync("/api/promotions/?product=no-policy-product");
-        listResponse.EnsureSuccessStatusCode();
-
-        var body = await Deserialize(listResponse);
-        var candidates = body.GetProperty("candidates");
-        Assert.Equal(0, candidates.GetArrayLength());
-    }
-
-    [Fact]
     public async Task Create_WithoutSucceededSourceDeploy_IsRejected()
     {
-        // The other cross-API guard: even for a policy-enrolled edge, you can only promote a version
-        // that actually shipped to the source env. Here dev→staging IS enrolled, but no succeeded
-        // deploy of this version exists in dev, so create is rejected (422 — SourceDeploymentNotFound)
-        // and no candidate is recorded. (Note: we POST /api/promotions directly rather than via the
+        // The cross-API guard: even for a policy-enrolled edge, you can only promote a version that
+        // actually shipped to the source env. Here dev→staging IS enrolled, but no succeeded deploy
+        // of this version exists in dev, so create is rejected (422 — SourceDeploymentNotFound) and
+        // no candidate is recorded. (Note: we POST /api/promotions directly rather than via the
         // CreatePromotionAsync helper, which would seed the source deploy that this test omits.)
+        // The policy is created without sourceRequiresDeploy, so this is also what pins that the
+        // flag defaults to true over the admin API — IngestIdempotencyAndSourcePolicyTests always
+        // sends it explicitly.
         await SeedPoliciesAsync();
 
         var createResponse = await _apiKeyClient.PostAsJsonAsync("/api/promotions", new
@@ -971,6 +953,51 @@ public class PromotionFlowTests : IClassFixture<PromotionFlowTests.FlowFactory>,
     }
 
     /// <summary>
+    /// A failed deploy never completes a promotion, so the detail reports the attempt instead.
+    /// Otherwise a promotion whose deploy failed would sit open with no sign it was ever tried. The
+    /// attempt stays listed after a later deploy ships the version, as history.
+    /// </summary>
+    [Fact]
+    public async Task PromotionDetail_ListsFailedDeployAttempts_AndStaysOpenUntilOneSucceeds()
+    {
+        await SeedPoliciesAsync();
+
+        var service = $"faildep-svc-{Guid.NewGuid():N}"[..20];
+
+        await CreatePromotionAsync(sourceEnv: "staging", targetEnv: "prod", version: "v8.1.0", service: service);
+        var candidate = FindCandidate(
+            (await Deserialize(await _adminClient.GetAsync("/api/promotions/?product=acme&targetEnv=prod&status=Pending")))
+                .GetProperty("candidates"), "v8.1.0", "prod");
+        Assert.NotNull(candidate);
+        var candidateId = candidate.Value.GetProperty("id").GetString()!;
+
+        var untried = await Deserialize(await _adminClient.GetAsync($"/api/promotions/{candidateId}"));
+        Assert.Empty(untried.GetProperty("failedDeployments").EnumerateArray());
+
+        var failed = await _apiKeyClient.PostAsJsonAsync(
+            "/api/deployments/events",
+            MakeDeployPayload("prod", version: "v8.1.0", status: "failed", service: service));
+        failed.EnsureSuccessStatusCode();
+        var failedId = (await Deserialize(failed)).GetProperty("id").GetString();
+        // A failed deploy of another version is not an attempt at this one.
+        (await _apiKeyClient.PostAsJsonAsync(
+            "/api/deployments/events",
+            MakeDeployPayload("prod", version: "v8.0.9", status: "failed", service: service))).EnsureSuccessStatusCode();
+
+        var detail = await Deserialize(await _adminClient.GetAsync($"/api/promotions/{candidateId}"));
+        Assert.Equal("Pending", detail.GetProperty("candidate").GetProperty("status").GetString());
+        var attempt = Assert.Single(detail.GetProperty("failedDeployments").EnumerateArray());
+        Assert.Equal(failedId, attempt.GetProperty("id").GetString());
+
+        (await _apiKeyClient.PostAsJsonAsync(
+            "/api/deployments/events",
+            MakeDeployPayload("prod", version: "v8.1.0", service: service))).EnsureSuccessStatusCode();
+        var shipped = await Deserialize(await _adminClient.GetAsync($"/api/promotions/{candidateId}"));
+        Assert.Equal("Deployed", shipped.GetProperty("candidate").GetProperty("status").GetString());
+        Assert.Single(shipped.GetProperty("failedDeployments").EnumerateArray());
+    }
+
+    /// <summary>
     /// A rejection says the version should not ship. If it ships anyway, the candidate has to record
     /// that — it closes as Deployed, the rejection stays in the approval trail, and the thread
     /// explains the contradiction rather than leaving someone to puzzle it out.
@@ -1176,14 +1203,7 @@ public class PromotionFlowTests : IClassFixture<PromotionFlowTests.FlowFactory>,
 
         public FlowFactory()
         {
-            _connection = new SqliteConnection("DataSource=:memory:");
-            _connection.Open();
-
-            var options = new DbContextOptionsBuilder<SqliteTestDbContext>()
-                .UseSqlite(_connection)
-                .Options;
-            using var db = new SqliteTestDbContext(options);
-            db.Database.EnsureCreated();
+            _connection = TestDatabase.Open();
         }
 
         protected override void ConfigureWebHost(IWebHostBuilder builder)

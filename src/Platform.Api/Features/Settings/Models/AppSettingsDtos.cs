@@ -11,7 +11,29 @@ namespace Platform.Api.Features.Settings.Models;
 public record AppSettingsDto(
     List<EnvironmentConfigDto> Environments,
     List<RoleConfigDto> Roles,
-    List<ActivityTemplateLineDto> ActivityTemplate);
+    List<ActivityTemplateLineDto> ActivityTemplate,
+    // Optional so settings rows written before it existed deserialize unchanged; null means defaults.
+    AnalyticsSettingsDto? Analytics = null);
+
+/// <summary>
+/// How the delivery report ties an incident to the deployment that caused it when the incident names
+/// neither a deploy nor a version: the deploy that was live when it started. Both knobs are echoed
+/// in the report's definitions.
+/// </summary>
+/// <param name="AttributionWindowDays">An incident this many days after a deploy still counts against
+/// it; 0 = no cap (whatever was live is to blame, however old).</param>
+/// <param name="RolloutToleranceMinutes">A deploy's time is usually when the pipeline finished; an
+/// incident that starts this many minutes earlier, mid-rollout, is still blamed on it rather than on
+/// the previous version.</param>
+public record AnalyticsSettingsDto(int AttributionWindowDays = 7, int RolloutToleranceMinutes = 15)
+{
+    public static readonly AnalyticsSettingsDto Default = new();
+
+    /// <summary>Clamped to sane bounds — a negative window or a week of tolerance is a typo, not a policy.</summary>
+    public AnalyticsSettingsDto Clean() => new(
+        Math.Clamp(AttributionWindowDays, 0, 365),
+        Math.Clamp(RolloutToleranceMinutes, 0, 24 * 60));
+}
 
 /// <summary>
 /// One configured environment. <paramref name="Color"/> is an admin-chosen accent used to
@@ -29,12 +51,22 @@ public record AppSettingsDto(
 // resolves through them (EnvironmentAliasResolver), so one physical environment stops arriving
 // as three. Null/empty means "no aliases" — the field is optional so settings rows written
 // before aliases existed deserialize unchanged.
+//
+// Retired marks an environment nothing deploys to any more. Its last events would otherwise keep
+// rendering as the "current" version there, long after they stopped being true, so every
+// current-state read path drops it (see RetiredEnvironmentQueryExtensions): the deployment matrix,
+// product cards, service search and detail, analytics' per-environment outputs and work items'
+// deployed-to lists. History keeps it — per-service history, event detail, activity feeds,
+// promotions and rollbacks still show its rows, under its label. Aliases still resolve to it, so a
+// straggling pipeline lands where an admin can see it rather than as a new environment. Optional,
+// so settings rows written before it existed deserialize as "not retired".
 public record EnvironmentConfigDto(
     string Key,
     string DisplayName,
     string? Color = null,
     bool IsProduction = false,
-    List<string>? Aliases = null);
+    List<string>? Aliases = null,
+    bool Retired = false);
 
 // Aliases are the other names producers use for this same role — Jira's "QA" field arriving as
 // `qa` on a ticket whose policy asks for a `qa-owner`. Every place that compares roles resolves
@@ -45,12 +77,33 @@ public record EnvironmentConfigDto(
 // directory groups (any of them). Empty means anybody in the directory. A picker filter, not a
 // write gate: ingest still records whoever a producer named.
 //
-// Both optional so settings rows written before they existed deserialize unchanged.
+// Team is the people who usually take this role — the QA team for `qa-owner`. The web client offers
+// them first in every assignment picker for the role (before anything is typed, and whether or not
+// they are in AssigneeGroups: an admin named them), and always lists them in the work-items queue's
+// "Assigned to" filter, with or without anything assigned. Presentation only, like AssigneeGroups.
+//
+// All three optional so settings rows written before they existed deserialize unchanged.
 public record RoleConfigDto(
     string Key,
     string DisplayName,
     List<string>? Aliases = null,
-    List<GroupRef>? AssigneeGroups = null);
+    List<GroupRef>? AssigneeGroups = null,
+    List<RoleTeamMemberDto>? Team = null);
+
+/// <summary>One person on a role's <see cref="RoleConfigDto.Team"/>. Stored with the email trimmed and
+/// the display name defaulting to it.</summary>
+public record RoleTeamMemberDto(string Email, string DisplayName);
+
+/// <summary>
+/// A change to one configured role (<c>PATCH /api/settings/roles/{key}</c>). A field left out (or
+/// null) keeps what is stored; an empty list clears it. So an agent can set the QA team without
+/// reading back and resending every other setting.
+/// </summary>
+public record RoleConfigPatchDto(
+    string? DisplayName = null,
+    List<string>? Aliases = null,
+    List<GroupRef>? AssigneeGroups = null,
+    List<RoleTeamMemberDto>? Team = null);
 
 public record ActivityTemplateLineDto(string Template, string Style);
 

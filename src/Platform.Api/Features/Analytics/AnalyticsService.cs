@@ -1,7 +1,10 @@
 using Microsoft.EntityFrameworkCore;
 using Platform.Api.Features.Analytics.Models;
+using Platform.Api.Features.Deployments;
+using Platform.Api.Features.Deployments.Models;
 using Platform.Api.Features.Promotions.Models;
 using Platform.Api.Features.Settings;
+using Platform.Api.Features.Settings.Models;
 using Platform.Api.Infrastructure.Persistence;
 
 namespace Platform.Api.Features.Analytics;
@@ -21,6 +24,7 @@ public class AnalyticsService
 {
     private readonly PlatformDbContext _db;
     private readonly AppSettingsService _settings;
+    private AppSettingsDto? _settingsMemo;
 
     private static readonly PromotionStatus[] OpenStatuses =
         [PromotionStatus.Pending, PromotionStatus.Approved, PromotionStatus.Deploying];
@@ -45,11 +49,20 @@ public class AnalyticsService
         var span = rangeTo - rangeFrom;
         var prevFrom = rangeFrom - span;
 
+        // A removal takes a service out of an environment; it is not a deploy, and counting it would
+        // book it as a failed one.
         var query = _db.DeployEvents.AsNoTracking()
-            .Where(e => e.DeployedAt >= prevFrom && e.DeployedAt < rangeTo);
+            .Where(e => e.DeployedAt >= prevFrom && e.DeployedAt < rangeTo)
+            .Where(e => e.Status != DeployEventStatuses.Removed);
         if (!string.IsNullOrWhiteSpace(product)) query = query.Where(e => e.Product == product);
         if (!string.IsNullOrWhiteSpace(serviceName)) query = query.Where(e => e.Service == serviceName);
         if (!string.IsNullOrWhiteSpace(environment)) query = query.Where(e => e.Environment == environment);
+
+        // Per-environment series leave retired environments out, like every other per-environment
+        // view. Only that grouping: a service's or product's cadence over a past window genuinely
+        // included its deploys there, and rewriting those totals would make old periods disagree
+        // with themselves.
+        if (groupBy == "environment") query = query.ExcludingRetiredEnvironments(await RetiredAsync(ct));
 
         var events = await query
             .Select(e => new EventRow(e.Id, e.Product, e.Service, e.Environment,
@@ -199,22 +212,32 @@ public class AnalyticsService
     {
         var (rangeFrom, rangeTo) = ResolveRange(from, to);
 
+        // A retired environment is neither a column nor a cell: its checkmarks would claim a story is
+        // "on" an environment nothing runs any more. Dropped from the deploy rows, the open
+        // candidates and the column universe alike, so a story whose only activity was there is not
+        // selected either. Coverage (below) still counts every deployment in the window — it answers
+        // "how many deploys carried a ticket", which is not a per-environment question.
+        var retired = await RetiredAsync(ct);
+
         // Full deploy history for the product's tickets — checkmarks show complete state,
         // the window only selects which stories appear.
         var deployRows = await _db.DeployEventWorkItems.AsNoTracking()
             .Where(w => w.Product == product)
-            .Join(_db.DeployEvents.AsNoTracking(), w => w.DeployEventId, e => e.Id,
+            .Join(_db.DeployEvents.AsNoTracking().ExcludingRetiredEnvironments(retired), w => w.DeployEventId, e => e.Id,
                 (w, e) => new { w.WorkItemKey, w.Title, w.Url, e.Environment, e.Version, e.Status, e.DeployedAt, EventId = e.Id })
             .ToListAsync(ct);
 
-        var candidateRows = await _db.PromotionWorkItems.AsNoTracking()
-            .Where(w => w.Product == product)
-            .Join(_db.PromotionCandidates.AsNoTracking(), w => w.CandidateId, c => c.Id,
-                (w, c) => new { w.WorkItemKey, w.Title, w.Url, c.TargetEnv, c.Status, c.Version, c.CreatedAt, c.ApprovedAt, CandidateId = c.Id })
-            .Where(x => OpenStatuses.Contains(x.Status))
-            .ToListAsync(ct);
+        var candidateRows = (await _db.PromotionWorkItems.AsNoTracking()
+                .Where(w => w.Product == product)
+                .Join(_db.PromotionCandidates.AsNoTracking(), w => w.CandidateId, c => c.Id,
+                    (w, c) => new { w.WorkItemKey, w.Title, w.Url, c.TargetEnv, c.Status, c.Version, c.CreatedAt, c.ApprovedAt, CandidateId = c.Id })
+                .Where(x => OpenStatuses.Contains(x.Status))
+                .ToListAsync(ct))
+            .Where(x => !retired.Contains(x.TargetEnv))
+            .ToList();
 
         var envUniverse = await _db.DeployEvents.AsNoTracking()
+            .ExcludingRetiredEnvironments(retired)
             .Where(e => e.Product == product)
             .Select(e => e.Environment)
             .Distinct()
@@ -388,8 +411,12 @@ public class AnalyticsService
     {
         var (rangeFrom, rangeTo) = ResolveRange(from, to);
 
+        // Every output here is per environment (the grain is work item × environment), so a retired
+        // environment's grains are dropped up front — from the stats, the buckets, the slowest list
+        // and the coverage counts together, which keeps them consistent with each other.
         var query = _db.DeployEventWorkItems.AsNoTracking()
-            .Join(_db.DeployEvents.AsNoTracking(), w => w.DeployEventId, e => e.Id,
+            .Join(_db.DeployEvents.AsNoTracking().ExcludingRetiredEnvironments(await RetiredAsync(ct)),
+                w => w.DeployEventId, e => e.Id,
                 (w, e) => new { w.WorkItemKey, w.CommittedAt, e.Product, e.Service, e.Environment, e.Status, e.DeployedAt, EventId = e.Id });
         if (!string.IsNullOrWhiteSpace(product)) query = query.Where(x => x.Product == product);
         if (!string.IsNullOrWhiteSpace(serviceName)) query = query.Where(x => x.Service == serviceName);
@@ -397,21 +424,24 @@ public class AnalyticsService
 
         // Grain: first successful deploy per (work item, environment). Load the full history for
         // matching rows so "first" is genuinely first, then keep grains that landed in the window.
+        // Grain key carries the product: the same ticket key shipped by two products is two grains,
+        // not one dated by whichever product landed first. Invisible per product; it matters as soon
+        // as the filter spans several.
         var rows = (await query.Where(x => x.DeployedAt < rangeTo).ToListAsync(ct))
             .Where(x => IsSucceeded(x.Status))
-            .GroupBy(x => (Key: x.WorkItemKey, Env: x.Environment),
-                comparer: TupleKeyComparer.Instance)
+            .GroupBy(x => (x.Product, Key: x.WorkItemKey, Env: x.Environment),
+                comparer: GrainKeyComparer.Instance)
             .Select(g =>
             {
                 var first = g.OrderBy(x => x.DeployedAt).First();
-                return new { g.Key.Key, g.Key.Env, first.DeployedAt, first.CommittedAt, first.EventId };
+                return new { g.Key.Product, g.Key.Key, g.Key.Env, first.DeployedAt, first.CommittedAt, first.EventId };
             })
             .Where(x => x.DeployedAt >= rangeFrom)
             .ToList();
 
         var measurable = rows.Where(x => x.CommittedAt is not null).ToList();
-        var distinctItems = rows.Select(x => x.Key).Distinct(StringComparer.OrdinalIgnoreCase).Count();
-        var distinctWithStart = measurable.Select(x => x.Key).Distinct(StringComparer.OrdinalIgnoreCase).Count();
+        var distinctItems = rows.Select(x => (x.Product, x.Key)).Distinct(ItemKeyComparer.Instance).Count();
+        var distinctWithStart = measurable.Select(x => (x.Product, x.Key)).Distinct(ItemKeyComparer.Instance).Count();
 
         var environments = await OrderEnvironments(
             rows.Select(x => x.Env).Distinct(StringComparer.OrdinalIgnoreCase).ToList(), ct);
@@ -466,71 +496,47 @@ public class AnalyticsService
         return (resolvedFrom, resolvedTo);
     }
 
+    // One settings read per request, shared by the environment ordering and the retired set — the
+    // matrix needs both, and reading the row twice could let a concurrent save split them.
+    private async Task<AppSettingsDto> SettingsAsync(CancellationToken ct)
+        => _settingsMemo ??= await _settings.GetSettings(ct);
+
+    /// <summary>Retired environments (see <see cref="EnvironmentConfigDto.Retired"/>), left out of every per-environment output.</summary>
+    private async Task<IReadOnlySet<string>> RetiredAsync(CancellationToken ct)
+        => AppSettingsService.RetiredEnvironmentKeys((await SettingsAsync(ct)).Environments);
+
+    // Keys settings don't know get the default name-based stage order (dev < test < staging
+    // < prod) instead of the alphabetical accident that would put "prod" before "test".
     private async Task<List<string>> OrderEnvironments(List<string> universe, CancellationToken ct)
-    {
-        var settings = await _settings.GetSettings(ct);
-        var configured = settings.Environments.Select(e => e.Key).ToList();
-        var known = configured
-            .Where(k => universe.Contains(k, StringComparer.OrdinalIgnoreCase))
-            .ToList();
-        // Keys settings don't know get the default name-based stage order (dev < test < staging
-        // < prod) instead of the alphabetical accident that would put "prod" before "test".
-        var unknown = universe
-            .Where(k => !configured.Contains(k, StringComparer.OrdinalIgnoreCase))
-            .OrderBy(EnvironmentStage.DefaultRank)
-            .ThenBy(k => k, StringComparer.OrdinalIgnoreCase);
-        known.AddRange(unknown);
-        return known;
-    }
+        => EnvironmentOrdering.Order(universe, (await SettingsAsync(ct)).Environments.Select(e => e.Key));
 
-    private static bool IsSucceeded(string status)
-        => string.Equals(status, "succeeded", StringComparison.OrdinalIgnoreCase);
-
-    private enum EventKind { Counted, Failed, Rollback, RollbackCounted, Skipped }
+    private static bool IsSucceeded(string status) => DeployEventRows.IsSucceeded(status);
 
     private static EventKind Classify(EventRow e, bool includeRollbacks, bool includeRedeploys)
-    {
-        if (e.IsRollback)
-            return includeRollbacks && IsSucceeded(e.Status) ? EventKind.RollbackCounted : EventKind.Rollback;
-        if (!IsSucceeded(e.Status)) return EventKind.Failed;
-        var isRedeploy = e.PreviousVersion is not null && e.Version == e.PreviousVersion;
-        if (isRedeploy && !includeRedeploys) return EventKind.Skipped;
-        return EventKind.Counted;
-    }
+        => DeployEventRows.Classify(e, includeRollbacks, includeRedeploys);
 
-    /// <summary>All buckets in [from, to) pre-created so charts get explicit zeros, keyed by label.</summary>
+    /// <summary>All buckets in [from, to] pre-created so charts get explicit zeros, keyed by label.</summary>
     private static Dictionary<string, FrequencyBucketMutable> BuildBuckets(
         DateTimeOffset from, DateTimeOffset to, string bucket, TimeZoneInfo tz)
     {
+        // Inclusive of the bucket holding `to`: the day/week charts have always drawn that trailing
+        // bucket, and the delivery report (which wants strict half-open) builds its own labels.
         var result = new Dictionary<string, FrequencyBucketMutable>();
-        var cursor = LocalBucketDate(from, bucket, tz);
+        var cursor = AnalyticsCalendar.LocalBucketDate(from, bucket, tz);
         var endLocal = TimeZoneInfo.ConvertTime(to, tz).Date;
-        var step = bucket == "week" ? 7 : 1;
         while (cursor <= endLocal)
         {
             var label = cursor.ToString("yyyy-MM-dd");
             result[label] = new FrequencyBucketMutable(label);
-            cursor = cursor.AddDays(step);
+            cursor = AnalyticsCalendar.Step(cursor, bucket);
         }
         return result;
     }
 
     private static string BucketStart(DateTimeOffset at, string bucket, TimeZoneInfo tz)
-        => LocalBucketDate(at, bucket, tz).ToString("yyyy-MM-dd");
-
-    private static DateTime LocalBucketDate(DateTimeOffset at, string bucket, TimeZoneInfo tz)
-    {
-        var date = TimeZoneInfo.ConvertTime(at, tz).Date;
-        if (bucket == "week")
-            date = date.AddDays(-(((int)date.DayOfWeek + 6) % 7)); // back to Monday
-        return date;
-    }
+        => AnalyticsCalendar.BucketStart(at, bucket, tz);
 
     private static double? Round(double? value) => value is null ? null : Math.Round(value.Value, 1);
-
-    private sealed record EventRow(
-        Guid Id, string Product, string Service, string Environment,
-        string Version, string? PreviousVersion, bool IsRollback, string Status, DateTimeOffset DeployedAt);
 
     /// <summary>Mutable bucket accumulator; converted to the immutable DTO implicitly.</summary>
     private sealed class FrequencyBucketMutable
@@ -544,16 +550,28 @@ public class AnalyticsService
             => new(b.Start, b.Count, b.Failed, b.Rollbacks);
     }
 
-    private sealed class TupleKeyComparer : IEqualityComparer<(string Key, string Env)>
+    private sealed class GrainKeyComparer : IEqualityComparer<(string Product, string Key, string Env)>
     {
-        public static readonly TupleKeyComparer Instance = new();
-        public bool Equals((string Key, string Env) x, (string Key, string Env) y)
-            => string.Equals(x.Key, y.Key, StringComparison.OrdinalIgnoreCase)
+        public static readonly GrainKeyComparer Instance = new();
+        public bool Equals((string Product, string Key, string Env) x, (string Product, string Key, string Env) y)
+            => string.Equals(x.Product, y.Product, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(x.Key, y.Key, StringComparison.OrdinalIgnoreCase)
             && string.Equals(x.Env, y.Env, StringComparison.OrdinalIgnoreCase);
-        public int GetHashCode((string Key, string Env) obj)
+        public int GetHashCode((string Product, string Key, string Env) obj)
             => HashCode.Combine(
+                obj.Product.ToUpperInvariant(),
                 obj.Key.ToUpperInvariant(),
                 obj.Env.ToUpperInvariant());
+    }
+
+    private sealed class ItemKeyComparer : IEqualityComparer<(string Product, string Key)>
+    {
+        public static readonly ItemKeyComparer Instance = new();
+        public bool Equals((string Product, string Key) x, (string Product, string Key) y)
+            => string.Equals(x.Product, y.Product, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(x.Key, y.Key, StringComparison.OrdinalIgnoreCase);
+        public int GetHashCode((string Product, string Key) obj)
+            => HashCode.Combine(obj.Product.ToUpperInvariant(), obj.Key.ToUpperInvariant());
     }
 
     /// <summary>Accumulates one matrix row across deploy history and open candidates.</summary>

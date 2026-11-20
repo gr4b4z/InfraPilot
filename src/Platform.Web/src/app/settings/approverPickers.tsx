@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { X } from 'lucide-react';
 import { api, type PromotionPolicyGroupRef } from '@/lib/api';
+import { DirectoryUnavailableNotice } from '@/components/ui/DirectoryUnavailableNotice';
 import { inputClass, inputStyle } from './formStyles';
 
 /**
@@ -51,6 +52,50 @@ function ChipRow({
   );
 }
 
+type DirectoryUser = { id: string; displayName: string; email: string };
+
+/**
+ * Debounced directory search against /promotions/users/search, shared by the user pickers. Under two
+ * characters it searches nothing. `clear` empties the hits once one has been picked.
+ */
+function useDirectoryUserSearch(query: string) {
+  const [results, setResults] = useState<DirectoryUser[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [unavailable, setUnavailable] = useState(false);
+
+  useEffect(() => {
+    const q = query.trim();
+    if (q.length < 2) {
+      setResults([]);
+      return;
+    }
+    let cancelled = false;
+    setSearching(true);
+    const timer = setTimeout(async () => {
+      try {
+        const res = await api.searchPromotionUsers(q);
+        if (!cancelled) {
+          setResults(res.users || []);
+          setUnavailable(res.directoryUnavailable === true);
+        }
+      } catch {
+        if (!cancelled) {
+          setResults([]);
+          setUnavailable(true);
+        }
+      } finally {
+        if (!cancelled) setSearching(false);
+      }
+    }, 250);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [query]);
+
+  return { results, searching, unavailable, clear: () => setResults([]) };
+}
+
 /**
  * Typeahead picker for user emails. Debounced search against /promotions/users/search; selecting
  * a hit adds the user's *email* to `values` (that's what the gate matches on). Falls back to
@@ -66,43 +111,16 @@ export function UserPicker({
   placeholder?: string;
 }) {
   const [query, setQuery] = useState('');
-  const [results, setResults] = useState<
-    Array<{ id: string; displayName: string; email: string }>
-  >([]);
-  const [searching, setSearching] = useState(false);
+  const { results, searching, unavailable, clear } = useDirectoryUserSearch(query);
   const [focused, setFocused] = useState(false);
   const blurTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => {
-    const q = query.trim();
-    if (q.length < 2) {
-      setResults([]);
-      return;
-    }
-    let cancelled = false;
-    setSearching(true);
-    const timer = setTimeout(async () => {
-      try {
-        const res = await api.searchPromotionUsers(q);
-        if (!cancelled) setResults(res.users || []);
-      } catch {
-        if (!cancelled) setResults([]);
-      } finally {
-        if (!cancelled) setSearching(false);
-      }
-    }, 250);
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [query]);
 
   const add = (email: string) => {
     const v = email.trim();
     if (!v || values.includes(v)) return;
     onChange([...values, v]);
     setQuery('');
-    setResults([]);
+    clear();
   };
 
   const remove = (v: string) => onChange(values.filter((x) => x !== v));
@@ -145,6 +163,9 @@ export function UserPicker({
                 Searching...
               </div>
             )}
+            {!searching && unavailable && (
+              <DirectoryUnavailableNotice detail="Enter the full email address instead." />
+            )}
             {!searching && results.length === 0 && (
               <button
                 type="button"
@@ -154,9 +175,11 @@ export function UserPicker({
                 style={{ color: 'var(--text-primary)' }}
               >
                 <span className="font-medium">Use &ldquo;{trimmed}&rdquo; as email</span>
-                <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
-                  {manualOk ? 'No directory matches — added as-is.' : 'No directory matches.'}
-                </span>
+                {!unavailable && (
+                  <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                    {manualOk ? 'No directory matches — added as-is.' : 'No directory matches.'}
+                  </span>
+                )}
               </button>
             )}
             {!searching &&
@@ -182,6 +205,132 @@ export function UserPicker({
 }
 
 /**
+ * Typeahead picker for a list of people kept with their names — a participant role's team. Same
+ * directory search and manual-email fallback as {@link UserPicker}, but each pick stores
+ * `{ email, displayName }`, so the team reads as names wherever it is offered rather than as
+ * addresses. Chips show the name, with the email on hover.
+ */
+export function PersonPicker({
+  values,
+  onChange,
+  placeholder = 'Search directory (name or email)...',
+}: {
+  values: { email: string; displayName: string }[];
+  onChange: (next: { email: string; displayName: string }[]) => void;
+  placeholder?: string;
+}) {
+  const [query, setQuery] = useState('');
+  const { results, searching, unavailable, clear } = useDirectoryUserSearch(query);
+  const [focused, setFocused] = useState(false);
+  const blurTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const has = (email: string) => values.some((p) => p.email.toLowerCase() === email.toLowerCase());
+
+  const add = (email: string, displayName?: string) => {
+    const v = email.trim();
+    if (!v || has(v)) return;
+    onChange([...values, { email: v, displayName: (displayName ?? '').trim() || v }]);
+    setQuery('');
+    clear();
+  };
+
+  const remove = (email: string) => onChange(values.filter((p) => p.email !== email));
+
+  const trimmed = query.trim();
+  const manualOk = trimmed.includes('@') && trimmed.includes('.');
+
+  return (
+    <div className="space-y-1.5">
+      <ChipRow
+        values={values.map((p) => p.email)}
+        label={(email) => values.find((p) => p.email === email)?.displayName || email}
+        onRemove={remove}
+      />
+      <div className="relative">
+        <input
+          type="text"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onFocus={() => setFocused(true)}
+          onBlur={() => {
+            blurTimer.current = setTimeout(() => setFocused(false), 150);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              if (results.length === 0 && manualOk) add(trimmed);
+            }
+          }}
+          placeholder={placeholder}
+          className={`${inputClass} w-full`}
+          style={inputStyle}
+        />
+        {focused && trimmed.length >= 2 && (
+          <div
+            className="absolute z-20 mt-1 top-full left-0 right-0 max-h-48 overflow-y-auto rounded-lg border shadow-lg"
+            style={{ backgroundColor: 'var(--bg-primary)', borderColor: 'var(--border-color)' }}
+            onMouseDown={() => {
+              if (blurTimer.current) clearTimeout(blurTimer.current);
+            }}
+          >
+            {searching && (
+              <div className="px-3 py-2 text-[12px]" style={{ color: 'var(--text-muted)' }}>
+                Searching...
+              </div>
+            )}
+            {!searching && unavailable && (
+              <DirectoryUnavailableNotice detail="Enter the full email address instead." />
+            )}
+            {!searching && results.length === 0 && (
+              <button
+                type="button"
+                onClick={() => add(trimmed)}
+                disabled={!manualOk}
+                className="w-full text-left px-3 py-2 text-[13px] flex flex-col transition-opacity hover:opacity-80 disabled:opacity-40"
+                style={{ color: 'var(--text-primary)' }}
+              >
+                <span className="font-medium">Use &ldquo;{trimmed}&rdquo; as email</span>
+                {!unavailable && (
+                  <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                    {manualOk ? 'No directory matches — added as-is.' : 'No directory matches.'}
+                  </span>
+                )}
+              </button>
+            )}
+            {!searching &&
+              results.map((u) => {
+                const already = has(u.email);
+                return (
+                  <button
+                    key={u.id}
+                    type="button"
+                    onClick={() => add(u.email, u.displayName)}
+                    disabled={already}
+                    className="w-full text-left px-3 py-2 text-[13px] flex flex-col transition-opacity hover:opacity-80 disabled:opacity-50"
+                    style={{ color: 'var(--text-primary)' }}
+                  >
+                    <span className="font-medium truncate">
+                      {u.displayName}
+                      {already && (
+                        <span className="font-normal" style={{ color: 'var(--text-muted)' }}>
+                          {' '}· already added
+                        </span>
+                      )}
+                    </span>
+                    <span className="text-[11px] truncate" style={{ color: 'var(--text-muted)' }}>
+                      {u.email}
+                    </span>
+                  </button>
+                );
+              })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
  * Typeahead picker for AD groups. Debounced search against /promotions/groups/search; selecting a
  * hit stores both the group's object *id* (the approval-time Graph lookup keys off the id) and its
  * display *name* as `{ id, name }`. The chip label shows the name, so a saved policy reloads showing
@@ -198,6 +347,7 @@ export function GroupPicker({
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<Array<{ id: string; displayName: string }>>([]);
   const [searching, setSearching] = useState(false);
+  const [unavailable, setUnavailable] = useState(false);
   const [focused, setFocused] = useState(false);
   const blurTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -212,9 +362,15 @@ export function GroupPicker({
     const timer = setTimeout(async () => {
       try {
         const res = await api.searchPromotionGroups(q);
-        if (!cancelled) setResults(res.groups || []);
+        if (!cancelled) {
+          setResults(res.groups || []);
+          setUnavailable(res.directoryUnavailable === true);
+        }
       } catch {
-        if (!cancelled) setResults([]);
+        if (!cancelled) {
+          setResults([]);
+          setUnavailable(true);
+        }
       } finally {
         if (!cancelled) setSearching(false);
       }
@@ -276,6 +432,11 @@ export function GroupPicker({
                 Searching...
               </div>
             )}
+            {/* The approval-time membership lookup keys off the object id only a picked hit
+                carries — a typed name just matches role claims — so steer towards trying again. */}
+            {!searching && unavailable && (
+              <DirectoryUnavailableNotice detail="Try again later to pick the group from the list." />
+            )}
             {!searching && results.length === 0 && (
               <button
                 type="button"
@@ -284,9 +445,11 @@ export function GroupPicker({
                 style={{ color: 'var(--text-primary)' }}
               >
                 <span className="font-medium">Use &ldquo;{trimmed}&rdquo; as group</span>
-                <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
-                  No directory matches — added as-is.
-                </span>
+                {!unavailable && (
+                  <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                    No directory matches — added as-is.
+                  </span>
+                )}
               </button>
             )}
             {!searching &&

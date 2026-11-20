@@ -5,6 +5,10 @@ import { ENV_COLOR_PRESETS, autoEnvColor, envColorStyles, normalizeHexColor } fr
 import { AnchoredPopover } from '@/components/ui/AnchoredPopover';
 import { EnvironmentMergeSettings } from './EnvironmentMergeSettings';
 
+// Shown as the Retired column's tooltip; the paragraph above the list says the same in prose.
+const RETIRED_HELP =
+  'Hidden from current-state views — deployments matrix, product cards, service detail, analytics, work items. History is kept.';
+
 export function EnvironmentsSettings() {
   const { environments, setEnvironments } = useSettingsStore();
   const [items, setItems] = useState<EnvironmentConfig[]>(environments);
@@ -32,6 +36,7 @@ export function EnvironmentsSettings() {
         // Blank, duplicate and self-referential entries are dropped by the server as well; doing it
         // here too means the list the admin is left looking at is the list that was saved.
         aliases: parseAliases(i.aliases, i.key),
+        retired: i.retired ?? false,
       }));
     setSaving(true);
     setError(null);
@@ -99,16 +104,20 @@ export function EnvironmentsSettings() {
           hyphens. Aliases only affect what arrives next — use <strong>Merge environments</strong>{' '}
           below to bring existing history across.
         </p>
+        <p className="text-[13px] mt-2" style={{ color: 'var(--text-muted)' }}>
+          <strong>Retired</strong> environments are hidden from current-state views — deployments
+          matrix, product cards, service detail, analytics, work items. History is kept.
+        </p>
       </div>
 
-      {/* Six columns — three of them free-text — need ~680px before the inputs stop being usable,
+      {/* Seven columns — three of them free-text — need ~740px before the inputs stop being usable,
           so on a narrow screen the editor scrolls sideways rather than compressing. The colour
           picker escapes this container through a portal (see ColorCell) so the scroll box can't
           clip it. */}
       <div className="overflow-x-auto">
-      <div className="space-y-1.5 min-w-[680px]">
+      <div className="space-y-1.5 min-w-[740px]">
         <div
-          className="grid grid-cols-[28px_1fr_1fr_1.3fr_150px_44px_32px] gap-2 px-1 text-[11px] font-medium uppercase tracking-wider"
+          className="grid grid-cols-[28px_1fr_1fr_1.3fr_150px_44px_56px_32px] gap-2 px-1 text-[11px] font-medium uppercase tracking-wider"
           style={{ color: 'var(--text-muted)' }}
         >
           <span />
@@ -117,6 +126,7 @@ export function EnvironmentsSettings() {
           <span title="Other names your pipelines use for this environment">Aliases</span>
           <span>Colour</span>
           <span title="Production stage">Prod</span>
+          <span title={RETIRED_HELP}>Retired</span>
           <span />
         </div>
 
@@ -127,7 +137,7 @@ export function EnvironmentsSettings() {
             onDragStart={() => handleDragStart(index)}
             onDragOver={(e) => handleDragOver(e, index)}
             onDragEnd={handleDragEnd}
-            className="grid grid-cols-[28px_1fr_1fr_1.3fr_150px_44px_32px] gap-2 items-center rounded-lg p-1.5 transition-colors"
+            className="grid grid-cols-[28px_1fr_1fr_1.3fr_150px_44px_56px_32px] gap-2 items-center rounded-lg p-1.5 transition-colors"
             style={{ backgroundColor: dragIndex === index ? 'var(--accent-muted)' : undefined }}
           >
             <span className="cursor-grab flex items-center justify-center" style={{ color: 'var(--text-muted)' }}>
@@ -190,6 +200,15 @@ export function EnvironmentsSettings() {
                 onChange={(e) => updateItem(index, 'isProduction', e.target.checked)}
                 className="accent-[var(--accent)]"
                 aria-label={`Mark ${item.key || 'environment'} as production stage`}
+              />
+            </label>
+            <label className="flex items-center justify-center cursor-pointer" title={RETIRED_HELP}>
+              <input
+                type="checkbox"
+                checked={item.retired ?? false}
+                onChange={(e) => updateItem(index, 'retired', e.target.checked)}
+                className="accent-[var(--accent)]"
+                aria-label={`Mark ${item.key || 'environment'} as retired`}
               />
             </label>
             <button

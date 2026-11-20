@@ -13,10 +13,13 @@ import type {
   PromotionApprovalProgress,
   EligibleRequirement,
   WorkItemContext,
+  PromotionFreeze,
 } from '@/lib/api';
+import { FreezeNotice } from './FreezeNotice';
 import { useAuthStore } from '@/stores/authStore';
+import { useSettingsStore } from '@/stores/settingsStore';
 import { useDocumentTitle } from '@/lib/pageTitle';
-import { roleDisplay, useConfiguredRoles } from '@/lib/roleLabel';
+import { matchTeam, roleDisplay, useConfiguredRoles, useRoleTeam, withoutTeam } from '@/lib/roleLabel';
 import { formatDistanceToNow, format } from 'date-fns';
 import {
   AlertTriangle,
@@ -39,6 +42,7 @@ import {
   MessageSquare,
   Edit2,
   Trash2,
+  Snowflake,
   Undo2,
   Lock,
 } from 'lucide-react';
@@ -48,6 +52,7 @@ import { ApprovalEffectNotice } from '@/components/promotions/ApprovalEffect';
 import { approvalDeploys, approvalEffectSentence } from '@/lib/approvalEffect';
 import { WorkItemParticipants } from '@/components/promotions/WorkItemParticipants';
 import { AssignToAllWorkItems } from '@/components/promotions/AssignToAllWorkItems';
+import { ApproveAllWorkItems } from '@/components/promotions/ApproveAllWorkItems';
 import { WorkItemTraits } from '@/components/work-items/WorkItemTraits';
 import {
   MissingRolesBadge,
@@ -55,6 +60,7 @@ import {
   WorkItemsNeedingAttentionBadge,
 } from '@/components/promotions/MissingRoles';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
+import { DirectoryUnavailableNotice } from '@/components/ui/DirectoryUnavailableNotice';
 import { KeyboardList } from '@/components/ui/KeyboardList';
 import { useKeyboardListRow } from '@/hooks/keyboardList';
 import { useEntityRefresh } from '@/hooks/useEntityEvents';
@@ -69,6 +75,7 @@ import {
 } from '@/lib/workItem';
 import { refreshMyTasks } from '@/stores/myTasksStore';
 import { HelpButton } from '@/components/guide/HelpButton';
+import { LastKnownGoodRollback } from '@/app/deployments/LastKnownGoodRollback';
 
 // Terminal statuses: no further mutations are allowed once one of these is reached.
 const TERMINAL_STATUSES: PromotionStatus[] = ['Deployed', 'Rejected', 'Superseded'];
@@ -156,10 +163,16 @@ export function PromotionDetailPage() {
   const [approvalProgress, setApprovalProgress] = useState<PromotionApprovalProgress | null>(null);
   const [eligibleRequirements, setEligibleRequirements] = useState<EligibleRequirement[]>([]);
   const [bypass, setBypass] = useState<{ byName: string; at: string; reason: string | null } | null>(null);
+  const [freeze, setFreeze] = useState<Omit<PromotionFreeze, 'heldCandidates'> | null>(null);
   const [canCancelApproval, setCanCancelApproval] = useState(false);
   // The deploy event that put this version live in the target env — set only once the
   // promotion is Deployed, and the link the "Deployed" timestamp points at.
   const [deploymentEventId, setDeploymentEventId] = useState<string | null>(null);
+  // Failed attempts to deploy this version to the target env, newest first. A failed deploy never
+  // completes the promotion, so this is the only trace on the page that one was tried.
+  const [failedDeployments, setFailedDeployments] = useState<
+    { id: string; deployedAt: string; source: string }[]
+  >([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState(false);
@@ -185,8 +198,10 @@ export function PromotionDetailPage() {
         setApprovalProgress(data.approvalProgress ?? null);
         setEligibleRequirements(data.eligibleRequirements || []);
         setBypass(data.bypass ?? null);
+        setFreeze(data.freeze ?? null);
         setCanCancelApproval(data.canCancelApproval ?? false);
         setDeploymentEventId(data.deploymentEventId ?? null);
+        setFailedDeployments(data.failedDeployments ?? []);
         return data;
       })
       .catch((err) => {
@@ -278,6 +293,25 @@ export function PromotionDetailPage() {
       fetchData();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Bypass failed');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  // Admin override of reject: turns down a Pending candidate without the admin being one of its
+  // approvers. Same outcome as a normal rejection, so the same "done" latch; the reason is required
+  // (the dialog that calls this won't confirm without one).
+  const handleAdminReject = async (reason: string) => {
+    setActionLoading(true);
+    setError(null);
+    try {
+      await api.adminRejectPromotion(id!, reason);
+      setActionDone('Rejected');
+      fetchData();
+      // It may have been sitting in somebody's — possibly this admin's — awaiting-me list.
+      refreshMyTasks();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Reject failed');
     } finally {
       setActionLoading(false);
     }
@@ -550,6 +584,15 @@ export function PromotionDetailPage() {
         </div>
       )}
 
+      {failedDeployments.length > 0 && (
+        <FailedDeploymentsBanner
+          attempts={failedDeployments}
+          version={candidate.version}
+          targetEnv={candidate.targetEnv}
+          open={!isReadOnly}
+        />
+      )}
+
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Left column */}
         <div className="lg:col-span-2 space-y-4">
@@ -559,13 +602,16 @@ export function PromotionDetailPage() {
           <WorkItemsCard
             candidate={candidate}
             workItems={bundleWorkItems}
+            requiresApproval={approvalProgress?.requiresApproval ?? true}
             onChanged={fetchData}
           />
 
           {/* Promotion approval — the live gate progress (per step / per requirement), who has
              approved each gate, and an Approve button on every gate the current user can still
              clear, all in one card. Progress and history are visible to everyone; the controls
-             appear only when the current user can act. */}
+             appear only when the current user can act. A Promotion Freeze holding this Pending
+             candidate is announced right above it, before the approver acts. */}
+          {freeze && candidate.status === 'Pending' && <FreezeNotice freeze={freeze} />}
           <div data-guide-anchor="promotion-approval-card">
             <PromotionApprovalCard
               candidate={candidate}
@@ -575,6 +621,7 @@ export function PromotionDetailPage() {
               actionLoading={actionLoading}
               onAction={handleAction}
               onBypass={handleBypass}
+              onAdminReject={handleAdminReject}
               onCancelApproval={handleCancelApproval}
               canCancelApproval={canCancelApproval}
               isAdmin={isAdmin}
@@ -764,6 +811,77 @@ export function PromotionDetailPage() {
   );
 }
 
+/**
+ * Failed attempts to deploy the promoted version to the target environment. On an open promotion it
+ * is a warning: the deploy was tried and failed, and the promotion stays open until one succeeds.
+ * On a closed one it is history, kept because "it took three tries" is worth knowing when debugging.
+ * Each attempt links to its deploy event, which carries the pipeline run.
+ */
+function FailedDeploymentsBanner({
+  attempts,
+  version,
+  targetEnv,
+  open,
+}: {
+  attempts: { id: string; deployedAt: string; source: string }[];
+  version: string;
+  targetEnv: string;
+  open: boolean;
+}) {
+  const getDisplayName = useSettingsStore((s) => s.getDisplayName);
+  const latest = attempts[0];
+  const count = attempts.length >= 20 ? '20+' : String(attempts.length);
+  const tone = open ? 'var(--danger)' : 'var(--text-muted)';
+  return (
+    <div
+      className="rounded-xl border p-4 flex items-start gap-3"
+      style={{
+        borderColor: open ? 'var(--danger)' : 'var(--border-color)',
+        backgroundColor: open ? 'var(--danger-bg)' : 'var(--bg-secondary)',
+      }}
+    >
+      <AlertTriangle size={18} style={{ color: tone, flexShrink: 0, marginTop: 1 }} />
+      <div className="text-[13px] min-w-0">
+        <p style={{ color: 'var(--text-primary)' }}>
+          {open ? (
+            <>
+              Deploying <b>v{version}</b> to <b>{getDisplayName(targetEnv)}</b> failed
+              {attempts.length > 1 ? <> {count} times</> : null}, most recently{' '}
+              {formatDistanceToNow(new Date(latest.deployedAt), { addSuffix: true })}. A failed deploy
+              does not complete the promotion, so it stays open until a deploy succeeds.
+            </>
+          ) : (
+            <>
+              {count} failed {attempts.length === 1 ? 'attempt' : 'attempts'} to deploy <b>v{version}</b> to{' '}
+              <b>{getDisplayName(targetEnv)}</b>.
+            </>
+          )}
+        </p>
+        <ul className="mt-1.5 space-y-0.5 text-[12px]" style={{ color: 'var(--text-secondary)' }}>
+          {attempts.slice(0, 5).map((a) => (
+            <li key={a.id}>
+              <Link to={`/deployments/events/${a.id}`} className="hover:underline" style={{ color: tone }}>
+                {format(new Date(a.deployedAt), 'MMM d, yyyy HH:mm')}
+              </Link>
+              <span style={{ color: 'var(--text-muted)' }}> · {a.source}</span>
+            </li>
+          ))}
+          {attempts.length > 5 && (
+            <li style={{ color: 'var(--text-muted)' }}>and {attempts.length - 5} earlier</li>
+          )}
+        </ul>
+        {/* While the promotion is open the failure is usually still live in the environment, and
+            the warning is where the reader decides what to do about it. */}
+        {open && (
+          <div className="mt-3">
+            <LastKnownGoodRollback eventId={latest.id} hideUnavailable />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function ReferenceItem({
   reference,
   labels,
@@ -874,6 +992,7 @@ function PeopleCard({
   >([]);
   const [userSearchOpen, setUserSearchOpen] = useState(false);
   const [userSearchLoading, setUserSearchLoading] = useState(false);
+  const [directoryUnavailable, setDirectoryUnavailable] = useState(false);
 
   // Debounced directory search (Entra / local users via IIdentityService).
   useEffect(() => {
@@ -888,14 +1007,22 @@ function PeopleCard({
       try {
         const res = await api.searchPromotionUsers(q);
         setUserResults(res.users || []);
+        setDirectoryUnavailable(res.directoryUnavailable === true);
       } catch {
         setUserResults([]);
+        setDirectoryUnavailable(true);
       } finally {
         setUserSearchLoading(false);
       }
     }, 250);
     return () => clearTimeout(handle);
   }, [userQuery, showForm]);
+
+  // The chosen role's team (Settings → Participant Roles → Team) is offered ahead of the directory.
+  const team = useRoleTeam(role);
+  const typed = userQuery.trim().length >= 2;
+  const teamMatches = useMemo(() => matchTeam(team, userQuery), [team, userQuery]);
+  const directory = useMemo(() => withoutTeam(userResults, team), [userResults, team]);
 
   const sourceParticipants: PromotionSourceEventParticipant[] = sourceEvent
     ? [...sourceEvent.participants, ...(sourceEvent.enrichment?.participants ?? [])]
@@ -1079,26 +1206,61 @@ function PeopleCard({
                 color: 'var(--text-primary)',
               }}
             />
-            {userSearchOpen && userQuery.trim().length >= 2 && (
+            {userSearchOpen && (typed || teamMatches.length > 0) && (
               <div
-                className="absolute left-0 right-0 mt-1 rounded-lg border shadow-lg max-h-48 overflow-y-auto z-10"
+                className="absolute left-0 right-0 mt-1 rounded-lg border shadow-lg max-h-60 overflow-y-auto z-10"
                 style={{
                   backgroundColor: 'var(--bg-primary)',
                   borderColor: 'var(--border-color)',
                 }}
               >
-                {userSearchLoading && (
+                {/* The role's team first — the whole of it before anything is typed. */}
+                {teamMatches.length > 0 && (
+                  <div
+                    className="px-3 pt-2 pb-0.5 text-[10px] font-semibold uppercase tracking-wider"
+                    style={{ color: 'var(--text-muted)' }}
+                  >
+                    {roleDisplay({ role })} team
+                  </div>
+                )}
+                {teamMatches.map((m) => (
+                  <button
+                    key={`team:${m.email}`}
+                    type="button"
+                    onClick={() => pickUser(m)}
+                    className="w-full text-left px-3 py-2 text-[13px] flex flex-col transition-opacity hover:opacity-80"
+                    style={{ color: 'var(--text-primary)' }}
+                  >
+                    <span className="font-medium">{m.displayName}</span>
+                    <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                      {m.email}
+                    </span>
+                  </button>
+                ))}
+                {typed && teamMatches.length > 0 && (directory.length > 0 || userSearchLoading) && (
+                  <div
+                    className="px-3 pt-2 pb-0.5 text-[10px] font-semibold uppercase tracking-wider border-t"
+                    style={{ color: 'var(--text-muted)', borderColor: 'var(--border-color)' }}
+                  >
+                    Directory
+                  </div>
+                )}
+                {typed && userSearchLoading && (
                   <div className="px-3 py-2 text-[12px]" style={{ color: 'var(--text-muted)' }}>
                     Searching...
                   </div>
                 )}
-                {!userSearchLoading && userResults.length === 0 && (
+                {typed && !userSearchLoading && directoryUnavailable && (
+                  <DirectoryUnavailableNotice detail="Fill in the name and email below." />
+                )}
+                {typed && !userSearchLoading && directory.length === 0 && teamMatches.length === 0
+                  && !directoryUnavailable && (
                   <div className="px-3 py-2 text-[12px]" style={{ color: 'var(--text-muted)' }}>
                     No matches — fill in manually below.
                   </div>
                 )}
-                {!userSearchLoading &&
-                  userResults.map((u) => (
+                {typed && !userSearchLoading &&
+                  directory.map((u) => (
                     <button
                       key={u.id}
                       type="button"
@@ -1414,6 +1576,7 @@ function PromotionApprovalCard({
   actionLoading,
   onAction,
   onBypass,
+  onAdminReject,
   onCancelApproval,
   canCancelApproval,
   isAdmin,
@@ -1426,6 +1589,7 @@ function PromotionApprovalCard({
   actionLoading: boolean;
   onAction: (action: 'approve' | 'reject', comment: string, target?: EligibleRequirement) => void;
   onBypass: (reason: string) => void;
+  onAdminReject: (reason: string) => void;
   onCancelApproval: (comment: string) => void;
   canCancelApproval: boolean;
   isAdmin: boolean;
@@ -1442,6 +1606,11 @@ function PromotionApprovalCard({
   const showBypass = isAdmin && candidate.status === 'Pending' && !actionDone;
   const [showBypassBox, setShowBypassBox] = useState(false);
   const [bypassReason, setBypassReason] = useState('');
+  // Its counterpart, admin reject — offered only when the card has no ordinary Reject for this user
+  // (they aren't an approver here, or have nothing left to approve). An admin who is an approver
+  // rejects the normal way, so the page never shows two Reject buttons that do the same thing.
+  const showAdminReject = showBypass && !showActions;
+  const [confirmingAdminReject, setConfirmingAdminReject] = useState(false);
   // Undo, for the wrong row approved by mistake. The server decides who may do it and until when
   // (Approved, not yet dispatched) — this only asks whether it said yes.
   const showCancelApproval = canCancelApproval && !actionDone;
@@ -1688,24 +1857,43 @@ function PromotionApprovalCard({
         />
       )}
 
-      {/* Admin-only bypass. Shown on any Pending candidate to admins, even when they aren't an
-         eligible approver. Force-approves the candidate without satisfying the gate; the reason is
-         required and the existing promotion.approved webhook still fires. */}
+      {/* Admin-only overrides. Shown on any Pending candidate to admins, even when they aren't an
+         eligible approver. Bypass force-approves the candidate without satisfying the gate (the
+         existing promotion.approved webhook still fires); admin reject turns it down without the
+         approver check, and appears only when there is no ordinary Reject above. Both need a reason. */}
       {showBypass && (
         <div
           className={showActions || showProgress ? 'mt-4 pt-4 border-t' : ''}
           style={showActions || showProgress ? { borderColor: 'var(--border-color)' } : undefined}
         >
           {!showBypassBox ? (
-            <button
-              type="button"
-              onClick={() => setShowBypassBox(true)}
-              className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[13px] font-medium border transition-opacity hover:opacity-80"
-              style={{ borderColor: 'var(--warning)', color: 'var(--warning)' }}
-            >
-              <Rocket size={14} />
-              Bypass approval gate
-            </button>
+            <div className="flex items-center gap-2 flex-wrap">
+              <button
+                type="button"
+                onClick={() => setShowBypassBox(true)}
+                className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[13px] font-medium border transition-opacity hover:opacity-80"
+                style={{ borderColor: 'var(--warning)', color: 'var(--warning)' }}
+              >
+                <Rocket size={14} />
+                Bypass approval gate
+              </button>
+              {showAdminReject && (
+                <button
+                  type="button"
+                  onClick={() => setConfirmingAdminReject(true)}
+                  disabled={actionLoading}
+                  className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[13px] font-medium border transition-opacity hover:opacity-80"
+                  style={{
+                    borderColor: 'var(--danger)',
+                    color: 'var(--danger)',
+                    opacity: actionLoading ? 0.5 : 1,
+                  }}
+                >
+                  <XCircle size={14} />
+                  Reject as admin
+                </button>
+              )}
+            </div>
           ) : (
             <div className="space-y-2">
               <p className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
@@ -1757,6 +1945,33 @@ function PromotionApprovalCard({
           )}
         </div>
       )}
+
+      {confirmingAdminReject && (
+        <ConfirmDialog
+          title="Reject this promotion as admin?"
+          body={
+            <>
+              <strong>
+                {candidate.product} / {candidate.service}
+              </strong>{' '}
+              v{candidate.version} → <strong>{candidate.targetEnv}</strong>. Rejecting as an
+              administrator skips the approver check: the promotion is turned down and will not
+              deploy. It is recorded under your name with this reason, audited as an admin override,
+              and announced with the usual <code>promotion.rejected</code> webhook.
+            </>
+          }
+          confirmLabel="Reject as admin"
+          confirmTone="danger"
+          commentLabel="Reason"
+          commentRequired
+          busy={actionLoading}
+          onConfirm={(reason) => {
+            onAdminReject(reason);
+            setConfirmingAdminReject(false);
+          }}
+          onCancel={() => setConfirmingAdminReject(false)}
+        />
+      )}
     </div>
   );
 }
@@ -1792,7 +2007,7 @@ function ApprovalProgressBody({
   approveBlockedId: string;
   actionLoading: boolean;
 }) {
-  const { allSatisfied, totalApproved, totalRequired, steps, workItems: workItemGate } = progress;
+  const { allSatisfied, totalApproved, totalRequired, steps, workItems: workItemGate, frozen, blockedReason } = progress;
   const remaining = Math.max(0, totalRequired - totalApproved);
   const approveBlocked = approveBlockedReason !== null;
 
@@ -1906,6 +2121,16 @@ function ApprovalProgressBody({
 
   return (
     <div>
+      {/* A Promotion Freeze blocks the gate even when every requirement below is satisfied. */}
+      {frozen && (
+        <p
+          className="flex items-center gap-1.5 text-[12px] font-medium mb-2"
+          style={{ color: 'var(--info)' }}
+        >
+          <Snowflake size={13} style={{ flexShrink: 0 }} />
+          Held by freeze{blockedReason ? `: ${blockedReason}` : ''}
+        </p>
+      )}
       <div className="flex items-center justify-end mb-3">
         <span
           className="inline-flex items-center gap-1.5 text-[12px] font-medium"
@@ -2178,10 +2403,13 @@ function ApprovalProgressBody({
 function WorkItemsCard({
   candidate,
   workItems,
+  requiresApproval,
   onChanged,
 }: {
   candidate: PromotionCandidate;
   workItems: PromotionSourceEventReference[];
+  /** False for an auto-approve promotion, where there is nothing to sign off. */
+  requiresApproval: boolean;
   onChanged: () => void;
 }) {
   const readOnly = useContext(PromoReadOnlyCtx);
@@ -2236,6 +2464,14 @@ function WorkItemsCard({
         </h2>
         <div className="flex items-center gap-2 flex-wrap justify-end">
           <WorkItemsNeedingAttentionBadge count={roleGaps.length} roles={distinctMissingRoles} />
+          {/* Every waiting work item signed off at once — the per-item Approve, for the bundle. */}
+          <ApproveAllWorkItems
+            candidate={candidate}
+            workItems={workItems}
+            readOnly={readOnly}
+            requiresApproval={requiresApproval}
+            onChanged={onChanged}
+          />
           {/* One person into a role on every work item at once — the per-row Assign, for the bundle. */}
           <AssignToAllWorkItems
             candidate={candidate}

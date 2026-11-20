@@ -9,7 +9,6 @@ import {
   GitPullRequest,
   RefreshCw,
   Ticket,
-  Unlink,
   UserPlus,
   XCircle,
 } from 'lucide-react';
@@ -24,7 +23,7 @@ import { MissingRolesBadge } from '@/components/promotions/MissingRoles';
 import { WorkItemTraits } from '@/components/work-items/WorkItemTraits';
 import { workItemDetailPath } from '@/lib/workItem';
 import { roleDisplay } from '@/lib/roleLabel';
-import { useAuthStore } from '@/stores/authStore';
+import { useAuthStore, isMyEmail } from '@/stores/authStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useDocumentTitle } from '@/lib/pageTitle';
 import { useMyTasksStore } from '@/stores/myTasksStore';
@@ -574,19 +573,18 @@ function WorkItemTaskRow({
   variant?: 'assigned' | 'unassigned';
 }) {
   const navigate = useNavigate();
-  const currentUserEmail = useAuthStore((s) => s.user?.email ?? '');
+  const user = useAuthStore((s) => s.user);
   const detailPath = workItemDetailPath(
     ticket.workItemKey,
     ticket.product,
     ticket.service,
     ticket.targetEnv,
   );
-  // Which hat the user is wearing on this item — the reason it's in their list at all.
+  // Which hat the user is wearing on this item — the reason it's in their list at all. Any of their
+  // addresses: the item names them by their mail, which need not be their sign-in name.
   const myRoles = (ticket.participants ?? [])
-    .filter((p) => (p.email ?? '').toLowerCase() === currentUserEmail.toLowerCase())
+    .filter((p) => isMyEmail(user, p.email))
     .map((p) => roleDisplay(p));
-  // The carrying promotion has moved on (superseded / rejected) but the item is still unsigned.
-  const orphaned = !!ticket.candidateStatus && ticket.candidateStatus !== 'Pending';
   const unassigned = variant === 'unassigned';
 
   const rowProps = useKeyboardListRow(index, () => navigate(detailPath), {
@@ -645,16 +643,6 @@ function WorkItemTaskRow({
               title={`You are assigned as ${myRoles.join(', ')}`}
             >
               {myRoles.join(', ')}
-            </span>
-          )}
-          {orphaned && (
-            <span
-              className="badge shrink-0"
-              style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-muted)' }}
-              title={`The promotion carrying this work item is ${ticket.candidateStatus}. The item still needs signing off.`}
-            >
-              <Unlink size={10} />
-              No live promotion
             </span>
           )}
           <MissingRolesBadge roles={ticket.missingRoles} />

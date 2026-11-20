@@ -1,6 +1,7 @@
 using Platform.Api.Features.Settings.Models;
 using Platform.Api.Infrastructure.Audit;
 using Platform.Api.Infrastructure.Auth;
+using Platform.Api.Infrastructure.Identity;
 using Platform.Api.Infrastructure.Realtime;
 
 namespace Platform.Api.Features.Settings;
@@ -10,7 +11,7 @@ public static class AppSettingsEndpoints
     public static RouteGroupBuilder MapAppSettingsEndpoints(this RouteGroupBuilder group)
     {
         // Shared UI config consumed by the deployment views. Readable by any authenticated
-        // user (the group requires auth); writes are admin-only.
+        // user or key (the group requires CanApprove); writes are admin-only.
         group.MapGet("/", async (AppSettingsService settings, CancellationToken ct) =>
             Results.Ok(await settings.GetSettings(ct)));
 
@@ -28,7 +29,8 @@ public static class AppSettingsEndpoints
                         (e.DisplayName ?? "").Trim(),
                         AppSettingsService.NormalizeHexColor(e.Color),
                         e.IsProduction,
-                        EnvironmentAliasValidator.CleanAliases(e.Key, e.Aliases)))
+                        EnvironmentAliasValidator.CleanAliases(e.Key, e.Aliases),
+                        e.Retired))
                     .ToList(),
                 Roles: (body.Roles ?? [])
                     .Where(r => !string.IsNullOrWhiteSpace(r.Key))
@@ -37,7 +39,8 @@ public static class AppSettingsEndpoints
                 ActivityTemplate: (body.ActivityTemplate ?? [])
                     .Where(l => !string.IsNullOrWhiteSpace(l.Template))
                     .Select(l => new ActivityTemplateLineDto(l.Template, string.IsNullOrWhiteSpace(l.Style) ? "secondary" : l.Style))
-                    .ToList());
+                    .ToList(),
+                Analytics: body.Analytics?.Clean());
 
             // Aliases are the one part of this payload that can be internally inconsistent rather
             // than merely untidy — an alias claimed by two environments, or one that is also an
@@ -50,6 +53,20 @@ public static class AppSettingsEndpoints
 
             await settings.SaveSettings(cleaned, ct);
             return Results.NoContent();
+        }).RequireAuthorization(AuthorizationPolicies.CatalogAdmin);
+
+        // One participant role, without resending the rest of the settings: the PUT above replaces
+        // the whole row, which is the wrong tool for "set the QA team". See UpdateRoleAsync: alias-
+        // resolved key, 404 for a role nobody configured, fields left out kept, the PUT's 400s.
+        group.MapPatch("/roles/{key}", async (
+            string key, RoleConfigPatchDto body, AppSettingsService settings, CancellationToken ct) =>
+        {
+            if (body is null) return Results.BadRequest(new { error = "request body is required" });
+
+            var result = await settings.UpdateRoleAsync(key, body, ct);
+            if (result.NotFound is { } missing) return Results.NotFound(new { error = missing });
+            if (result.Errors.Count > 0) return Results.BadRequest(new { error = result.Errors[0], errors = result.Errors });
+            return Results.Ok(result.Role);
         }).RequireAuthorization(AuthorizationPolicies.CatalogAdmin);
 
         // ── Environment consolidation ────────────────────────────────────────
@@ -124,6 +141,15 @@ public static class AppSettingsEndpoints
 
                 return Results.Ok(ToDto(plan));
             })
+            .RequireAuthorization(AuthorizationPolicies.CatalogAdmin);
+
+        // ── Directory health ─────────────────────────────────────────────────
+        // Whether the Graph app can sign in. Every directory read swallows that failure on purpose
+        // (an empty search, "not a member"), so this is how an admin hears of it: the shell polls
+        // it for Admins and shows a banner while `credentialFailure` is set. Null when the last
+        // Graph read got through, and always null without Graph (local directory).
+        group.MapGet("/directory-health", (GraphCredentialHealth health) =>
+                Results.Ok(new { credentialFailure = health.Failure }))
             .RequireAuthorization(AuthorizationPolicies.CatalogAdmin);
 
         return group;

@@ -20,15 +20,15 @@ tags:
   - ops
   - topology
 source: mkp-release/docs/release-pipelines.md §2.4–2.5, §3.4–3.5, §4.4; marketplace/modules.yaml
-as_of: 2026-08-28
+as_of: 2026-10-15
 body: |
   ## Products and environments in InfraPortal
 
   | Product | Environments | Delivered by |
   |---|---|---|
-  | `mkp` | dev, test, stable, staging, prod | Track A (SDP) mostly; a few components via Track B |
-  | `mkp-extensions` | dev, test, stable, staging, prod | Tracks B and C |
-  | `ops`, `mkp-jenkins-tools` | varies | Track B |
+  | `mkp` | dev, test, staging, prod | Track A (SDP) for dev/test; staging via `build → staging`; components move to mkp-release over time |
+  | `mkp-extensions` | dev, test, staging, prod | Tracks B and C |
+  | `mkp-support-tools`, `ops` | varies | Tracks B and C |
   | `marketplace` | staging, prod | **Historical** — not written to since 2026-08-07 |
 
   ## How to tell which track a service is on
@@ -37,17 +37,22 @@ body: |
   2. Is it listed in `marketplace/manifest.json` / `modules.yaml`? → Track A.
   3. Does it have builds in the registry *and* a `build → *` policy for its product? → Track C.
 
-  A service can be registered as a build without being on Track C. Builds are registered for `mkp`
-  services too (`mkp-notifications`, `acx-platform`, `mkp-public-catalog`, `mkp-billing`,
-  `mkp-export`, `mkp-procurement`, `mkp-scheduler`, `mkp-spotlight`), but **no `build → *` policy
-  exists for product `mkp`**, so those registrations are observability only — Track A still deploys
-  them.
+  Every published build is registered, `mkp` services included. For `mkp` the registration opens a
+  `build → staging` promotion for release builds (Track A's staging pipeline deploys it once
+  approved, or mkp-release for a migrated service). Master builds open an auto-approved `build → dev`
+  promotion, but only mkp-release acts on it, and only for migrated services. Track A services still
+  reach dev and test through the marketplace manifest, and SDP's dev deploy closes their candidate.
+  Every `mkp` approval goes to both deployers. SDP skips `sdp.exclude` and mkp-release skips
+  `disabledComponents` (see the webhook catalogue).
+
+  The retired `stable` ("Staging Candidate") environment still exists in history for `mkp`,
+  `mkp-extensions` and `mkp-support-tools`, but is hidden from every current-state view.
 
   ## Track A services (the monorepo)
 
-  `acx-platform`, `mkp-helpdesk`, `mkp-notifications`, `mkp-public-catalog`, `mkp-spotlight`,
-  `mkp-export`, `mkp-scheduler`, `acx-web-commerce`, `acx-web-accounts`, `acx-web-shell`,
-  `mkp-web-helpdesk`, `mkp-extensions`.
+  `acx-platform`, `mkp-helpdesk`, `mkp-notifications`, `mkp-public-catalog`, `mkp-export`,
+  `mkp-scheduler`, `acx-web-commerce`, `acx-web-accounts`, `acx-web-shell`, `mkp-web-helpdesk`,
+  `mkp-extensions`.
 
   `marketplace/modules.yaml` groups these as `libs-frontend`, `libs-backend` and `services` — the
   libraries are built and consumed by the services, not deployed on their own.
@@ -58,6 +63,8 @@ body: |
   `mkp-extension-usage-reporting`, `mkp-nav-stats`, `mkp-web-currency`, `mkp-web-publiccatalog`,
   `mkp-extension-nav-billing`, `mkp-extension-procurement`, `mkp-extension-producthub`,
   `acx-web-notifications`, `mkp-export`.
+
+  Migrated from Track A and still under product `mkp`: `mkp-spotlight` (2026-10).
 
   GitHub-Actions-built: `ops-dotnet-ci-sample`.
 

@@ -10,8 +10,15 @@ import { useSettingsStore } from '@/stores/settingsStore';
 import { EnvBadge, EnvDot, EnvLabel } from '@/components/environments/EnvBadge';
 import { formatDistanceToNow } from 'date-fns';
 import { ArrowLeft, Loader2, ExternalLink, ChevronDown, ChevronRight, Download, Filter, Undo2, GitBranch, GitPullRequest, Ticket, Workflow } from 'lucide-react';
-import type { DeployEvent, DeployReference } from '@/lib/types';
+import type { DeployEvent, DeployReference, MigrationFlag } from '@/lib/types';
 import { collectParticipants } from '@/lib/types';
+import type { PromotionFreezeWindow } from '@/lib/api';
+import { FeatureFlag, useFeatureFlag } from '@/stores/featureFlagsStore';
+import { DuringFreezeMark } from './FreezeCues';
+import { freezeWindowAt, useFreezeWindows } from './freezeWindows';
+import { MigrationFlare } from '@/components/migrations/MigrationFlare';
+import { flagsForDeployment } from '@/components/migrations/migrationStatus';
+import { useMigrationFlags } from '@/hooks/useMigrationFlags';
 
 const REF_ICONS: Record<string, typeof ExternalLink> = {
   'work-item': Ticket,
@@ -58,8 +65,16 @@ export function DeploymentHistoryPage() {
   const deploymentsTick = useEntityRefresh(['deployment'], {
     filter: (evt) => !evt.product || evt.product === product,
   });
+  const migrationFlags = useMigrationFlags(product, service);
 
   const isBackgroundRefresh = useIsBackgroundRefresh();
+
+  // Freeze periods of the product, to mark the deploys that landed while one was on.
+  const promotionsEnabled = useFeatureFlag(FeatureFlag.Promotions);
+  const promotionsTick = useEntityRefresh(['promotion'], {
+    filter: (evt) => !evt.product || evt.product === product,
+  });
+  const freezeWindows = useFreezeWindows(product, promotionsEnabled, promotionsTick);
 
   useEffect(() => {
     if (!product || !service) return;
@@ -172,6 +187,9 @@ export function DeploymentHistoryPage() {
               key={evt.id}
               index={index}
               event={evt}
+              duringFreeze={freezeWindowAt(freezeWindows, evt.product, evt.environment, evt.deployedAt, evt.service)}
+              migrationFlags={flagsForDeployment(migrationFlags, evt)}
+              envLabel={getDisplayName(evt.environment)}
               detailHref={deploymentDetailPath(evt.id, { path: backHref, label: service ?? 'history' })}
             />
           ))}
@@ -202,10 +220,15 @@ export function DeploymentHistoryPage() {
  * anchor rather than an onClick handler, so middle-click, ctrl-click and keyboard focus all behave as
  * a reader expects of a navigation.
  */
-function HistoryRow({ index, event: evt, detailHref }: {
+function HistoryRow({ index, event: evt, duringFreeze, migrationFlags, envLabel, detailHref }: {
   /** Position in the list, for the roving tabindex. */
   index: number;
   event: DeployEvent;
+  /** The Promotion Freeze this deploy landed in, if any. */
+  duringFreeze?: PromotionFreezeWindow;
+  /** This deploy's pending, running or failed migrations. */
+  migrationFlags: MigrationFlag[];
+  envLabel: string;
   detailHref: string;
 }) {
   const prAuthor = collectParticipants(evt).find((p) => p.role === 'author' || p.role === 'PR Author');
@@ -216,7 +239,9 @@ function HistoryRow({ index, event: evt, detailHref }: {
   const rowProps = useKeyboardListRow(index, () => {}, {
     role: null,
     selfActivating: true,
-    label: `v${evt.version} in ${evt.environment}, ${evt.status ?? 'unknown'}`,
+    label:
+      `v${evt.version} in ${evt.environment}, ${evt.status ?? 'unknown'}` +
+      `${duringFreeze ? ', deployed during a promotion freeze' : ''}`,
   });
 
   return (
@@ -235,7 +260,12 @@ function HistoryRow({ index, event: evt, detailHref }: {
 
       <RollbackIndicator isRollback={evt.isRollback} previousVersion={evt.previousVersion} />
 
+      {duringFreeze && <DuringFreezeMark freeze={duringFreeze} envLabel={envLabel} />}
+
       <StatusBadge status={evt.status} />
+
+      {/* The row is a link already; the chip says it, the deployment page links on. */}
+      <MigrationFlare flags={migrationFlags} link={false} />
 
       <EnvBadge env={evt.environment} />
 
@@ -282,6 +312,8 @@ const STATUS_STYLES: Record<string, { bg: string; fg: string; label: string }> =
   succeeded: { bg: 'rgba(34,197,94,0.12)', fg: '#22c55e', label: 'Succeeded' },
   failed: { bg: 'rgba(239,68,68,0.12)', fg: '#ef4444', label: 'Failed' },
   in_progress: { bg: 'rgba(234,179,8,0.12)', fg: '#eab308', label: 'In Progress' },
+  // Taken out of the environment: not a deploy outcome, so it reads as neutral.
+  removed: { bg: 'var(--bg-secondary)', fg: 'var(--text-muted)', label: 'Removed' },
 };
 
 function RollbackIndicator({ isRollback, previousVersion }: { isRollback?: boolean; previousVersion?: string | null }) {
@@ -310,6 +342,7 @@ function StatusBadge({ status }: { status?: string }) {
 function statusColor(status?: string): string {
   if (status === 'failed') return '#ef4444';
   if (status === 'in_progress') return '#eab308';
+  if (status === 'removed') return 'var(--text-muted)';
   return 'var(--text-primary)';
 }
 

@@ -447,6 +447,8 @@ public static class PromotionAuditCategories
         ["promotion.approved"] = Approved,
         ["promotion.bypassed"] = Approved,
         ["promotion.approval.recorded"] = ApprovalStep,
+        // An administrator's override reject is the same action, told apart by its
+        // trigger ("administrator-reject") and carrying a reason — it is still a rejection.
         ["promotion.rejected"] = Rejected,
         ["promotion.approval.cancelled"] = Cancelled,
         ["promotion.candidate.created"] = Created,
@@ -456,6 +458,7 @@ public static class PromotionAuditCategories
         ["promotion.ticket.approved"] = WorkItem,
         ["promotion.ticket.issue-raised"] = WorkItem,
         ["promotion.ticket.blocked"] = WorkItem,
+        ["promotion.ticket.bypassed"] = WorkItem,
         ["work-item.decisions.reset"] = WorkItem,
         ["promotion.comment.added"] = Comment,
         ["promotion.participant.upserted"] = People,

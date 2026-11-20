@@ -80,11 +80,17 @@ inputs:
     required: true
 
 # approval:
-#   required: false
+#   required: true
+#   approver_group: <Entra group object ID>
+#   rules:                      # first match wins; no match uses the settings above
+#     - name: Dev needs no approval
+#       when: { field: environment, in: [dev, test] }   # or equals / not_in; all / any
+#       required: false
 
 executor:
   type: manual
   parameters_map: {}
+  # Request variables: {{request.id}}, {{request.requester_email}}, {{request.requester_name}}
 `);
     setEditSlug(null);
     setErrors([]);
@@ -254,7 +260,7 @@ executor:
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-[14px] font-semibold" style={{ color: 'var(--text-primary)' }}>
-            Service Catalog
+            Request Catalog
           </h2>
           <p className="text-[12px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
             Manage catalog items available for service requests

@@ -1,12 +1,15 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using NSubstitute;
 using Platform.Api.Features.Approvals;
 using Platform.Api.Features.Approvals.Models;
+using Platform.Api.Features.Promotions;
 using Platform.Api.Features.Requests;
 using Platform.Api.Features.Requests.Models;
 using Platform.Api.Features.Webhooks;
 using Platform.Api.Infrastructure.Audit;
 using Platform.Api.Infrastructure.Auth;
+using Platform.Api.Infrastructure.Identity;
 using Platform.Api.Infrastructure.Notifications;
 using Platform.Api.Infrastructure.Persistence;
 using Platform.Api.Infrastructure.Realtime;
@@ -36,7 +39,9 @@ public class ApprovalStrategyTests : IDisposable
         _currentUser.Id.Returns("approver1");
         _currentUser.Name.Returns("Approver One");
 
-        _sut = new ApprovalService(_db, _stateMachine, _auditLogger, _currentUser, _eventPublisher, _notificationService, _webhookDispatcher);
+        var authorizer = new PromotionApprovalAuthorizer(
+            _currentUser, Substitute.For<IIdentityService>(), Substitute.For<ILogger<PromotionApprovalAuthorizer>>());
+        _sut = new ApprovalService(_db, _stateMachine, _auditLogger, _currentUser, _eventPublisher, _notificationService, _webhookDispatcher, authorizer);
     }
 
     public void Dispose()

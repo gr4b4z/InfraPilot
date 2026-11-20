@@ -1,12 +1,20 @@
 import { useMemo } from 'react';
 import { filterLabelClass, filterSelectClass } from '@/components/ui/FilterPanel';
 import type { PendingAssignee } from '@/lib/api';
+import { useRoleTeams } from '@/lib/roleLabel';
+
+type Person = { email: string; displayName: string };
+
+const byName = (a: Person, b: Person) =>
+  a.displayName.localeCompare(b.displayName, undefined, { sensitivity: 'base' });
 
 /**
  * Picker for narrowing the My-queue list by the person holding a policy-required role.
  *
- * One native select: "Anyone" + "Me" + "Missing a required role" + each distinct person seen
- * holding a required role on the user's authorized list.
+ * One native select: "Anyone" + "Me" + "Missing a required role" + each role's team (Settings →
+ * Participant Roles → Team), always — the QA team should be pickable whether or not they hold
+ * anything right now, and picking one with nothing assigned is an honest empty list — then each
+ * other distinct person seen holding a required role on the user's authorized list.
  *
  * "Required" is the promotion policy's `requiredWorkItemRoles` — the roles that make somebody
  * answerable for a work item. Picking a person narrows to the items where they hold one of those
@@ -16,9 +24,9 @@ import type { PendingAssignee } from '@/lib/api';
  * not a dropdown pick.
  *
  * Pure display narrowing — server-side authorisation (group membership, excluded role,
- * not-yet-decided) is unchanged. Person choices come from the user's queue itself: the server
+ * not-yet-decided) is unchanged. The non-team choices come from the user's queue itself: the server
  * returns the (email, required-role) rollup pre-narrowing and already limited to required-role
- * holders, so the dropdown never offers a zero-result pick.
+ * holders, so none of those is a zero-result pick.
  */
 export type AssigneeFilterValue = {
   /**
@@ -49,18 +57,46 @@ export function AssigneeFilter({
   /** (email, required-role) → count rollup from the queue endpoint. Empty when the queue is empty. */
   assignees: PendingAssignee[];
 }) {
-  // People to show in the dropdown, deduped by email. The input is sorted by count desc so the
-  // first hit per email is the best displayName.
-  const people = useMemo(() => {
+  const teams = useRoleTeams();
+
+  // Each role's team (Settings → Participant Roles → Team), always listed — whether or not they hold
+  // anything on this queue right now — in alphabetical order so a person finds themselves in the same
+  // place every time. Somebody on two teams is listed under the first.
+  const teamGroups = useMemo(() => {
     const seen = new Set<string>();
-    const out: Array<{ email: string; displayName: string }> = [];
+    const groups: Array<{ key: string; label: string; people: Person[] }> = [];
+    for (const team of teams) {
+      const people: Person[] = [];
+      for (const m of team.members) {
+        const id = m.email.trim().toLowerCase();
+        if (seen.has(id)) continue;
+        seen.add(id);
+        people.push({ email: m.email.trim(), displayName: m.displayName || m.email });
+      }
+      people.sort(byName);
+      if (people.length > 0) groups.push({ key: team.key, label: `${team.displayName} team`, people });
+    }
+    return { groups, emails: seen };
+  }, [teams]);
+
+  // Everyone else holding a required role on the queue, deduped by email. The input is sorted by
+  // count desc so the first hit per email is the best displayName.
+  const others = useMemo(() => {
+    const seen = new Set<string>(teamGroups.emails);
+    const out: Person[] = [];
     for (const a of assignees) {
-      if (seen.has(a.email)) continue;
-      seen.add(a.email);
+      const id = a.email.trim().toLowerCase();
+      if (seen.has(id)) continue;
+      seen.add(id);
       out.push({ email: a.email, displayName: a.displayName });
     }
     return out;
-  }, [assignees]);
+  }, [assignees, teamGroups]);
+
+  const people = useMemo(
+    () => [...teamGroups.groups.flatMap((g) => g.people), ...others],
+    [teamGroups, others],
+  );
 
   const personValue = useMemo(() => {
     if (value.mode === 'me') return ME;
@@ -110,9 +146,18 @@ export function AssigneeFilter({
         <option value={ANYONE}>Anyone</option>
         <option value={ME}>Me</option>
         <option value={UNASSIGNED}>Missing a required role</option>
-        {people.length > 0 && (
-          <optgroup label="On your queue">
-            {people.map((p) => (
+        {teamGroups.groups.map((g) => (
+          <optgroup key={g.key} label={g.label}>
+            {g.people.map((p) => (
+              <option key={p.email} value={`email:${p.email}`}>
+                {p.displayName}
+              </option>
+            ))}
+          </optgroup>
+        ))}
+        {others.length > 0 && (
+          <optgroup label={teamGroups.groups.length > 0 ? 'Also on your queue' : 'On your queue'}>
+            {others.map((p) => (
               <option key={p.email} value={`email:${p.email}`}>
                 {p.displayName}
               </option>

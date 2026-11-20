@@ -34,7 +34,7 @@ public class PromotionListReadPathTests : IClassFixture<PromotionListReadPathTes
         "id", "product", "service", "sourceEnv", "targetEnv", "version", "fromRevision", "toRevision",
         "targetCurrentVersion", "fromVersion", "sourceBranch", "status", "externalRunUrl", "createdAt",
         "approvedAt", "deployedAt", "supersededById", "participants", "sourceEventParticipants",
-        "sourceEventReferences", "canApprove", "pendingGates", "approvableGates", "workItemsOutstanding",
+        "sourceEventReferences", "canApprove", "frozen", "pendingGates", "approvableGates", "workItemsOutstanding",
         "deploysOnApproval", "tracksWorkItems", "requiredWorkItemRoles", "workItemRoleGaps",
     };
 

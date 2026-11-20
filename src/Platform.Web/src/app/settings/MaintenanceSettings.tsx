@@ -692,9 +692,10 @@ function OrphanedWorkItemsCard() {
           Stranded work items
         </h2>
         <p className="text-[13px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
-          A work item whose promotions were all superseded or rejected — the “No live promotion” rows
-          in the work-item queue — has no gate left to feed and no deploy that will ever retire it, so
-          it stays pending forever. This approves them in bulk, on your name, with a note saying it
+          A work item whose promotions were all superseded or rejected drops out of the work-item
+          lists, but it has no gate left to feed and no deploy that will ever retire it, so it stays
+          pending forever — and keeps its ticket short of “all services signed off” wherever a
+          promotion waits for every service. This approves them in bulk, on your name, with a note saying it
           was a maintenance sweep. Items a live promotion still carries are ordinary pending work and
           are left alone, and so is anything somebody already decided: an issue or a block is
           somebody&rsquo;s deliberate call, not a leftover.

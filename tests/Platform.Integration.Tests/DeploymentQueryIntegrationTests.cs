@@ -3,6 +3,9 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.Extensions.DependencyInjection;
+using Platform.Api.Features.Deployments.Models;
+using Platform.Api.Infrastructure.Persistence;
 
 namespace Platform.Integration.Tests;
 
@@ -63,25 +66,6 @@ public class DeploymentQueryIntegrationTests : IClassFixture<DeploymentQueryInte
     // ── Tests ───────────────────────────────────────────────────────────────
 
     [Fact]
-    public async Task GetProducts_AfterIngest_ReturnsProductSummary()
-    {
-        await IngestEventAsync(product: "acme", service: "api", environment: "staging", version: "v1.0.0");
-        await IngestEventAsync(product: "acme", service: "web", environment: "staging", version: "v1.0.1");
-
-        var response = await _adminClient.GetAsync("/api/deployments/products");
-        response.EnsureSuccessStatusCode();
-
-        var body = await Deserialize(response);
-        Assert.Equal(JsonValueKind.Array, body.ValueKind);
-
-        var products = new List<string>();
-        foreach (var item in body.EnumerateArray())
-            products.Add(item.GetProperty("product").GetString()!);
-
-        Assert.Contains("acme", products);
-    }
-
-    [Fact]
     public async Task GetProducts_CountsEachServiceOncePerEnvironment_AndReportsTheNewestDeploy()
     {
         // A service redeployed (or failing) many times is still one service in the environment's total,
@@ -108,19 +92,6 @@ public class DeploymentQueryIntegrationTests : IClassFixture<DeploymentQueryInte
         Assert.Equal(1, prod.GetProperty("totalServices").GetInt32());
         Assert.Equal(1, prod.GetProperty("deployedServices").GetInt32());
         Assert.Equal(DateTimeOffset.Parse("2026-04-14T10:00:00Z"), prod.GetProperty("lastDeployedAt").GetDateTimeOffset());
-    }
-
-    [Fact]
-    public async Task GetState_ReturnsCurrentState()
-    {
-        await IngestEventAsync(product: "acme", service: "api", environment: "staging", version: "v2.0.0");
-
-        var response = await _adminClient.GetAsync("/api/deployments/state?product=acme");
-        response.EnsureSuccessStatusCode();
-
-        var body = await Deserialize(response);
-        Assert.Equal(JsonValueKind.Array, body.ValueKind);
-        Assert.True(body.GetArrayLength() > 0, "State matrix should contain at least one entry");
     }
 
     [Fact]
@@ -192,6 +163,50 @@ public class DeploymentQueryIntegrationTests : IClassFixture<DeploymentQueryInte
         var body = await Deserialize(response);
         Assert.Equal(0, body.GetProperty("groups").GetInt32());
         Assert.Equal(0, body.GetProperty("rows").GetInt32());
+    }
+
+    [Fact]
+    public async Task LogSecretRedaction_PreviewThenRedact_ScrubsLogsStoredBeforeIngestRedactedThem()
+    {
+        // Written straight to the table, as rows stored before ingest-time redaction were.
+        var logId = Guid.NewGuid();
+        const string leaked = "      ACX_Database__Password:  FAKE-STORED-PW\n";
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            var ev = new DeployEvent
+            {
+                Id = Guid.NewGuid(), Product = "acme", Service = "redaction-svc", Environment = "dev",
+                Version = "1.0.0", Status = "failed", Source = "helm-deploy",
+                DeployedAt = DateTimeOffset.UtcNow, CreatedAt = DateTimeOffset.UtcNow,
+                ReferencesJson = "[]", ParticipantsJson = "[]", MetadataJson = "{}",
+            };
+            db.DeployEvents.Add(ev);
+            db.DeployEventLogs.Add(new DeployEventLog
+            {
+                Id = logId, DeployEventId = ev.Id, Name = "failure diagnostics", Content = leaked,
+                ByteCount = leaked.Length, OriginalByteCount = leaked.Length, LineCount = 2,
+                CreatedAt = DateTimeOffset.UtcNow,
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var preview = await Deserialize(await _adminClient.GetAsync("/api/deployments/admin/logs/secrets"));
+        Assert.True(preview.GetProperty("deployLogs").GetInt32() >= 1);
+
+        var redact = await _adminClient.PostAsync("/api/deployments/admin/logs/secrets/redact", null);
+        redact.EnsureSuccessStatusCode();
+        Assert.True((await Deserialize(redact)).GetProperty("deployLogs").GetInt32() >= 1);
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            var row = await db.DeployEventLogs.FindAsync(logId);
+            Assert.Equal("      ACX_Database__Password:  [redacted]\n", row!.Content);
+        }
+        var after = await Deserialize(await _adminClient.GetAsync("/api/deployments/admin/logs/secrets"));
+        Assert.Equal(0, after.GetProperty("deployLogs").GetInt32());
+        Assert.Equal(0, after.GetProperty("migrationLogs").GetInt32());
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────────

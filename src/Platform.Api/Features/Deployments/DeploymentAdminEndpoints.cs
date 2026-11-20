@@ -48,6 +48,30 @@ public static class DeploymentAdminEndpoints
             return Results.Ok(new { logs, bytes });
         });
 
+        // ── Secret redaction of stored logs ──────────────────────────────────
+        // Ingest redacts secrets before a log is stored; this pair re-applies the redactor to deploy
+        // and migration logs already stored (from before it existed, or before a pattern was added).
+        // Preview via GET (counts what would change), then POST. Safe to repeat.
+        group.MapGet("/logs/secrets", async (DeploymentService service, CancellationToken ct) =>
+        {
+            var (deployLogs, migrationLogs) = await service.RedactStoredLogs(apply: false, ct);
+            return Results.Ok(new { deployLogs, migrationLogs });
+        });
+
+        group.MapPost("/logs/secrets/redact", async (
+            DeploymentService service, ICurrentUser user, IAuditLogger audit, CancellationToken ct) =>
+        {
+            var (deployLogs, migrationLogs) = await service.RedactStoredLogs(apply: true, ct);
+
+            await audit.Log(
+                "deployments", "deployment.logs.redacted",
+                user.Id, user.Name, "user",
+                "DeployEventLog", null, null,
+                new { deployLogs, migrationLogs });
+
+            return Results.Ok(new { deployLogs, migrationLogs });
+        });
+
         // ── Retired services (soft delete) ───────────────────────────────────
         // A service that a migration made obsolete stops appearing in the deployment matrix and in
         // promotions, without anything being erased. See ServiceDeletionService for the rules; the

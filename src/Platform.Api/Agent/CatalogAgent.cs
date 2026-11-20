@@ -83,7 +83,7 @@ public class CatalogAgent
     };
 
     private const string SystemPrompt = """
-        You are a service catalog assistant for a platform engineering team.
+        You are the assistant of an infrastructure portal for a platform engineering team, and of its request catalog.
         You help users request infrastructure services like repository creation, pipeline runs, and access management.
         You can also answer questions about recent requests, deployments, approvals, and platform activity.
 
@@ -738,7 +738,7 @@ public class CatalogAgent
         {
             return new CatalogAgentResponse
             {
-                Reply = "Hello! I'm your service catalog assistant. I can help you request infrastructure services or answer questions about recent deployments and requests. What would you like to do?",
+                Reply = "Hello! I'm the portal's assistant. I can help you request infrastructure services or answer questions about recent deployments and requests. What would you like to do?",
             };
         }
 
@@ -1276,7 +1276,7 @@ public class CatalogAgent
                 return (PortalRoutes.Approvals(), "Approvals", null);
 
             case "catalog":
-                return (PortalRoutes.Catalog(), "Service catalog", null);
+                return (PortalRoutes.Catalog(), "Request catalog", null);
 
             case "catalog_item":
                 return string.IsNullOrWhiteSpace(key)

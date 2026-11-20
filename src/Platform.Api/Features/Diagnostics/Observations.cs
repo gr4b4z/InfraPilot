@@ -23,6 +23,7 @@ public static class Observations
     public const string DeliverySucceeded = "delivery_succeeded";
 
     // ── Promotion: what happened downstream ──
+    public const string DispatchRunFailed = "dispatch_run_failed";
     public const string NoDeployEventSinceApproval = "no_deploy_event_since_approval";
     public const string DeployEventOtherVersion = "deploy_event_other_version";
     public const string DeployEventFailed = "deploy_event_failed";
@@ -51,17 +52,19 @@ public static class Observations
     public const string LogInsufficientResources = "log_insufficient_resources";
     public const string LogPermissionDenied = "log_permission_denied";
     public const string LogConnectionRefused = "log_connection_refused";
+    public const string LogHelmHookFailed = "log_helm_hook_failed";
+    public const string LogChartValuesRejected = "log_chart_values_rejected";
 
     /// <summary>Every flag above, for validating authored playbooks against reality.</summary>
     public static readonly IReadOnlySet<string> All = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     {
         WithinGracePeriod, NewerCandidateExists,
         NoActiveSubscription, NoDeliveryRecorded, DeliveryPending, DeliveryFailed, DeliverySucceeded,
-        NoDeployEventSinceApproval, DeployEventOtherVersion, DeployEventFailed, DeployEventSucceeded,
+        DispatchRunFailed, NoDeployEventSinceApproval, DeployEventOtherVersion, DeployEventFailed, DeployEventSucceeded,
         NoApprovalsRecorded, WorkItemsOutstanding,
         DeploySucceeded, DeployFailed, WasRollback, SyntheticSource, NoLogsCaptured, LogsTruncated,
         LogImagePullFailure, LogCrashLoop, LogProbeFailure, LogTimeout, LogHelmUpgradeFailed,
         LogHelmLock, LogHelmNoDeployedRelease, LogInsufficientResources, LogPermissionDenied,
-        LogConnectionRefused,
+        LogConnectionRefused, LogHelmHookFailed, LogChartValuesRejected,
     };
 }

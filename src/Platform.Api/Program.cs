@@ -3,19 +3,24 @@ using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.HttpLogging;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Identity.Web;
 using Microsoft.IdentityModel.Tokens;
 using Platform.Api.Features.Analytics;
+using Platform.Api.Features.Incidents;
+using Platform.Api.Features.Migrations;
 using Platform.Api.Features.Approvals;
 using Platform.Api.Features.Builds;
 using Platform.Api.Features.Catalog;
 using Platform.Api.Features.Deployments;
 using Platform.Api.Features.Diagnostics;
 using Platform.Api.Features.Guides;
+using Platform.Api.Features.Integrations;
 using Platform.Api.Features.Knowledge;
 using Platform.Api.Features.Promotions;
 using Platform.Api.Features.ReleaseNotes;
+using Platform.Api.Features.Releases;
 using Platform.Api.Features.Rollbacks;
 using Platform.Api.Features.Settings;
 using Platform.Api.Features.Executors;
@@ -30,6 +35,7 @@ using Platform.Api.Infrastructure.Identity;
 using Platform.Api.Infrastructure.Middleware;
 using Platform.Api.Infrastructure.Notifications;
 using Platform.Api.Agent;
+using Platform.Api.Mcp;
 using Platform.Api.BackgroundServices;
 using Platform.Api.Infrastructure.Persistence;
 using Platform.Api.Infrastructure.AzureDevOps;
@@ -151,19 +157,35 @@ else
             };
             AcceptHubAccessToken(options);
         });
+
+    // Hashes the seeded local users' passwords and verifies them at login. From the container, so a
+    // test host can turn the PBKDF2 iteration count down (PasswordHasherOptions).
+    builder.Services.AddSingleton<IPasswordHasher<LocalUser>, PasswordHasher<LocalUser>>();
 }
 var isMsal = authMode.Equals("Msal", StringComparison.OrdinalIgnoreCase);
 builder.Services.AddAuthentication()
-    .AddScheme<AuthenticationSchemeOptions, ApiKeyAuthHandler>(ApiKeyAuthHandler.SchemeName, _ => { });
+    .AddScheme<AuthenticationSchemeOptions, ApiKeyAuthHandler>(ApiKeyAuthHandler.SchemeName, _ => { })
+    .AddScheme<AuthenticationSchemeOptions, Platform.Api.Features.Integrations.Flux.FluxSignatureAuthHandler>(
+        Platform.Api.Features.Integrations.Flux.FluxSignatureAuthHandler.SchemeName, _ => { });
+builder.Services.Configure<Platform.Api.Features.Integrations.Flux.FluxIntegrationOptions>(
+    builder.Configuration.GetSection(Platform.Api.Features.Integrations.Flux.FluxIntegrationOptions.SectionName));
 builder.Services.AddPlatformAuthorization(builder.Configuration);
 builder.Services.AddDeploymentIngestionRateLimit(builder.Configuration);
 
 // Infrastructure
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<ICurrentUser, CurrentUser>();
+// The directory's other addresses for the signed-in person (mail vs sign-in name), so records that
+// name them by their mail still count as theirs. Scoped like the stub directory it may read.
+builder.Services.AddScoped<IClaimsTransformation, DirectoryEmailClaimsTransformation>();
+builder.Services.AddScoped<PersonalAccessTokenService>();
+// Scoped because the stub directory it reads is; its answers live in the shared memory cache.
+builder.Services.AddScoped<PersonalTokenOwnerCheck>();
+builder.Services.AddMemoryCache();
 builder.Services.AddScoped<IAuditLogger, AuditLogger>();
 builder.Services.AddScoped<IFileStorage, AzureBlobFileStorage>();
 builder.Services.AddScoped<IFeatureFlags, FeatureFlags>();
+builder.Services.AddSingleton<FeatureFlagCache>();
 // Scoped, and it memoises per request — the hidden-product set is read by most list queries.
 builder.Services.AddScoped<UserPreferencesService>();
 builder.Services.Configure<NotificationOptions>(builder.Configuration.GetSection(NotificationOptions.SectionName));
@@ -173,6 +195,9 @@ builder.Services.AddSingleton<INotificationChannel, WebhookChannel>();
 builder.Services.AddScoped<INotificationService, NotificationDispatcher>();
 
 // Identity / Graph — separate app registration for Graph API (client credentials)
+// Registered in every mode so the admin directory-health read always answers; only the Graph
+// service ever records a failure in it.
+builder.Services.AddSingleton<GraphCredentialHealth>();
 var graphTenantId = builder.Configuration["Graph:TenantId"];
 var graphClientId = builder.Configuration["Graph:ClientId"];
 var graphClientSecret = builder.Configuration["Graph:ClientSecret"];
@@ -187,8 +212,8 @@ if (!string.IsNullOrEmpty(graphTenantId) && !graphTenantId.StartsWith('<')
         return new Microsoft.Graph.GraphServiceClient(credential);
     });
     // Singleton so its group-membership cache is shared by every request (one Graph read per group
-    // per TTL instead of one per approval check); it holds nothing request-specific.
-    builder.Services.AddMemoryCache();
+    // per TTL instead of one per approval check); it holds nothing request-specific. The memory
+    // cache it keeps them in is registered above, for every mode.
     builder.Services.AddSingleton<IIdentityService, EntraIdGraphService>();
 }
 else
@@ -228,8 +253,10 @@ builder.Services.AddScoped<RequestService>();
 builder.Services.AddScoped<ApprovalService>();
 builder.Services.AddScoped<ApproverResolver>();
 builder.Services.AddScoped<BuildService>();
+builder.Services.AddScoped<RetiredVersionService>();
 builder.Services.AddScoped<Platform.Api.Features.Builds.IBuildIngestHook, Platform.Api.Features.Builds.BuildIngestHook>();
 builder.Services.AddScoped<DeploymentService>();
+builder.Services.AddScoped<Platform.Api.Features.Integrations.Flux.FluxIngestService>();
 builder.Services.AddScoped<Platform.Api.Features.Deployments.ServiceDeletionService>();
 builder.Services.AddScoped<Platform.Api.Features.Deployments.ServiceProductOverrideService>();
 builder.Services.AddScoped<Platform.Api.Features.Deployments.ServiceProductRemapService>();
@@ -238,11 +265,17 @@ builder.Services.AddScoped<Platform.Api.Features.Deployments.WorkItemSyncService
 builder.Services.AddScoped<Platform.Api.Features.Promotions.PromotionPolicyResolver>();
 builder.Services.AddScoped<Platform.Api.Features.Promotions.PromotionApprovalAuthorizer>();
 builder.Services.AddScoped<Platform.Api.Features.Promotions.PromotionService>();
+builder.Services.AddScoped<Platform.Api.Features.Promotions.PromotionFreezeService>();
 builder.Services.AddScoped<Platform.Api.Features.Rollbacks.RollbackPolicyResolver>();
 builder.Services.AddScoped<Platform.Api.Features.Rollbacks.RollbackService>();
 builder.Services.AddScoped<Platform.Api.Features.Promotions.WorkItemApprovalService>();
 builder.Services.AddScoped<Platform.Api.Features.Promotions.IPromotionIngestHook, Platform.Api.Features.Promotions.PromotionIngestHook>();
 builder.Services.AddScoped<AnalyticsService>();
+builder.Services.AddScoped<DeliveryMetricsService>();
+builder.Services.AddScoped<IncidentService>();
+builder.Services.AddScoped<Platform.Api.Features.Migrations.MigrationService>();
+builder.Services.AddScoped<Platform.Api.Features.Releases.ReleaseService>();
+builder.Services.AddScoped<Platform.Api.Features.Releases.ReleaseProgressService>();
 
 // Release Notes
 builder.Services.AddSingleton<TemplateEngine>();
@@ -277,6 +310,9 @@ builder.Services.AddScoped<ValidationRunner>();
 builder.Services.AddScoped<PlatformQueryService>();
 builder.Services.AddHttpClient<CatalogAgent>();
 builder.Services.AddScoped<CatalogAgent>();
+
+// MCP server for coding agents — the same services, as tools (see Mcp/McpServerSetup).
+builder.Services.AddInfraPortalMcp(builder.Configuration);
 
 // Webhooks
 builder.Services.AddDataProtection()
@@ -419,7 +455,7 @@ app.Services.GetRequiredService<PlaybookRegistry>();
 
     // Seed local users when MSAL is not configured (dev/test)
     if (!isMsal)
-        await SeedData.SeedLocalUsers(db);
+        await SeedData.SeedLocalUsers(db, scope.ServiceProvider.GetRequiredService<IPasswordHasher<LocalUser>>());
 
     // Seed demo data in development only. Each block can be switched off in configuration
     // (`Seed:DemoRequests`, `Seed:DemoDeployments`) so a local database can be filled from another
@@ -434,6 +470,7 @@ app.Services.GetRequiredService<PlaybookRegistry>();
         {
             await DeploymentSeedData.Seed(db);
             await PromotionSeedData.Seed(db);
+            await MigrationSeedData.Seed(db);
         }
     }
 }
@@ -479,8 +516,17 @@ app.MapGroup("/api/approvals").MapApprovalEndpoints().RequireAuthorization(Autho
 app.MapGroup("/api/audit").MapAuditEndpoints().RequireAuthorization(AuthorizationPolicies.AuditViewer);
 app.MapGroup("/api/builds").MapBuildEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
 app.MapGroup("/api/deployments").MapDeploymentEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
+// Adapters for systems that report in their own format (Flux). No group policy: each adapter
+// authenticates its own sender.
+app.MapGroup("/api/integrations").MapIntegrationEndpoints(app.Configuration);
 app.MapGroup("/api/analytics").MapAnalyticsEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
+// Incident records are admin-only; the metrics they feed are on the delivery report for everyone.
+app.MapGroup("/api/incidents").MapIncidentEndpoints().RequireAuthorization(AuthorizationPolicies.CatalogAdmin);
 app.MapGroup("/api/deployments/admin").MapDeploymentAdminEndpoints().RequireAuthorization(AuthorizationPolicies.CatalogAdmin);
+// Migrations are read-only for people (CanApprove, like deployments); pipelines report through the
+// API-key route inside the group.
+app.MapGroup("/api/migrations").MapMigrationEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
+app.MapGroup("/api/migrations/admin").MapMigrationAdminEndpoints().RequireAuthorization(AuthorizationPolicies.CatalogAdmin);
 app.MapGroup("/api/promotions").MapPromotionEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
 // The promotions activity feed. AuditViewer (admin only) — the same gate as the platform audit log:
 // read end to end it is a record of who did what across every product, which is an administrator's
@@ -489,12 +535,25 @@ app.MapGroup("/api/promotions").MapPromotionEndpoints().RequireAuthorization(Aut
 app.MapGroup("/api/promotions/audit").MapPromotionAuditEndpoints().RequireAuthorization(AuthorizationPolicies.AuditViewer);
 app.MapGroup("/api/promotions/admin").MapPromotionAdminEndpoints().RequireAuthorization(AuthorizationPolicies.CatalogAdmin);
 app.MapGroup("/api/rollbacks").MapRollbackEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
+// Releases are readable by everyone signed in; ReleaseService decides who may change one.
+app.MapGroup("/api/releases").MapReleaseEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
 app.MapGroup("/api/rollbacks/admin").MapRollbackAdminEndpoints().RequireAuthorization(AuthorizationPolicies.CatalogAdmin);
 app.MapGroup("/api/work-items").MapWorkItemEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
 app.MapGroup("/api/release-notes").MapReleaseNoteEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
-app.MapGroup("/api/settings").MapAppSettingsEndpoints().RequireAuthorization();
-// The signed-in user's own preferences. Any authenticated user, no role gate — these are personal.
-app.MapGroup("/api/me").MapUserPreferencesEndpoints().RequireAuthorization();
+// Readable by anyone signed in or holding a key (CanApprove: either scheme), so an agent can read
+// what it is about to change; the writes inside are admin-only.
+app.MapGroup("/api/settings").MapAppSettingsEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
+// The caller's own preferences. Any authenticated user, no role gate — these are personal. Either
+// scheme (CanApprove): a personal token acts as its owner, so an agent sees and keeps the same
+// hidden-products filter the person does.
+app.MapGroup("/api/me").MapUserPreferencesEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
+// Their addresses (sign-in name and mail), for "is this me?" — the web app's, or an agent's working
+// out which work items are its owner's.
+app.MapGroup("/api/me").MapCurrentUserEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
+// Their personal access tokens — a signed-in session only, so a token cannot mint another.
+app.MapGroup("/api/me/tokens").MapPersonalAccessTokenEndpoints().RequireAuthorization(AuthorizationPolicies.SignedInSession);
+// Everyone's tokens, for administrators: find and revoke any of them (Settings → Agent Tokens).
+app.MapGroup("/api/tokens/admin").MapPersonalAccessTokenAdminEndpoints().RequireAuthorization(AuthorizationPolicies.CatalogAdmin);
 app.MapGroup("/api/features").MapFeatureFlagEndpoints();
 
 // Webhooks — admin only (both schemes)
@@ -505,6 +564,10 @@ app.MapGroup("/api/webhooks").MapWebhookEndpoints().RequireAuthorization(Authori
 // carries the same gate they do — an unauthenticated caller must not reach through the agent what
 // it cannot reach directly. Role-aware guidance also depends on there being a user to ask about.
 app.MapGroup("/agent").MapAgentEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
+
+// The MCP server: the same reads and writes for external agents, under the same gate as the groups
+// above — a configured API key, a personal token or a bearer token.
+app.MapInfraPortalMcp();
 
 // Realtime hub — WebSocket (with SignalR's fallbacks) for entity-changed signals. Its request log
 // line has no query string: that is where the SignalR client puts ?access_token=….

@@ -1,15 +1,19 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { api } from '@/lib/api';
 import type { PromotionSourceEventParticipant } from '@/lib/api';
 import {
+  matchTeam,
   roleDisplay,
   useConfiguredRoles,
   useIsUnrecognisedRole,
   useRoleAssigneeGroups,
+  useRoleTeam,
+  withoutTeam,
 } from '@/lib/roleLabel';
 import { formatReferenceParticipant } from '@/lib/workItem';
 import { CopyEmailButton } from '@/components/deployments/CopyEmailButton';
 import { AnchoredPopover } from '@/components/ui/AnchoredPopover';
+import { DirectoryUnavailableNotice } from '@/components/ui/DirectoryUnavailableNotice';
 import { RovingGroup } from '@/components/ui/RovingGroup';
 import { ROW_ACTION_ATTR } from '@/lib/keys';
 import { AlertTriangle, Plus, Users, X } from 'lucide-react';
@@ -483,6 +487,9 @@ function ParticipantChip({
  * Pass `onRemove` to offer clearing the slot from inside the popover — the row layout uses this
  * instead of a separate destructive button beside the person.
  *
+ * A role with a team (Settings → Participant Roles → Team) lists the team as soon as the popover
+ * opens, and keeps the members a search matches at the top, above the directory hits.
+ *
  * The search is for the chosen role: a role an admin restricted to directory groups (Settings →
  * Participant Roles) only offers their members, and the popover names the groups. Otherwise it falls
  * back to manual email entry when the directory returns no hits (local-auth dev) — but not for a
@@ -527,6 +534,8 @@ export function InlineUserPicker({
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<Array<{ id: string; displayName: string; email: string }>>([]);
   const [searching, setSearching] = useState(false);
+  // The last search couldn't reach the directory, so an empty result means "couldn't look".
+  const [unavailable, setUnavailable] = useState(false);
   // The assignable vocabulary — the same list the server validates against, so the popover can't
   // offer a role the write would reject.
   const configuredRoles = useConfiguredRoles();
@@ -551,9 +560,15 @@ export function InlineUserPicker({
     const timer = setTimeout(async () => {
       try {
         const res = await api.searchPromotionUsers(q, effectiveRole || null);
-        if (!cancelled) setResults(res.users);
+        if (!cancelled) {
+          setResults(res.users);
+          setUnavailable(res.directoryUnavailable === true);
+        }
       } catch {
-        if (!cancelled) setResults([]);
+        if (!cancelled) {
+          setResults([]);
+          setUnavailable(true);
+        }
       } finally {
         if (!cancelled) setSearching(false);
       }
@@ -561,12 +576,29 @@ export function InlineUserPicker({
     return () => { cancelled = true; clearTimeout(timer); };
   }, [query, lockedRoleUnrecognised, effectiveRole]);
 
+  // The role's team (Settings → Participant Roles → Team) comes first: the whole team before
+  // anything is typed, then the members the search matches. An admin named them for this role, so
+  // they're offered even when the role is restricted to groups they aren't in. Directory hits that
+  // repeat a team member are dropped.
+  const team = useRoleTeam(lockedRoleUnrecognised ? null : effectiveRole);
+  const typed = query.trim().length >= 2;
+  const teamMatches = useMemo(() => matchTeam(team, query), [team, query]);
+  const directory = useMemo(() => withoutTeam(results, team), [results, team]);
+  const options = useMemo(
+    () => [
+      ...teamMatches.map((m) => ({ id: `team:${m.email}`, email: m.email, displayName: m.displayName })),
+      ...directory,
+    ],
+    [teamMatches, directory],
+  );
+  const teamLabel = `${roleDisplay({ role: effectiveRole })} team`;
+
   // Which result the arrow keys are on. -1 means "none yet", so the first ArrowDown lands on the
   // first result rather than the second. Reset whenever the result set changes, since index 2 of
   // the previous search means nothing in the new one.
   const [highlighted, setHighlighted] = useState(-1);
   const resultsRef = useRef<HTMLDivElement>(null);
-  useEffect(() => setHighlighted(-1), [results]);
+  useEffect(() => setHighlighted(-1), [options]);
 
   const submitWithUser = (u: { email: string; displayName: string }) => {
     if (!canSubmit) return;
@@ -581,16 +613,43 @@ export function InlineUserPicker({
     submitWithUser({ email: q, displayName: q });
   };
 
+  const renderOption = (u: { id: string; email: string; displayName: string }, i: number) => (
+    <button
+      key={u.id}
+      type="button"
+      id={`assign-result-${i}`}
+      data-result-index={i}
+      role="option"
+      aria-selected={highlighted === i}
+      onMouseEnter={() => setHighlighted(i)}
+      onClick={() => submitWithUser({ email: u.email, displayName: u.displayName })}
+      className="w-full text-left px-3 py-2 text-[13px] flex flex-col transition-opacity hover:opacity-80"
+      style={{
+        color: 'var(--text-primary)',
+        // The arrowed-to row is tinted rather than focused: focus stays in the search box so
+        // the user can keep typing to narrow, which is how a combobox is expected to behave.
+        backgroundColor: highlighted === i ? 'var(--accent-muted)' : undefined,
+      }}
+      disabled={busy || !canSubmit}
+      title={!canSubmit ? 'Pick a role first' : undefined}
+    >
+      <span className="font-medium truncate">{u.displayName}</span>
+      <span className="text-[11px] truncate" style={{ color: 'var(--text-muted)' }}>
+        {u.email}
+      </span>
+    </button>
+  );
+
   // Arrow keys drive the result list from the search box, so picking someone is type-then-Enter
   // rather than type-then-Tab-past-every-name. Handled on the input because that is where focus
   // stays while typing.
   const onSearchKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
     if (event.key === 'Escape') { onCancel(); return; }
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-      if (results.length === 0) return;
+      if (options.length === 0) return;
       event.preventDefault();
       const delta = event.key === 'ArrowDown' ? 1 : -1;
-      const next = Math.max(0, Math.min(highlighted + delta, results.length - 1));
+      const next = Math.max(0, Math.min(highlighted + delta, options.length - 1));
       setHighlighted(next);
       // Keep the highlighted row inside the scrollable result box.
       resultsRef.current
@@ -600,9 +659,12 @@ export function InlineUserPicker({
     }
     if (event.key === 'Enter') {
       event.preventDefault();
-      if (results.length === 0) { submitManual(); return; }
-      // Enter with nothing arrowed to takes the top hit — the common case after typing a name.
-      const pick = results[highlighted === -1 ? 0 : highlighted];
+      if (options.length === 0) { submitManual(); return; }
+      // Enter with nothing arrowed to takes the top hit — the common case after typing a name. Not
+      // before anything is typed, though: the list is then the whole team, and the top of it is
+      // nobody's pick.
+      if (highlighted === -1 && !typed) return;
+      const pick = options[highlighted === -1 ? 0 : highlighted];
       if (pick) submitWithUser({ email: pick.email, displayName: pick.displayName });
     }
   };
@@ -677,7 +739,7 @@ export function InlineUserPicker({
           }}
           disabled={busy}
           role="combobox"
-          aria-expanded={results.length > 0}
+          aria-expanded={options.length > 0}
           aria-controls="assign-results"
           aria-activedescendant={highlighted >= 0 ? `assign-result-${highlighted}` : undefined}
           onKeyDown={onSearchKeyDown}
@@ -687,29 +749,58 @@ export function InlineUserPicker({
         <p className="text-[11px] px-1 mt-1 flex items-center gap-1" style={{ color: 'var(--text-muted)' }}>
           <Users size={10} style={{ flexShrink: 0 }} />
           <span className="truncate" title={groupNames}>
-            Only members of {groupNames}
+            {team.length > 0 ? `The team, or members of ${groupNames}` : `Only members of ${groupNames}`}
           </span>
         </p>
       )}
-      {!lockedRoleUnrecognised && query.trim().length >= 2 && (
+      {!lockedRoleUnrecognised && (typed || teamMatches.length > 0) && (
         <div
           ref={resultsRef}
           id="assign-results"
           role="listbox"
-          className="mt-1 max-h-48 overflow-y-auto rounded-lg border"
+          className="mt-1 max-h-60 overflow-y-auto rounded-lg border"
           style={{ borderColor: 'var(--border-color)' }}
         >
-          {searching && (
+          {teamMatches.length > 0 && (
+            <div
+              className="px-3 pt-2 pb-0.5 text-[10px] font-semibold uppercase tracking-wider flex items-center gap-1"
+              style={{ color: 'var(--text-muted)' }}
+            >
+              <Users size={10} style={{ flexShrink: 0 }} />
+              {teamLabel}
+            </div>
+          )}
+          {options.slice(0, teamMatches.length).map((u, i) => renderOption(u, i))}
+          {typed && teamMatches.length > 0 && (directory.length > 0 || searching) && (
+            <div
+              className="px-3 pt-2 pb-0.5 text-[10px] font-semibold uppercase tracking-wider border-t"
+              style={{ color: 'var(--text-muted)', borderColor: 'var(--border-color)' }}
+            >
+              Directory
+            </div>
+          )}
+          {typed && searching && (
             <div className="px-3 py-2 text-[12px]" style={{ color: 'var(--text-muted)' }}>
               Searching...
             </div>
           )}
-          {!searching && results.length === 0 && restricted && (
+          {/* Restricted roles get no manual fallback — membership can't be checked either, and an
+              address typed in would step around the restriction. */}
+          {typed && !searching && unavailable && (
+            <DirectoryUnavailableNotice
+              detail={
+                restricted
+                  ? `Members of ${groupNames} can't be looked up — try again later.`
+                  : 'Enter the full email address instead.'
+              }
+            />
+          )}
+          {typed && !searching && options.length === 0 && restricted && !unavailable && (
             <div className="px-3 py-2 text-[12px]" style={{ color: 'var(--text-muted)' }}>
               Nobody in {groupNames} matches &ldquo;{query.trim()}&rdquo;.
             </div>
           )}
-          {!searching && results.length === 0 && !restricted && (
+          {typed && !searching && options.length === 0 && !restricted && (
             <button
               type="button"
               onClick={submitManual}
@@ -720,36 +811,12 @@ export function InlineUserPicker({
             >
               <span className="font-medium">Use &ldquo;{query.trim()}&rdquo; as email</span>
               <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
-                No directory matches — sent as-is.
+                {unavailable ? 'Sent as-is, without a directory check.' : 'No directory matches — sent as-is.'}
               </span>
             </button>
           )}
-          {!searching && results.map((u, i) => (
-            <button
-              key={u.id}
-              type="button"
-              id={`assign-result-${i}`}
-              data-result-index={i}
-              role="option"
-              aria-selected={highlighted === i}
-              onMouseEnter={() => setHighlighted(i)}
-              onClick={() => submitWithUser({ email: u.email, displayName: u.displayName })}
-              className="w-full text-left px-3 py-2 text-[13px] flex flex-col transition-opacity hover:opacity-80"
-              style={{
-                color: 'var(--text-primary)',
-                // The arrowed-to row is tinted rather than focused: focus stays in the search box so
-                // the user can keep typing to narrow, which is how a combobox is expected to behave.
-                backgroundColor: highlighted === i ? 'var(--accent-muted)' : undefined,
-              }}
-              disabled={busy || !canSubmit}
-              title={!canSubmit ? 'Pick a role first' : undefined}
-            >
-              <span className="font-medium truncate">{u.displayName}</span>
-              <span className="text-[11px] truncate" style={{ color: 'var(--text-muted)' }}>
-                {u.email}
-              </span>
-            </button>
-          ))}
+          {typed && !searching &&
+            options.slice(teamMatches.length).map((u, j) => renderOption(u, teamMatches.length + j))}
         </div>
       )}
       {renderOptions && !lockedRoleUnrecognised && renderOptions(effectiveRole)}

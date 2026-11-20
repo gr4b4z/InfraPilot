@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import type { DeployEvent } from '@/lib/types';
 import { formatDistanceToNow } from 'date-fns';
-import { api } from '@/lib/api';
+import { api, type AnalyticsSettings } from '@/lib/api';
 import { autoEnvColor, normalizeHexColor } from '@/lib/envColor';
 import { resolveEnvKey } from '@/lib/envAlias';
 import { canonicaliseRoleKey, resolveRoleKey } from '@/lib/roleKey';
@@ -23,6 +23,11 @@ export interface EnvironmentConfig {
    *  arrived under an old name still render as the environment they actually are — until an admin
    *  merges the history in Settings → Environments. */
   aliases?: string[] | null;
+  /** Nothing deploys here any more. The server leaves it out of every current-state view — the
+   *  deployments matrix, product cards, service search and detail, analytics, work items — and the
+   *  pickers built from settings skip it (`activeEnvironments`). History keeps it, so its label,
+   *  colour and order still resolve: an old promotion "from" it still reads as it did. */
+  retired?: boolean;
 }
 
 export interface RoleConfig {
@@ -37,6 +42,14 @@ export interface RoleConfig {
   /** Directory groups the assignment picker narrows this role to — anyone in any of them. Empty
    *  means the whole directory. */
   assigneeGroups?: { id: string; name: string }[] | null;
+  /** The people who usually take this role (the QA team for `qa-owner`). Offered first by every
+   *  assignment picker for the role, and always listed in the work-items "Assigned to" filter. */
+  team?: RoleTeamMember[] | null;
+}
+
+export interface RoleTeamMember {
+  email: string;
+  displayName: string;
 }
 
 export interface ActivityTemplateLine {
@@ -47,12 +60,19 @@ export interface ActivityTemplateLine {
 interface SettingsState {
   /** Globally configured environments (shared across all products) */
   environments: EnvironmentConfig[];
+  /** `environments` without the retired ones, in the same order — what a picker or a "configured
+   *  environments" list should offer. Kept as state (derived on every write) rather than computed
+   *  in a selector, so subscribers get a stable reference. Lookups by key (labels, colours, order)
+   *  keep using the full list. */
+  activeEnvironments: EnvironmentConfig[];
   /** Admin-curated participant role display names. Canonical keys come from deploy-event
    * ingest or promotion-level assignment; this dictionary maps them to human-friendly
    * labels shown in the UI. Unknown keys fall back to the sender's `label` (if any),
    * then to a humanised form of the key. */
   roles: RoleConfig[];
   activityTemplate: ActivityTemplateLine[];
+  /** How the delivery report ties incidents to deploys — see AnalyticsSettings. */
+  analytics: AnalyticsSettings;
   /** True once the server config has been loaded at least once this session. */
   loaded: boolean;
 
@@ -61,12 +81,15 @@ interface SettingsState {
   setEnvironments: (envs: EnvironmentConfig[]) => Promise<void>;
   setRoles: (roles: RoleConfig[]) => Promise<void>;
   setActivityTemplate: (lines: ActivityTemplateLine[]) => Promise<void>;
+  setAnalytics: (analytics: AnalyticsSettings) => Promise<void>;
   getDisplayName: (key: string) => string;
   /** Resolved `#rrggbb` for an environment — the configured colour, or a stable one derived
    *  from the key so every environment is distinguishable even before an admin picks. */
   getEnvironmentColor: (key: string) => string;
   getRoleDisplayName: (key: string) => string;
   getOrderedEnvironments: (keys: string[]) => string[];
+  /** Whether `key` (alias-resolved) is a retired environment — see `EnvironmentConfig.retired`. */
+  isRetired: (key: string) => boolean;
 }
 
 const DEFAULT_ENVIRONMENTS: EnvironmentConfig[] = [
@@ -99,6 +122,8 @@ function humaniseRoleKey(key: string): string {
     .join(' ');
 }
 
+export const DEFAULT_ANALYTICS: AnalyticsSettings = { attributionWindowDays: 7, rolloutToleranceMinutes: 15 };
+
 export const DEFAULT_ACTIVITY_TEMPLATE: ActivityTemplateLine[] = [
   { template: '{ref:work-item:key} \u2014 {label:workItemTitle}', style: 'secondary' },
   { template: 'PR: {participant:PR Author}  \u00b7  QA: {participant:QA}  \u00b7  {time}', style: 'muted' },
@@ -110,8 +135,10 @@ export const DEFAULT_ACTIVITY_TEMPLATE: ActivityTemplateLine[] = [
 // of truth and every setter writes through to it.
 export const useSettingsStore = create<SettingsState>()((set, get) => ({
   environments: DEFAULT_ENVIRONMENTS,
+  activeEnvironments: withoutRetired(DEFAULT_ENVIRONMENTS),
   roles: DEFAULT_ROLES,
   activityTemplate: DEFAULT_ACTIVITY_TEMPLATE,
+  analytics: DEFAULT_ANALYTICS,
   loaded: false,
 
   load: async () => {
@@ -119,8 +146,10 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
       const s = await api.getAppSettings();
       set({
         environments: s.environments,
+        activeEnvironments: withoutRetired(s.environments),
         roles: s.roles,
         activityTemplate: s.activityTemplate as ActivityTemplateLine[],
+        analytics: s.analytics ?? DEFAULT_ANALYTICS,
         loaded: true,
       });
     } catch {
@@ -133,7 +162,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   // so the in-memory store never drifts from what's saved.
   setEnvironments: async (envs) => {
     await api.saveAppSettings({ ...currentPayload(get), environments: envs });
-    set({ environments: envs });
+    set({ environments: envs, activeEnvironments: withoutRetired(envs) });
   },
 
   setRoles: async (roles) => {
@@ -144,6 +173,11 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   setActivityTemplate: async (lines) => {
     await api.saveAppSettings({ ...currentPayload(get), activityTemplate: lines });
     set({ activityTemplate: lines });
+  },
+
+  setAnalytics: async (analytics) => {
+    await api.saveAppSettings({ ...currentPayload(get), analytics });
+    set({ analytics });
   },
 
   // Alias-resolved, here and in the two lookups below: a deploy stored as "productions" before an
@@ -192,11 +226,23 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
     };
     return [...keys].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
   },
+
+  // Alias-resolved like the lookups above: the server's retired set covers a retired environment's
+  // aliases too, so an un-merged alias row is retired here as well.
+  isRetired: (key) => {
+    const envs = get().environments;
+    const canonical = resolveEnvKey(key, envs);
+    return envs.find((e) => e.key === canonical)?.retired ?? false;
+  },
 }));
 
+function withoutRetired(envs: EnvironmentConfig[]): EnvironmentConfig[] {
+  return envs.filter((e) => !e.retired);
+}
+
 function currentPayload(get: () => SettingsState) {
-  const { environments, roles, activityTemplate } = get();
-  return { environments, roles, activityTemplate };
+  const { environments, roles, activityTemplate, analytics } = get();
+  return { environments, roles, activityTemplate, analytics };
 }
 
 /**

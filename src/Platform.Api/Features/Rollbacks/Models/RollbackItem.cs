@@ -6,7 +6,9 @@ namespace Platform.Api.Features.Rollbacks.Models;
 /// <see cref="ToVersion"/> (a version that previously ran successfully in that environment).
 ///
 /// <para>Items complete independently as their target version lands as a deploy event, so a bulk
-/// "align" request settles item-by-item.</para>
+/// "align" request settles item-by-item. An item can also close without its own deploy: it was
+/// already running at approval (RolledBack), the environment moved on (Superseded), or an admin
+/// skipped it (Skipped). <see cref="Note"/> says which.</para>
 /// </summary>
 public class RollbackItem
 {
@@ -18,13 +20,26 @@ public class RollbackItem
     /// <summary>Version running in the env when the request was created (for display/audit).</summary>
     public string FromVersion { get; set; } = "";
 
-    /// <summary>Target version — validated to have previously run in this env.</summary>
+    /// <summary>
+    /// Target version — validated to have previously run in this env. Empty uninstalls the service
+    /// instead: it is removed from the environment, and a <c>removed</c> deploy event completes the
+    /// item.
+    /// </summary>
     public string ToVersion { get; set; } = "";
 
     public RollbackItemStatus Status { get; set; } = RollbackItemStatus.Pending;
 
-    /// <summary>The deploy event that confirmed this revert landed (set on completion match).</summary>
+    /// <summary>
+    /// The deploy event that closed this item: the revert landing, the deploy that was already running
+    /// it at approval, or the later deploy that superseded it. Null when an admin skipped it.
+    /// </summary>
     public Guid? CompletedDeployEventId { get; set; }
+
+    /// <summary>
+    /// Why the item closed, when its status alone doesn't say: what superseded it, that it was already
+    /// running at approval, or the admin's skip reason. Null for an ordinary landing.
+    /// </summary>
+    public string? Note { get; set; }
 
     /// <summary>Optional CI run URL if the executor reports one.</summary>
     public string? ExternalRunUrl { get; set; }
@@ -40,4 +55,10 @@ public enum RollbackItemStatus
     RolledBack,
     Failed,
     Skipped,
+
+    /// <summary>
+    /// A different version was deployed after the rollback was approved, so the revert no longer
+    /// describes the environment and must not go out.
+    /// </summary>
+    Superseded,
 }

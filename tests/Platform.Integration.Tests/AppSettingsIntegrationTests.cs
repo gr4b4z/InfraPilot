@@ -139,6 +139,38 @@ public class AppSettingsIntegrationTests : IClassFixture<AppSettingsIntegrationT
     }
 
     [Fact]
+    public async Task AdminSave_KeepsTheRetiredFlag()
+    {
+        // The PUT rebuilds every environment row while cleaning it; a field it forgets to carry is
+        // silently reset on the next save of anything else on the page.
+        using var factory = new SettingsFactory();
+        using var admin = factory.CreateAdminClient();
+
+        var payload = new
+        {
+            environments = new object[]
+            {
+                new { key = "dev", displayName = "Development" },
+                new { key = " stable ", displayName = "Staging Candidate", aliases = new[] { "release-track" }, retired = true },
+            },
+            roles = Array.Empty<object>(),
+            activityTemplate = Array.Empty<object>(),
+        };
+
+        var put = await admin.PutAsJsonAsync("/api/settings", payload);
+        Assert.Equal(HttpStatusCode.NoContent, put.StatusCode);
+
+        var envs = (await Deserialize(await admin.GetAsync("/api/settings")))
+            .GetProperty("environments").EnumerateArray()
+            .ToDictionary(e => e.GetProperty("key").GetString()!);
+
+        Assert.True(envs["stable"].GetProperty("retired").GetBoolean());
+        Assert.Equal("release-track", Assert.Single(envs["stable"].GetProperty("aliases").EnumerateArray()).GetString());
+        // Omitted means not retired, so payloads from clients that predate the flag keep working.
+        Assert.False(envs["dev"].GetProperty("retired").GetBoolean());
+    }
+
+    [Fact]
     public async Task NonAdmin_CanRead_ButCannotWrite()
     {
         var read = await _userClient.GetAsync("/api/settings");

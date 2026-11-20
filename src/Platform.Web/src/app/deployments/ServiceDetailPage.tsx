@@ -12,10 +12,16 @@ import {
   Loader2,
   Rocket,
   SearchX,
+  Snowflake,
   Undo2,
   XCircle,
 } from 'lucide-react';
 import { api } from '@/lib/api';
+import type { PromotionFreezeWindow } from '@/lib/api';
+import { useAuthStore } from '@/stores/authStore';
+import { DeploymentFreezeBanner, DuringFreezeMark, FrozenEnvMark } from './FreezeCues';
+import { activeFreezeFor, activeFreezes, freezeWindowAt, useFreezeWindows } from './freezeWindows';
+import { freezeCovers } from '@/lib/freezeScope';
 import { deploymentDetailPath } from '@/lib/deploymentPath';
 import { useDocumentTitle } from '@/lib/pageTitle';
 import { useEntityRefresh } from '@/hooks/useEntityEvents';
@@ -134,6 +140,18 @@ export function ServiceDetailPage() {
     return map;
   }, [detail, promotionsEnabled]);
 
+  // Promotion Freezes of the product, same cues as the product matrix. A freeze holds exactly the
+  // Pending promotions into its environment, so every Pending one there counts as held.
+  const isAdmin = useAuthStore((s) => s.user?.isAdmin ?? false);
+  const freezeWindows = useFreezeWindows(product, promotionsEnabled, promotionsTick);
+  // Only the freezes that hold this service: the whole product's, and its own.
+  const productFreezes = useMemo(
+    () => activeFreezes(freezeWindows).filter((w) => service !== undefined && freezeCovers(w, service)),
+    [freezeWindows, service],
+  );
+  const heldIn = (env: string) =>
+    (detail?.promotions ?? []).filter((p) => p.status === 'Pending' && p.targetEnv === env).length;
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-20">
@@ -219,6 +237,13 @@ export function ServiceDetailPage() {
         />
       )}
 
+      <DeploymentFreezeBanner
+        freezes={productFreezes}
+        heldIn={heldIn}
+        canManage={isAdmin}
+        getDisplayName={getDisplayName}
+      />
+
       {/* ── Environments ── where the service runs right now, one card per environment. */}
       <section data-guide-anchor="service-environments">
         <h2 className="text-sm font-semibold mb-2" style={{ color: 'var(--text-primary)' }}>
@@ -235,6 +260,9 @@ export function ServiceDetailPage() {
               index={index}
               cell={cell}
               service={service ?? 'service'}
+              envLabel={getDisplayName(cell.environment)}
+              freeze={activeFreezeFor(freezeWindows, cell.product, cell.environment, cell.service)}
+              duringFreeze={freezeWindowAt(freezeWindows, cell.product, cell.environment, cell.deployedAt, cell.service)}
               pending={pendingByTargetEnv.get(cell.environment)}
               detailHref={deploymentDetailPath(cell.id, { path: backHref, label: service ?? 'service' })}
             />
@@ -320,10 +348,15 @@ export function ServiceDetailPage() {
  * rather than an anchor, because the pending-promotion chip inside is itself a link and anchors
  * don't nest; the matrix cell makes the same trade for the same reason.
  */
-function EnvironmentCard({ index, cell, service, pending, detailHref }: {
+function EnvironmentCard({ index, cell, service, envLabel, freeze, duringFreeze, pending, detailHref }: {
   index: number;
   cell: DeploymentStateEntry;
   service: string;
+  envLabel: string;
+  /** The active Promotion Freeze on this environment for the product, if any. */
+  freeze?: PromotionFreezeWindow;
+  /** The freeze the current deploy landed in, if any. */
+  duringFreeze?: PromotionFreezeWindow;
   /** A Pending promotion targeting this environment, if there is one. */
   pending?: ServicePromotion;
   detailHref: string;
@@ -332,8 +365,9 @@ function EnvironmentCard({ index, cell, service, pending, detailHref }: {
   const rowProps = useKeyboardListRow(index, () => navigate(detailHref), {
     role: null,
     label:
-      `${cell.environment}: v${cell.version}, ${cell.status}` +
-      `${pending ? `, promotion to ${pending.version} awaiting approval` : ''}. Open deployment.`,
+      `${cell.environment}${freeze ? ' (promotions frozen)' : ''}: v${cell.version}, ${cell.status}` +
+      `${duringFreeze ? ', deployed during a promotion freeze' : ''}` +
+      `${pending ? `, promotion to ${pending.version} ${freeze ? 'held by the freeze' : 'awaiting approval'}` : ''}. Open deployment.`,
   });
 
   return (
@@ -347,6 +381,7 @@ function EnvironmentCard({ index, cell, service, pending, detailHref }: {
     >
       <div className="flex items-center gap-2">
         <EnvLabel env={cell.environment} className="text-[13px] font-semibold" />
+        {freeze && <FrozenEnvMark freeze={freeze} envLabel={envLabel} />}
         <span className="flex-1" />
         <StatusBadge status={cell.status} />
       </div>
@@ -363,10 +398,11 @@ function EnvironmentCard({ index, cell, service, pending, detailHref }: {
             <Undo2 size={12} />
           </span>
         )}
+        {duringFreeze && <DuringFreezeMark freeze={duringFreeze} envLabel={envLabel} variant="badge" />}
       </div>
       {pending && (
         <div>
-          <PendingPromotionChip promotion={pending} service={service} />
+          <PendingPromotionChip promotion={pending} service={service} frozen={!!freeze} />
         </div>
       )}
       <div className="flex items-center gap-2 text-[11px]" style={{ color: 'var(--text-muted)' }}>
@@ -382,25 +418,33 @@ function EnvironmentCard({ index, cell, service, pending, detailHref }: {
  * "A promotion into this environment is waiting on someone." Same cue as the product matrix, and
  * like there it links straight to the promotion — it needs a decision, not a deployment page.
  * Hence the click-stop: the card's own activation opens the deploy event, which is not where this
- * chip is pointing.
+ * chip is pointing. Held by a Promotion Freeze, it turns the freeze's blue with a snowflake.
  */
-function PendingPromotionChip({ promotion, service }: { promotion: ServicePromotion; service: string }) {
+function PendingPromotionChip({ promotion, service, frozen }: {
+  promotion: ServicePromotion;
+  service: string;
+  frozen: boolean;
+}) {
+  const tone = frozen ? 'var(--info)' : 'var(--accent)';
   return (
     <Link
       to={`/promotions/${promotion.id}`}
       onClick={(e) => e.stopPropagation()}
       className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-semibold transition-opacity hover:opacity-80"
       style={{
-        backgroundColor: 'var(--accent-bg)',
-        color: 'var(--accent)',
-        border: '1px solid color-mix(in srgb, var(--accent) 30%, transparent)',
+        backgroundColor: frozen ? 'var(--info-bg)' : 'var(--accent-bg)',
+        color: tone,
+        border: `1px solid color-mix(in srgb, ${tone} 30%, transparent)`,
       }}
       title={
-        `Promotion awaiting approval: ${service} ${promotion.version} ` +
-        `from ${promotion.sourceEnv} → ${promotion.targetEnv}`
+        frozen
+          ? `Promotion held by a freeze: ${service} ${promotion.version} ` +
+            `from ${promotion.sourceEnv} → ${promotion.targetEnv} waits until the freeze is lifted`
+          : `Promotion awaiting approval: ${service} ${promotion.version} ` +
+            `from ${promotion.sourceEnv} → ${promotion.targetEnv}`
       }
     >
-      <ArrowUp size={10} />
+      {frozen ? <Snowflake size={10} /> : <ArrowUp size={10} />}
       v{promotion.version}
     </Link>
   );
@@ -544,6 +588,8 @@ const STATUS_STYLES: Record<string, { bg: string; fg: string; label: string }> =
   succeeded: { bg: 'rgba(34,197,94,0.12)', fg: '#22c55e', label: 'Succeeded' },
   failed: { bg: 'rgba(239,68,68,0.12)', fg: '#ef4444', label: 'Failed' },
   in_progress: { bg: 'rgba(234,179,8,0.12)', fg: '#eab308', label: 'In Progress' },
+  // Taken out of the environment: not a deploy outcome, so it reads as neutral.
+  removed: { bg: 'var(--bg-secondary)', fg: 'var(--text-muted)', label: 'Removed' },
 };
 
 function StatusBadge({ status }: { status?: string }) {
@@ -562,5 +608,6 @@ function StatusBadge({ status }: { status?: string }) {
 function statusColor(status?: string): string {
   if (status === 'failed') return '#ef4444';
   if (status === 'in_progress') return '#eab308';
+  if (status === 'removed') return 'var(--text-muted)';
   return 'var(--text-primary)';
 }

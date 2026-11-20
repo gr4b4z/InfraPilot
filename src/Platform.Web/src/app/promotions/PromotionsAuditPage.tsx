@@ -8,6 +8,7 @@ import {
   CheckCircle,
   ChevronDown,
   Clock,
+  FastForward,
   FileText,
   Filter,
   GitPullRequest,
@@ -204,6 +205,12 @@ const ACTION_STYLES: Record<
     color: 'var(--danger)',
     bg: 'var(--danger-bg)',
   },
+  'promotion.ticket.bypassed': {
+    verb: 'bypassed a work item with its promotion',
+    icon: FastForward,
+    color: 'var(--info)',
+    bg: 'var(--info-bg)',
+  },
   'work-item.decisions.reset': {
     verb: 'work-item sign-offs were reset by a new version',
     icon: RefreshCw,
@@ -244,6 +251,18 @@ const FALLBACK_STYLE = {
 
 function actionStyle(action: string) {
   return ACTION_STYLES[action] ?? { ...FALLBACK_STYLE, verb: action };
+}
+
+/**
+ * One row's style. An administrator's override reject is audited as an ordinary
+ * `promotion.rejected` (it is a rejection, and belongs in that tab) told apart by its trigger, so
+ * the row says which kind it was.
+ */
+function entryStyle(entry: PromotionAuditEntry) {
+  const style = actionStyle(entry.action);
+  return entry.trigger === 'administrator-reject'
+    ? { ...style, verb: 'rejected this promotion as an administrator, overriding its approvers' }
+    : style;
 }
 
 /**
@@ -894,7 +913,7 @@ function AuditEmptyState({
 function AuditRow({ index, entry }: { index: number; entry: PromotionAuditEntry }) {
   const navigate = useNavigate();
   const [showDetails, setShowDetails] = useState(false);
-  const style = actionStyle(entry.action);
+  const style = entryStyle(entry);
   const Icon = style.icon;
   const system = entry.actorType === 'system';
   const timestamp = new Date(entry.timestamp);

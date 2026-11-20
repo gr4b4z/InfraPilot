@@ -12,7 +12,7 @@ import {
 } from './authConfig';
 
 // MSAL is initialised lazily the first time any caller asks for it, using
-// auth config fetched from the backend at startup (`loadAuthConfig()` in main.tsx).
+// auth config fetched from the backend at startup (`loadAuthConfig()`, run by StartupGate).
 // The backend decides whether MSAL is active and supplies clientId/tenantId,
 // so the same built image works across tenants with no rebuild.
 interface MsalState {

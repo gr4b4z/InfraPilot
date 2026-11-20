@@ -1,13 +1,88 @@
 ---
 name: infrapilot-api
-description: Connect to the InfraPilot (InfraPortal) REST API — read deployment state/history, ingest deploy events, create/query promotions, register builds, pull analytics and release notes. Use whenever a task mentions InfraPilot, InfraPortal, deployment tracking, deploy events, promotions, or the deployments API. Connection comes from the DEPLOYMENTS_URL and DEPLOYMENTS_API_KEY environment variables.
+description: Work with InfraPilot (InfraPortal) — read what is deployed where, deployment history, failed deploys and their logs, promotions and why they are stuck, work items, builds, analytics; diagnose promotion and deployment problems; ingest deploy events, register builds, create promotions, release notes. MCP tools first (native `infraportal` tools, or the bundled scripts/mcp_call.py over HTTP), REST for the rest. Use whenever a task mentions InfraPilot, InfraPortal, deployment state, deploy events, promotions, rollbacks of releases, or the deployments API. Connection comes from the DEPLOYMENTS_URL and DEPLOYMENTS_API_KEY environment variables.
 ---
 
 # InfraPilot API
 
 InfraPilot (also branded **InfraPortal**) is an infrastructure portal tracking deployments,
-promotions between environments, builds, and release notes. This skill covers calling its REST
-API directly.
+promotions between environments, builds, and release notes. Prod: `https://infraportal.example.com`.
+
+## How to call it — MCP first
+
+InfraPortal serves an MCP server at `{DEPLOYMENTS_URL}/api/mcp` (same `X-Api-Key` header as REST).
+Its tools resolve misspelt names (and say what they assumed in `nameResolution`), return compact JSON
+with portal `url`s, and include `diagnose_promotion`, `diagnose_deployment` and `search_knowledge`,
+which REST does not have. Use, in this order:
+
+1. **Native tools** — when the session has the `infraportal` MCP server (tools named
+   `mcp__infraportal__get_deployment_state` etc.), call them directly.
+2. **The bundled helper** — otherwise (scheduled runs, other repos, server not added), call the same
+   tools over HTTP. No setup beyond the two environment variables:
+
+   ```bash
+   python -I -X utf8 .claude/skills/infrapilot-api/scripts/mcp_call.py --list
+   python -I -X utf8 .claude/skills/infrapilot-api/scripts/mcp_call.py --describe get_promotion
+   python -I -X utf8 .claude/skills/infrapilot-api/scripts/mcp_call.py list_promotions '{"status":"Approved","limit":20}'
+   ```
+
+   It prints the tool's JSON result; exit code 1 means the tool returned an error (the message says
+   how to correct the call), 2 a transport or auth problem. Arguments are camelCase
+   (`promotionId`, `eventId`, `targetEnv`). In PowerShell, pass the JSON in single quotes.
+3. **REST** (sections below) — only for what no tool covers: ingesting deploy events, registering
+   builds, release notes, admin endpoints, rollbacks, bulk scripts.
+
+To get native tools in every repo, add the server once at user scope:
+
+```bash
+claude mcp add --transport http --scope user infraportal "$DEPLOYMENTS_URL/api/mcp" --header "X-Api-Key: $DEPLOYMENTS_API_KEY"
+```
+
+The InfraPilot repo's `.mcp.json` does the same from the environment. Design and full tool list:
+`notes/mcp-server.md`.
+
+### Which tool answers what
+
+| Question | Tool |
+|---|---|
+| What can this key do? | `whoami` |
+| What products / services exist? | `list_products`, `find_services` (service known, product not) |
+| What runs where now? | `get_deployment_state` (product, service or fragment, environment) |
+| One service end to end | `get_service`, `get_deployment_history` |
+| What deployed / failed recently? | `list_recent_deployments` (`status: "failed"`, `since`) |
+| Why did a deploy fail? | `diagnose_deployment`, then `get_deployment` → `get_deployment_log` (`match`) |
+| What is waiting / stuck? | `list_promotions` (`status`, `waitingOn`), `get_promotion_queue` |
+| Why is a promotion stuck? | `diagnose_promotion`, then `get_promotion` |
+| Which promotions carry ticket X? | `list_promotions` with `reference: "MKP-1234"`, then `get_work_item` |
+| Builds and where they went | `list_builds`, `get_build` (`promotableTo`) |
+| How do the pipelines behave? | `search_knowledge` — answer from it, with its as-of date |
+| Cadence, failure rate, lead time | `get_deployment_frequency`, `get_lead_time` (quote `definition` / `coverage`) |
+| Someone's exact email | `find_people` (`role` limits it to who that role's picker offers) |
+| Participant roles, a role's team | `list_participant_roles`; change one with `update_participant_role` (admin) |
+
+### Triage recipes
+
+- **Promotion stuck Approved / Pending:** `list_promotions` (`status: "Approved"`) → for each one
+  older than about an hour, `diagnose_promotion` → lead with the top cause that has
+  `supportedByEvidence: true` and cite its evidence line. Approved-but-not-deployed usually breaks in
+  mkp-release (webhook delivery → `promote-single-build-manifest` / `deploy-registered-build` →
+  reconcile); check those runs with `gh run list --repo acmetrix/mkp-release`.
+- **Failed deploy:** `list_recent_deployments` (`status: "failed"`) → `diagnose_deployment` → quote
+  the `logExcerpts` line verbatim; read more with `get_deployment_log` (`match: "error"`).
+- **"Is X in prod?":** `get_deployment_state` with the service (a fragment is fine) and
+  `environment: "prod"`; report the version and give the `url`.
+- **"Has migration X run on staging?":** `find_migration` with the name (partial or misspelt is
+  fine) and `environment: "staging"`; report the outcome per service and give the `url`. Pending or
+  failed data migrations: `list_migrations` (default filter is pending/running/failed).
+
+### Write tools — only when the user asked for that action
+
+`add_promotion_comment`, `add_work_item_comment`, `set/remove_promotion_participant`,
+`update_participant_role`, `promote_build` and `create_promotion` change shared state that everyone in
+the portal sees. Never
+call them while investigating or reviewing. No tool approves, rejects or signs off. A standard
+personal token gets `403` on those routes over REST too; a QA token may sign off work items and an
+Admin token may approve and reject over REST — do that only when the user asked for that decision.
 
 ## Connection
 
@@ -42,7 +117,18 @@ Never print the key value in output; refer to it only as `$DEPLOYMENTS_API_KEY`.
 ## Auth model and limits
 
 - The API key authenticates **both writes and all standard reads** (deployments, promotions,
-  builds, work-items, analytics, release notes). No bearer token needed.
+  builds, work-items, analytics, release notes, settings, feature flags, `/api/me`). No bearer token
+  needed. Only `/api/me/tokens` (minting and revoking tokens) is a signed-in session alone.
+- Two kinds of key go in `X-Api-Key`: **configured keys** (pipeline keys in `Deployments:ApiKeys`,
+  added by a deployment) and **personal access tokens** (`ipt_…`), which any user mints for
+  themselves on the portal's **Agent access** page (`/me/agent-access`, user menu). A personal token
+  acts as the person who made it, expires (7/30/90/180/365 days) and can be revoked there. No token can
+  ingest deploy events, register builds or create promotions via `POST /api/promotions`. What else
+  it may do depends on its access (`whoami` → `tokenAccess`): **Standard** carries the owner's roles
+  minus Admin and approves / rejects / signs off nothing (`403`); **QA** (QA members and admins)
+  adds the QA role and work-item sign-off; **Admin** (admins only) keeps Admin and makes every
+  decision its owner can. If you lack a key, ask the user to create a personal token there rather
+  than requesting a pipeline key, at the lowest access the task needs.
 - Keys may be **product-scoped**: posting or creating for a product outside the key's allowed
   list returns `403 Forbidden`.
 - Keys may carry **scopes**: a key with a `Scopes` list needs `build:register` for
@@ -52,10 +138,14 @@ Never print the key value in output; refer to it only as `$DEPLOYMENTS_API_KEY`.
   and retry; don't hammer.
 - **Admin endpoints** (`/api/deployments/admin/*`, `/api/promotions/admin/*`, `/api/audit`,
   catalog admin) require the `InfraPortal.Admin` role — a plain API key normally cannot call
-  them.
+  them; an Admin personal token can.
 - Approve/reject endpoints authenticate with the key, but approval *eligibility* is evaluated
   against human users/groups in the promotion policy — treat approvals as human actions, not
-  something to automate with the key.
+  something to automate with the key. The one exception: a key with the admin role may
+  **reject** with a reason through the admin reject endpoints (e.g. stale promotions) — see
+  Promotions. It still never approves. An Admin personal token is its owner delegating their own
+  decisions to the agent: it may approve or reject wherever its owner could, but only on the user's
+  explicit request for that decision. Each one is audited as an agent's (`personal_token.decision`).
 
 ## Reading deployment data
 
@@ -81,7 +171,7 @@ Environment and role strings are canonicalised to kebab-case server-side (`Produ
 `POST /api/deployments/events` — how pipelines (or scripts) record a deployment.
 
 Required fields: `product`, `service`, `environment`, `version`, `source`, `deployedAt`
-(ISO-8601 UTC). Optional: `status` (`succeeded` default | `failed` | `in_progress`),
+(ISO-8601 UTC). Optional: `status` (`succeeded` default | `failed` | `in_progress` | `removed`),
 `isRollback` (bool), `references[]`, `participants[]`, `metadata{}`.
 
 ```bash
@@ -132,6 +222,11 @@ off-ramps. A succeeded deploy of the version on the target env auto-closes the c
   "from" side of the change, frozen) and `targetCurrentVersion` (what it runs now). They differ
   once the promotion lands, so read history off `fromVersion`.
 - `POST /api/promotions/{id}/approve` / `/reject` — human actions (body `{ "comment"?: ... }`).
+- Admin reject (admin-role key or Admin personal token): `POST /api/promotions/admin/candidates/{id}/reject`
+  `{ "reason" }` → `{ id, status }`, or `POST /api/promotions/admin/candidates/bulk/reject`
+  `{ "ids": [...], "reason" }` → `{ results: [{ id, ok, status | error }] }` (a bad id fails only
+  its own row). Pending only; reason required (`400`). Same effects as a normal reject, audited as
+  an admin override. Use it to clear promotions nobody will approve, and say why in the reason.
 - Work-item sign-off: `POST /api/work-items/{key}/approvals` | `/issues` | `/blocks` with body
   `{ product, targetEnv, comment? }`. Only `/blocks` holds the promotion gate — an issue flags a
   problem on a change that still ships and clears the item like an approval does.
@@ -144,6 +239,10 @@ off-ramps. A succeeded deploy of the version on the target env auto-closes the c
   `200` with `replayed: true`.
 - `GET /api/builds?product=&service=&branch=&limit=` — newest first, `branch` substring match.
 - `GET /api/builds/{id}` — one build incl. manifest.
+- `POST /api/builds/retired` / `POST /api/builds/retired/restore` — mark versions whose images were
+  removed from the container registry (body `{ reason?, items: [{ product?, service, version }] }`,
+  scope `build:retire`). Rollbacks never offer or target a retired version. `GET /api/builds/retired`
+  lists them.
 - `POST /api/promotions/from-build` `{ buildId, targetEnv }` — promote a registered build
   (targets discoverable via `GET /api/promotions/build-targets?product=&service=`).
 
@@ -169,6 +268,35 @@ Feature-flagged (off by default). `GET /api/release-notes/preview?product=&envir
 renders a draft; `POST /api/release-notes/generate` persists it and fires the
 `release_note.generated` webhook; `GET /api/release-notes` / `/{id}` list and fetch.
 
+## Releases
+
+Versioned release trains (`5.10`, `6.0`) with a checklist the release manager moves on by hand.
+`GET /api/releases` lists them, and `GET /api/releases/{id}` returns one with its steps.
+`GET /api/releases/{id}/progress` is the live evidence: per service, the staging build, the production
+promotion (gates, work items, QA Review), the production deploy and its migrations, plus the checks (`staging-builds`, `staging-qa`,
+`production-promotions`, `production-deploys`, `production-migrations`), each with the SDP and
+mkp-release `runs` it read. Writes are for admins and the release managers (the approvers of the
+"Release Manager" requirement on the product's production promotion gate, `GET /api/releases/managers`):
+`POST /api/releases` (only `version` and `products` required; every service of the products is in
+the release), `PUT /api/releases/{id}/services` (`{ excluded: ["product/service"] }` leaves services out)
+(with release `links`), `PATCH /api/releases/{id}/steps/{stepId}` (status, dates, note, `links`;
+backdating is allowed), and `POST /api/releases/{id}/complete|cancel|reopen`. See
+`notes/releases-api.md`.
+
+## Settings
+
+`GET /api/settings` returns the shared portal settings: environments (labels, aliases, retired),
+participant roles, the activity template and analytics knobs. Any key can read it. Writes need the
+admin role:
+
+- `PATCH /api/settings/roles/{key}` `{ displayName?, aliases?, assigneeGroups?, team? }` changes
+  **one** participant role and leaves everything else as stored. A field left out is kept, `[]` clears
+  it, and `team` is the whole team (`[{ email, displayName }]`). The key may be an alias. `404` lists
+  the configured roles; `400` for a team member whose email isn't one. Returns the saved role. Look the
+  people up first (`GET /api/promotions/users/search?q=` or `find_people`).
+- `PUT /api/settings` replaces the **whole** row. Send back everything `GET` returned, or what you
+  left out is wiped. Prefer the PATCH for roles.
+
 ## Error handling
 
 | Status | Meaning | What to do |
@@ -184,4 +312,4 @@ renders a draft; `POST /api/release-notes/generate` persists it and fires the
 
 Full payload shapes and semantics live in the InfraPilot repo under `notes/`:
 `deployment-ingest-api.md`, `promotions-api.md`, `build-registry-api.md`, `analytics-api.md`,
-`release-notes.md`. Consult them when a field's exact behaviour matters.
+`release-notes.md`, `migrations-api.md`, `releases-api.md`. Consult them when a field's exact behaviour matters.

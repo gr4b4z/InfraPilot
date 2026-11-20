@@ -80,7 +80,9 @@ function computeRange(key: string): { from: string; to?: string; days: number } 
 export function AnalyticsPage() {
   useDocumentTitle(['Analytics']);
   const [searchParams, setSearchParams] = useSearchParams();
-  const { getDisplayName, getOrderedEnvironments, environments: configuredEnvs } = useSettingsStore();
+  // Active only: a retired environment is neither a column the API returns nor a candidate for the
+  // production set — left in, the "last in order" convention could land on it.
+  const { getDisplayName, getOrderedEnvironments, activeEnvironments: configuredEnvs } = useSettingsStore();
   const refreshTick = useEntityRefresh(['deployment', 'promotion']);
 
   const [products, setProducts] = useState<string[]>([]);
@@ -288,7 +290,9 @@ export function AnalyticsPage() {
           {allProducts ? (
             <p className="text-[13px]" style={{ color: 'var(--text-muted)' }}>
               Select a single product to see the story × environment matrix and its shipped /
-              in-flight lists — stories don't aggregate meaningfully across products.
+              in-flight lists — stories don't aggregate meaningfully across products. Portfolio-wide
+              story coverage, lead time and the DORA figures are on the{' '}
+              <Link to="/analytics/delivery" className="underline">Delivery metrics</Link> report.
             </p>
           ) : (
             <MatrixSection
@@ -416,7 +420,7 @@ function buildTiles(
     {
       label: 'Story coverage',
       sub: allProducts
-        ? 'per product — pick one'
+        ? 'per product — see Delivery metrics'
         : coverage
           ? `${coverage.withoutWorkItem} deploys w/o story`
           : undefined,

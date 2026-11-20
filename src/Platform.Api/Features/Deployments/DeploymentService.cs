@@ -1,6 +1,8 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Platform.Api.Features.Builds;
 using Platform.Api.Features.Deployments.Models;
+using Platform.Api.Features.Migrations;
 using Microsoft.Extensions.Options;
 using Platform.Api.Features.Promotions;
 using Platform.Api.Features.Settings;
@@ -21,6 +23,7 @@ public class DeploymentService
     private readonly UserPreferencesService _userPrefs;
     private readonly ServiceDeletionService _serviceDeletions;
     private readonly ServiceProductOverrideService _productOverrides;
+    private readonly MigrationService? _migrations;
     private readonly ILogger<DeploymentService> _logger;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -48,7 +51,10 @@ public class DeploymentService
         UserPreferencesService userPrefs,
         ServiceDeletionService serviceDeletions,
         ServiceProductOverrideService productOverrides,
-        ILogger<DeploymentService> logger)
+        ILogger<DeploymentService> logger,
+        // Optional so the unit tests that build this service by hand need not wire migrations; the
+        // container always supplies it.
+        MigrationService? migrations = null)
     {
         _db = db;
         _webhookDispatcher = webhookDispatcher;
@@ -58,6 +64,7 @@ public class DeploymentService
         _userPrefs = userPrefs;
         _serviceDeletions = serviceDeletions;
         _productOverrides = productOverrides;
+        _migrations = migrations;
         _logger = logger;
     }
 
@@ -134,6 +141,30 @@ public class DeploymentService
         => (await IngestEventWithResult(dto, ct)).Event;
 
     /// <summary>
+    /// The product and environment a deploy of <paramref name="service"/> is stored under, exactly as
+    /// <see cref="IngestEventWithResult"/> stores it. Public so a caller that looks something up by
+    /// that key before ingesting (the Flux adapter, matching a promotion candidate) cannot disagree
+    /// with the row that ingest then writes.
+    /// </summary>
+    public async Task<(string Product, string Environment)> ResolveKeyAsync(
+        string product, string service, string environment, CancellationToken ct = default)
+    {
+        // Casing/punctuation canonicalisation (appsettings `Normalization:*`), then the admin's
+        // alias map: a sender that calls production "prod" stores under whichever key an admin
+        // curated, so one environment does not arrive as three.
+        var resolvedEnvironment = await ResolveEnvironmentAsync(environment, ct);
+
+        // Product is the one field on this payload that a pipeline mid-migration reliably gets wrong,
+        // so an admin override for the service wins over what was sent (ServiceProductOverride).
+        // Resolved once, before anything reads it: the revive probe, the replay key, the
+        // PreviousVersion derivation and the stored row all have to agree on which product this
+        // deploy belongs to, and resolving per-use is how they would drift apart.
+        var resolvedProduct = await _productOverrides.ResolveProductAsync(product, service, ct);
+
+        return (resolvedProduct, resolvedEnvironment);
+    }
+
+    /// <summary>
     /// Ingests a deploy event idempotently. A row whose natural key
     /// <c>(Product, Service, Environment, Version, DeployedAt, Source)</c> — the same key
     /// <see cref="RemoveDuplicates"/> uses — already exists is treated as a replay: the existing
@@ -150,20 +181,12 @@ public class DeploymentService
     {
         var norm = _normalization.CurrentValue;
 
-        // Casing/punctuation canonicalisation (appsettings `Normalization:*`), then the admin's
-        // alias map: a sender that calls production "prod" stores under whichever key an admin
-        // curated, so one environment does not arrive as three.
-        var environment = await ResolveEnvironmentAsync(dto.Environment, ct);
+        var (product, environment) = await ResolveKeyAsync(dto.Product, dto.Service, dto.Environment, ct);
 
-        // Product is the one field on this payload that a pipeline mid-migration reliably gets wrong,
-        // so an admin override for the service wins over what was sent (ServiceProductOverride).
-        // Resolved once, before anything reads it: the revive probe, the replay key, the
-        // PreviousVersion derivation and the stored row all have to agree on which product this
-        // deploy belongs to, and resolving per-use is how they would drift apart.
-        var product = await _productOverrides.ResolveProductAsync(dto.Product, dto.Service, ct);
-
-        // Staged, not saved: it rides along with whichever SaveChanges below commits the event.
-        await _serviceDeletions.ReviveOnDeployAsync(product, dto.Service, dto.DeployedAt, ct);
+        // Staged, not saved: it rides along with whichever SaveChanges below commits the event. A
+        // removal is the opposite of evidence that the service is alive, so it never revives one.
+        if (!string.Equals(dto.Status, DeployEventStatuses.Removed, StringComparison.OrdinalIgnoreCase))
+            await _serviceDeletions.ReviveOnDeployAsync(product, dto.Service, dto.DeployedAt, ct);
 
         var replayed = await _db.DeployEvents
             .Where(e => e.Product == product && e.Service == dto.Service
@@ -197,6 +220,9 @@ public class DeploymentService
             // is nothing to close.
             await _promotionHook.OnIngestedAsync(replayed, ct);
 
+            // A replay may carry the hook output the first attempt had not captured yet.
+            if (_migrations is not null) await _migrations.OnDeployIngestedAsync(replayed, ct);
+
             return new IngestResult(replayed, true);
         }
 
@@ -209,12 +235,18 @@ public class DeploymentService
             var previousEvent = await _db.DeployEvents
                 .Where(e => e.Product == product && e.Service == dto.Service && e.Environment == environment)
                 .OrderByDescending(e => e.DeployedAt)
-                .Select(e => new { e.Version })
+                .Select(e => new { e.Version, e.Status })
                 .FirstOrDefaultAsync(ct);
-            previousVersion = previousEvent?.Version;
+            // After a removal the environment ran nothing, so the next deploy has no predecessor.
+            previousVersion = previousEvent is null
+                              || string.Equals(previousEvent.Status, DeployEventStatuses.Removed, StringComparison.OrdinalIgnoreCase)
+                ? null
+                : previousEvent.Version;
         }
 
-        var status = dto.Status ?? "succeeded";
+        var status = string.Equals(dto.Status, DeployEventStatuses.Removed, StringComparison.OrdinalIgnoreCase)
+            ? DeployEventStatuses.Removed
+            : dto.Status ?? "succeeded";
         var deployEvent = new DeployEvent
         {
             Id = Guid.NewGuid(),
@@ -306,6 +338,10 @@ public class DeploymentService
         // resilient even when the promotion machinery misbehaves.
         await _promotionHook.OnIngestedAsync(deployEvent, ct);
 
+        // The schema migration ran inside this deploy and its output rode along with the logs; data
+        // migrations reported before the deploy arrived are linked to it. Swallows its own failures.
+        if (_migrations is not null) await _migrations.OnDeployIngestedAsync(deployEvent, ct);
+
         return new IngestResult(deployEvent, false);
     }
 
@@ -351,7 +387,7 @@ public class DeploymentService
         foreach (var dto in incoming)
         {
             var name = dto.Name.Trim();
-            var (content, truncated, originalBytes) = CapLogContent(dto.Content ?? "");
+            var (content, truncated, originalBytes) = PrepareLogContent(dto.Content);
             truncated = truncated || dto.Truncated;
 
             if (byName.TryGetValue(name, out var row))
@@ -382,6 +418,14 @@ public class DeploymentService
             });
         }
     }
+
+    /// <summary>
+    /// What a log block stores: the sender's content with secrets redacted (see
+    /// <see cref="SecretRedactor"/> — these logs are readable by everyone signed in), then capped by
+    /// <see cref="CapLogContent"/>. Every log the portal stores, deploy or migration, goes through here.
+    /// </summary>
+    public static (string Content, bool Truncated, int OriginalByteCount) PrepareLogContent(string? content) =>
+        CapLogContent(SecretRedactor.Redact(content));
 
     /// <summary>
     /// Trims content to <see cref="LogContentLimitBytes"/>, keeping the tail and prefixing a marker
@@ -509,10 +553,12 @@ public class DeploymentService
             .Select(w => new RelatedWorkItemDto(w.WorkItemKey, w.Provider, w.Url, w.Title, w.SubTitle, w.Priority, w.WorkItemType, signOffEnvs))
             .ToList();
 
-        return new DeployEventDetailDto(eventDto, logSummaries, historyDtos, promotionDtos, workItemDtos);
+        var migrations = _migrations is null ? [] : await _migrations.ForDeployEventAsync(ev, ct);
+
+        return new DeployEventDetailDto(eventDto, logSummaries, historyDtos, promotionDtos, workItemDtos, migrations);
     }
 
-    private static int CountLines(string content)
+    internal static int CountLines(string content)
     {
         if (content.Length == 0) return 0;
         var lines = 1;
@@ -541,7 +587,9 @@ public class DeploymentService
             .Where(e => e.Product == product && e.Environment == environment)
             // A retired service is not a rollback target — offering its versions in the picker would
             // invite somebody to redeploy the thing that was just migrated away.
-            .ExcludingDeletedServices(_db);
+            .ExcludingDeletedServices(_db)
+            // Nor is a version whose image was removed from the container registry: it cannot be pulled.
+            .ExcludingRetiredVersions(_db);
         if (!string.IsNullOrWhiteSpace(serviceName))
             query = query.Where(e => e.Service == serviceName);
 
@@ -605,13 +653,16 @@ public class DeploymentService
     /// <summary>
     /// The service × environment matrix. Services an admin has retired are dropped here — this is the
     /// query the product page derives its service list from, so filtering it is what actually takes
-    /// an obsolete service off the page.
+    /// an obsolete service off the page. Retired environments are dropped too: their last events
+    /// stopped describing anything the day nothing deployed there any more.
     /// </summary>
     public async Task<List<DeploymentStateDto>> GetState(string? product, string? environment, string? serviceName, CancellationToken ct = default)
     {
+        var retired = await _environments.RetiredKeysAsync(ct);
+
         // Cell-key order, ordinal — what the grouped query this replaced returned wherever its
         // GROUP BY ran sorted (SQLite always), now fixed rather than left to the plan.
-        var latest = (await LatestStateEvents(product, environment, serviceName).ToListAsync(ct))
+        var latest = (await LatestStateEvents(product, environment, serviceName, retired).ToListAsync(ct))
             .OrderBy(e => e.Product, StringComparer.Ordinal)
             .ThenBy(e => e.Service, StringComparer.Ordinal)
             .ThenBy(e => e.Environment, StringComparer.Ordinal)
@@ -629,7 +680,7 @@ public class DeploymentService
     /// </summary>
     public async Task<List<DeploymentStateSummaryDto>> GetStateSummary(
         string? product, string? environment, string? serviceName, CancellationToken ct = default)
-        => (await LatestStateEvents(product, environment, serviceName)
+        => (await LatestStateEvents(product, environment, serviceName, await _environments.RetiredKeysAsync(ct))
                 .Select(e => new DeploymentStateSummaryDto(
                     e.Id, e.Product, e.Service, e.Environment, e.Version, e.PreviousVersion,
                     e.IsRollback, e.Status, e.Source, e.DeployedAt))
@@ -655,18 +706,30 @@ public class DeploymentService
     /// <para>A join on the looked-up id rather than <c>Id IN (...)</c>: Postgres plans the IN form as a
     /// hashed semi-join that evaluates the per-cell lookup twice. Unordered — the callers sort in
     /// memory rather than have the database sort rows carrying JSON columns.</para>
+    ///
+    /// <para>Cells in a <paramref name="retired"/> environment are left out, explicit
+    /// <paramref name="environment"/> filter or not: nothing is current in an environment nobody
+    /// deploys to. Their history is still on the history and event-detail paths.</para>
+    ///
+    /// <para>So is a cell whose newest event is a <see cref="DeployEventStatuses.Removed"/>: the
+    /// service was taken out of that environment, so nothing of it is current there. The removal
+    /// stays in history, and the next deploy brings the cell back.</para>
     /// </summary>
-    private IQueryable<DeployEvent> LatestStateEvents(string? product, string? environment, string? serviceName)
+    private IQueryable<DeployEvent> LatestStateEvents(
+        string? product, string? environment, string? serviceName, IReadOnlySet<string> retired)
     {
         // Read-only: the rows are mapped straight to DTOs, so tracking every matrix row (each carrying
         // its JSON columns) buys nothing.
-        var query = _db.DeployEvents.AsNoTracking().ExcludingDeletedServices(_db);
+        var query = _db.DeployEvents.AsNoTracking()
+            .ExcludingDeletedServices(_db)
+            .ExcludingRetiredEnvironments(retired);
         if (!string.IsNullOrEmpty(product)) query = query.Where(e => e.Product == product);
         if (!string.IsNullOrEmpty(environment)) query = query.Where(e => e.Environment == environment);
         if (!string.IsNullOrEmpty(serviceName)) query = query.Where(e => e.Service == serviceName);
 
-        // The filters and the retired-service check are all on the cell's own key, so the per-cell
-        // lookup doesn't repeat them: every event of a cell that passed shares its key.
+        // The filters and the retired-service and retired-environment checks are all on the cell's
+        // own key, so the per-cell lookup doesn't repeat them: every event of a cell that passed
+        // shares its key.
         var latest = query
             .Select(e => new { e.Product, e.Service, e.Environment })
             .Distinct()
@@ -681,17 +744,41 @@ public class DeploymentService
 
         return from l in latest
                join e in _db.DeployEvents.AsNoTracking() on l.Id equals e.Id
+               where e.Status != DeployEventStatuses.Removed
                select e;
     }
 
     /// <summary>
+    /// When each (product, service, environment) last had its service removed. Removals are rare, so
+    /// the read paths that aggregate a cell's newest timestamp over the narrow index (product
+    /// summaries, search) take this small set and drop the cells whose newest event is the removal,
+    /// rather than switching to the per-cell newest-row lookup <see cref="LatestStateEvents"/> does.
+    /// </summary>
+    private async Task<Dictionary<(string Product, string Service, string Environment), DateTimeOffset>> RemovedCellsAsync(
+        CancellationToken ct)
+        => (await _db.DeployEvents.AsNoTracking()
+                .Where(e => e.Status == DeployEventStatuses.Removed)
+                .GroupBy(e => new { e.Product, e.Service, e.Environment })
+                .Select(g => new { g.Key.Product, g.Key.Service, g.Key.Environment, RemovedAt = g.Max(e => e.DeployedAt) })
+                .ToListAsync(ct))
+            .ToDictionary(r => (r.Product, r.Service, r.Environment), r => r.RemovedAt);
+
+    // The cell's newest event is its removal when no event is newer than the last removal.
+    private static bool IsRemoved(
+        Dictionary<(string Product, string Service, string Environment), DateTimeOffset> removed,
+        string product, string service, string environment, DateTimeOffset newestAt)
+        => removed.TryGetValue((product, service, environment), out var removedAt) && removedAt >= newestAt;
+
+    /// <summary>
     /// The product × environment matrix. Products the caller has hidden are dropped here rather
     /// than in the UI — this is the canonical product list, so filtering it also empties the
-    /// release-notes index and every product dropdown built from it.
+    /// release-notes index and every product dropdown built from it. Retired environments are
+    /// dropped from each card, and a product seen only in retired environments has no card at all.
     /// </summary>
     public async Task<List<ProductSummaryDto>> GetProductSummaries(CancellationToken ct = default)
     {
         var hidden = await _userPrefs.GetHiddenProductsAsync(ct);
+        var retired = await _environments.RetiredKeysAsync(ct);
 
         // One row per (product, service, environment). A summary only counts those and reads the
         // newest timestamp, which is the group's MAX — so the query aggregates over the narrow index
@@ -702,9 +789,16 @@ public class DeploymentService
             // Retired services stop counting towards the per-environment service totals too, or the
             // product card would keep advertising components the product page no longer lists.
             .ExcludingDeletedServices(_db)
+            // And a retired environment loses its column on the card, for the same reason the
+            // product page's matrix loses it.
+            .ExcludingRetiredEnvironments(retired)
             .GroupBy(e => new { e.Product, e.Service, e.Environment })
-            .Select(g => new { g.Key.Product, g.Key.Environment, DeployedAt = g.Max(e => e.DeployedAt) })
+            .Select(g => new { g.Key.Product, g.Key.Service, g.Key.Environment, DeployedAt = g.Max(e => e.DeployedAt) })
             .ToListAsync(ct);
+
+        // A service taken out of an environment stops counting there, as it leaves the matrix.
+        var removed = await RemovedCellsAsync(ct);
+        latest = latest.Where(c => !IsRemoved(removed, c.Product, c.Service, c.Environment, c.DeployedAt)).ToList();
 
         var grouped = latest
             .GroupBy(e => e.Product)
@@ -731,8 +825,9 @@ public class DeploymentService
     /// the query behind "find a service without knowing its product", so unlike the other read
     /// paths it takes no product argument at all. Hidden products are dropped for the same reason
     /// they are in <see cref="GetProductSummaries"/> — hiding a product hides it everywhere — and
-    /// retired services stay out like on every other read path. Results are most-recently-deployed
-    /// first, capped by <paramref name="limit"/>.
+    /// retired services stay out like on every other read path. A hit lists only the environments
+    /// that are not retired; a service seen only in retired ones is not a hit. Results are
+    /// most-recently-deployed first, capped by <paramref name="limit"/>.
     /// </summary>
     public async Task<List<ServiceSearchResultDto>> SearchServices(
         string query, int limit = 20, CancellationToken ct = default)
@@ -741,11 +836,13 @@ public class DeploymentService
         if (needle.Length == 0) return new List<ServiceSearchResultDto>();
 
         var hidden = await _userPrefs.GetHiddenProductsAsync(ct);
+        var retired = await _environments.RetiredKeysAsync(ct);
 
         // One row per (product, service, environment) — grouped into per-service hits in memory,
         // which keeps the query translatable (a nested Distinct inside a GroupBy projection isn't).
         var rows = await _db.DeployEvents.AsNoTracking()
             .ExcludingDeletedServices(_db)
+            .ExcludingRetiredEnvironments(retired)
             .Where(e => !hidden.Contains(e.Product))
             .Where(e => e.Service.ToLower().Contains(needle))
             .GroupBy(e => new { e.Product, e.Service, e.Environment })
@@ -757,6 +854,10 @@ public class DeploymentService
                 LastDeployedAt = g.Max(e => e.DeployedAt),
             })
             .ToListAsync(ct);
+
+        // An environment the service was taken out of is not one it is in.
+        var removed = await RemovedCellsAsync(ct);
+        rows = rows.Where(r => !IsRemoved(removed, r.Product, r.Service, r.Environment, r.LastDeployedAt)).ToList();
 
         return rows
             .GroupBy(r => new { r.Product, r.Service })
@@ -777,6 +878,10 @@ public class DeploymentService
     /// environment, the most recent distinct versions with the environments each reached, and the
     /// service's promotions. Returns null when the pair has no visible deployments — unknown and
     /// retired look the same here, exactly as they do on every other read path.
+    ///
+    /// <para>Retired environments are left out of both the per-environment state and each version's
+    /// "reached" list, and a version seen only in retired environments is not listed. Promotions are
+    /// not filtered: they are history, and one that left from a retired environment still did.</para>
     /// </summary>
     public async Task<ServiceDetailDto?> GetServiceDetail(
         string product, string service, int versionsLimit = 10, CancellationToken ct = default)
@@ -786,9 +891,12 @@ public class DeploymentService
 
         // Recent deploys, newest first, folded into distinct versions in memory (same reasoning as
         // GetVersions: GroupBy + First doesn't translate cleanly). Oversampled so a version that was
-        // redeployed many times doesn't starve the list of older versions.
+        // redeployed many times doesn't starve the list of older versions. Retired environments are
+        // filtered before the cap, so their rows don't eat into the oversample either — and answered
+        // from the snapshot GetState already loaded.
         var recent = await _db.DeployEvents.AsNoTracking()
             .ExcludingDeletedServices(_db)
+            .ExcludingRetiredEnvironments(await _environments.RetiredKeysAsync(ct))
             .Where(e => e.Product == product && e.Service == service)
             .OrderByDescending(e => e.DeployedAt)
             .Select(e => new { e.Id, e.Environment, e.Version, e.Status, e.IsRollback, e.DeployedAt })
@@ -998,6 +1106,86 @@ public class DeploymentService
     private IQueryable<DeployEventLog> OldLogsQuery(DateTimeOffset cutoff) =>
         _db.DeployEventLogs
             .Where(l => _db.DeployEvents.Any(e => e.Id == l.DeployEventId && e.DeployedAt < cutoff));
+
+    // --- Secret redaction of stored logs ---
+
+    /*
+     * Ingest redacts secrets before a log is stored (PrepareLogContent). Logs stored before that, or
+     * before a pattern was added, still hold whatever the producer sent; this pass re-applies the
+     * redactor to every stored deploy and migration log. Rows are read in batches so a large table
+     * never sits in memory at once. Running it again is harmless: redaction is idempotent, and an
+     * unchanged row is not written.
+     */
+
+    private const int RedactionBatchSize = 50;
+
+    /// <summary>
+    /// Applies <see cref="SecretRedactor"/> to every stored deploy and migration log. Returns how many
+    /// of each it changed — or, with <paramref name="apply"/> false, would change, writing nothing.
+    /// </summary>
+    public async Task<(int DeployLogs, int MigrationLogs)> RedactStoredLogs(bool apply, CancellationToken ct = default)
+    {
+        var deployLogs = await RedactLogRows(
+            await _db.DeployEventLogs.Select(l => l.Id).ToListAsync(ct),
+            batch => _db.DeployEventLogs.Where(l => batch.Contains(l.Id)),
+            l => l.Content,
+            (l, content) =>
+            {
+                l.Content = content;
+                l.ByteCount = System.Text.Encoding.UTF8.GetByteCount(content);
+                l.LineCount = CountLines(content);
+            },
+            apply, ct);
+
+        var migrationLogs = await RedactLogRows(
+            await _db.MigrationRunLogs.Select(l => l.Id).ToListAsync(ct),
+            batch => _db.MigrationRunLogs.Where(l => batch.Contains(l.Id)),
+            l => l.Content,
+            (l, content) =>
+            {
+                l.Content = content;
+                l.ByteCount = System.Text.Encoding.UTF8.GetByteCount(content);
+                l.LineCount = CountLines(content);
+            },
+            apply, ct);
+
+        _logger.LogInformation(
+            "Secret redaction {Mode}: {DeployLogs} deploy log block(s), {MigrationLogs} migration log block(s)",
+            apply ? "changed" : "would change", deployLogs, migrationLogs);
+
+        return (deployLogs, migrationLogs);
+    }
+
+    private async Task<int> RedactLogRows<TLog>(
+        List<Guid> ids,
+        Func<Guid[], IQueryable<TLog>> load,
+        Func<TLog, string> read,
+        Action<TLog, string> write,
+        bool apply,
+        CancellationToken ct) where TLog : class
+    {
+        var changed = 0;
+        foreach (var batch in ids.Chunk(RedactionBatchSize))
+        {
+            var query = load(batch);
+            var rows = await (apply ? query : query.AsNoTracking()).ToListAsync(ct);
+            foreach (var row in rows)
+            {
+                var content = read(row);
+                var redacted = SecretRedactor.Redact(content);
+                if (redacted == content) continue;
+                changed++;
+                if (apply) write(row, redacted);
+            }
+            if (apply)
+            {
+                await _db.SaveChangesAsync(ct);
+                // Written rows are done with; tracking up to 512 KiB of content each would only grow.
+                _db.ChangeTracker.Clear();
+            }
+        }
+        return changed;
+    }
 
     // --- Mapping helpers ---
 
