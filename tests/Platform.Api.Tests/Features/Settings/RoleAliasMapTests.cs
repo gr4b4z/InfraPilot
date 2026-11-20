@@ -118,6 +118,48 @@ public class RoleAliasMapTests
             [Role("qa-owner", aliases: ["qa"]), Role("reviewer", aliases: ["code-reviewer"]), Role("author")]));
     }
 
+    // ── Team ─────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public void Clean_Team_TrimsDedupesOnEmailAndDefaultsTheName()
+    {
+        var cleaned = RoleConfigValidator.Clean(new RoleConfigDto("qa-owner", "QA owner", Team:
+        [
+            new RoleTeamMemberDto(" ada@example.com ", " Ada Tester "),
+            new RoleTeamMemberDto("ADA@example.com", "Ada again"),
+            new RoleTeamMemberDto("  ", "Nobody"),
+            new RoleTeamMemberDto("bo@example.com", " "),
+        ]));
+
+        Assert.Equal(
+            new[]
+            {
+                new RoleTeamMemberDto("ada@example.com", "Ada Tester"),
+                new RoleTeamMemberDto("bo@example.com", "bo@example.com"),
+            },
+            cleaned.Team);
+    }
+
+    [Fact]
+    public void Clean_NoTeam_IsAnEmptyTeam()
+    {
+        Assert.Empty(RoleConfigValidator.Clean(Role("qa-owner")).Team!);
+    }
+
+    [Fact]
+    public void Validate_ATeamMemberWithoutAnAddress_NamesThemAndTheRole()
+    {
+        var role = RoleConfigValidator.Clean(new RoleConfigDto("qa-owner", "QA owner", Team:
+        [
+            new RoleTeamMemberDto("ada@example.com", "Ada"),
+            new RoleTeamMemberDto("Bo Tester", "Bo Tester"),
+        ]));
+
+        var error = Assert.Single(RoleConfigValidator.Validate([role]));
+        Assert.Contains("'Bo Tester'", error);
+        Assert.Contains("'qa-owner' team", error);
+    }
+
     // ── Completeness reads through the map ───────────────────────────────────
 
     [Fact]

@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { useSettingsStore } from '@/stores/settingsStore';
+import { useSettingsStore, type RoleTeamMember } from '@/stores/settingsStore';
 import { canonicaliseRoleKey, resolveRoleKey } from '@/lib/roleKey';
 
 /**
@@ -93,4 +93,69 @@ export function useRoleAssigneeGroups(role: string | null | undefined): { id: st
     const config = roles.find((r) => canonicaliseRoleKey(r.key) === key);
     return (config?.assigneeGroups ?? []).filter((g) => g.id?.trim());
   }, [role, roles]);
+}
+
+/** One configured role's team (Settings → Participant Roles → Team), with the role's label. */
+export interface ConfiguredRoleTeam {
+  key: string;
+  displayName: string;
+  members: RoleTeamMember[];
+}
+
+const EMPTY_TEAM: RoleTeamMember[] = [];
+
+/**
+ * The people an admin listed as `role`'s team (alias-resolved), in the order they listed them, or an
+ * empty list. The assignment pickers offer them first.
+ */
+export function useRoleTeam(role: string | null | undefined): RoleTeamMember[] {
+  const roles = useSettingsStore((s) => s.roles);
+  return useMemo(() => {
+    const key = resolveRoleKey(role, roles);
+    if (!key) return EMPTY_TEAM;
+    const config = roles.find((r) => canonicaliseRoleKey(r.key) === key);
+    const team = (config?.team ?? []).filter((m) => m.email?.trim());
+    return team.length > 0 ? team : EMPTY_TEAM;
+  }, [role, roles]);
+}
+
+/**
+ * Every configured role that has a team, labelled, in the roles' display-name order. What the
+ * work-items "Assigned to" filter always lists.
+ */
+export function useRoleTeams(): ConfiguredRoleTeam[] {
+  const configured = useConfiguredRoles();
+  const roles = useSettingsStore((s) => s.roles);
+  return useMemo(() => {
+    const out: ConfiguredRoleTeam[] = [];
+    for (const role of configured) {
+      const config = roles.find((r) => canonicaliseRoleKey(r.key) === role.key);
+      const members = (config?.team ?? []).filter((m) => m.email?.trim());
+      if (members.length > 0) out.push({ key: role.key, displayName: role.displayName, members });
+    }
+    return out;
+  }, [configured, roles]);
+}
+
+/**
+ * The team members a typed search matches — on name or email, case-insensitively. Under two
+ * characters (nothing typed yet, the same threshold the directory search uses) the whole team
+ * matches, so a picker can offer the team before the first keystroke.
+ */
+export function matchTeam(team: readonly RoleTeamMember[], query: string): RoleTeamMember[] {
+  const q = query.trim().toLowerCase();
+  if (q.length < 2) return [...team];
+  return team.filter(
+    (m) => m.displayName.toLowerCase().includes(q) || m.email.toLowerCase().includes(q),
+  );
+}
+
+/** `results` without anybody already on `team`, so a directory hit doesn't repeat a team row. */
+export function withoutTeam<T extends { email: string }>(
+  results: readonly T[],
+  team: readonly RoleTeamMember[],
+): T[] {
+  if (team.length === 0) return [...results];
+  const onTeam = new Set(team.map((m) => m.email.trim().toLowerCase()));
+  return results.filter((r) => !onTeam.has((r.email ?? '').trim().toLowerCase()));
 }
