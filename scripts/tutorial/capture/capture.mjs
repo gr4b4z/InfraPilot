@@ -718,7 +718,7 @@ try {
     step({
       title: 'Settings → Feature Flags', actor: 'admin',
       images: [{ file: img }],
-      what: 'Promotions, Rollbacks, Release Notes, Analytics, the Service Catalog and Approvals can each be switched off. A disabled module disappears from the navigation and its API answers with a clear refusal, so an installation can start with deployments only and grow.',
+      what: 'Promotions, Rollbacks, Release Notes, Analytics, the Request Catalog and Approvals can each be switched off. A disabled module disappears from the navigation and its API answers with a clear refusal, so an installation can start with deployments only and grow.',
       say: 'Not every team wants every part on day one. Start with the matrix, turn promotions on when the policies are agreed.',
     });
 

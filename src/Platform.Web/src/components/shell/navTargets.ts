@@ -51,7 +51,7 @@ export const NAV_TARGETS: NavTarget[] = [
   { key: 'u', label: 'Promotions audit', to: '/promotions/audit', icon: History, featureFlag: FeatureFlag.Promotions,
     adminOnly: true },
   { key: 't', label: 'My tasks', to: '/my-tasks', icon: CheckCircle, qaOnly: true },
-  { key: 'c', label: 'Service catalog', to: '/catalog', icon: LayoutGrid, featureFlag: FeatureFlag.ServiceCatalog },
+  { key: 'c', label: 'Request catalog', to: '/catalog', icon: LayoutGrid, featureFlag: FeatureFlag.ServiceCatalog },
   { key: 'q', label: 'My requests', to: '/requests', icon: FileText, featureFlag: FeatureFlag.ServiceCatalog },
   { key: 'a', label: 'Approvals', to: '/approvals', icon: CheckCircle, featureFlag: FeatureFlag.Approvals },
   { key: 'r', label: 'Rollbacks', to: '/rollbacks', icon: Undo2, featureFlag: FeatureFlag.Rollbacks },

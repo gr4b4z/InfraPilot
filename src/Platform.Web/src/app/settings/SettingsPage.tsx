@@ -51,7 +51,7 @@ const NAV: NavItem[] = [
   },
   {
     to: 'catalog',
-    label: 'Service Catalog',
+    label: 'Request Catalog',
     icon: Package,
     description: 'Catalog YAML source, sync and definitions',
   },
