@@ -421,9 +421,14 @@ ADR-0004, this plan, the `GLOSSARY.md` entry.
 ### Task 2: Options, flag, wiring
 
 **Files:** `ServiceInventoryOptions.cs` (+ validator), `Infrastructure/Features/IFeatureFlags.cs`
-(`FeatureFlagKeys.ServiceInventory = "features.serviceInventory"`), `FeatureFlagSeeder.cs` (default
-`false`, config path `Features:ServiceInventory:DefaultEnabled`), `Program.cs`, `appsettings.json`
+(`FeatureFlagKeys.ServiceInventory = "features.serviceInventory"`), `Program.cs`, `appsettings.json`
 (empty `ServiceInventory` section with a `_comment`), `featureFlagsStore.ts` (key only).
+
+The flag is **not seeded** in Phase 1: with no row it reads as off and has no toggle under
+**Settings → Feature Flags**, so Phase 1 shows nothing to anyone. An admin turns it on with
+`PUT /api/features/features.serviceInventory`. The seeder entry (default `false`, config path
+`Features:ServiceInventory:DefaultEnabled`) is added in Phase 2, with the pages and the "What's new"
+entry.
 
 Tests: validation rejects a host not in `AllowedHosts`, `http://`, an unknown credential, two catalog
 feeds, a `query` credential on an `oci` source; a valid configuration binds.

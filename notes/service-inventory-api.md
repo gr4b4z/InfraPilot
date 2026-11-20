@@ -6,7 +6,9 @@ derived copy (ADR-0004, `docs/plans/service-inventory.md`); nothing here edits t
 
 All endpoints are under `/api/service-inventory`, require a signed-in user or an API key, and answer
 `404` with `"The service inventory is not enabled on this platform"` while the feature flag
-`features.serviceInventory` is off.
+`features.serviceInventory` is off. Until the pages exist the flag has no row and no toggle under
+**Settings → Feature Flags**; an admin turns it on with
+`PUT /api/features/features.serviceInventory` and the body `{"enabled": true}`.
 
 A service is addressed by its **portal service name**: the catalog `id` is the service name
 (compared case-insensitively). Every response carries `freshness`, the age of the portal's copy:

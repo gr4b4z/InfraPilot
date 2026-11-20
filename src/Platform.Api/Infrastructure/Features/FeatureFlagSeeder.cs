@@ -29,7 +29,6 @@ public static class FeatureFlagSeeder
             (FeatureFlagKeys.Approvals, "Features:Approvals:DefaultEnabled", true),
             (FeatureFlagKeys.ReleaseNotes, "Features:ReleaseNotes:DefaultEnabled", false),
             (FeatureFlagKeys.Analytics, "Features:Analytics:DefaultEnabled", false),
-            (FeatureFlagKeys.ServiceInventory, "Features:ServiceInventory:DefaultEnabled", false),
         };
 
         var existingKeys = await db.PlatformSettings
