@@ -79,14 +79,21 @@ public class InventoryReadService
         return document is T typed ? (typed, snapshot) : null;
     }
 
-    public static FeedFreshness Freshness(InventoryFeed? feed, InventorySnapshot? snapshot, string feedType) => new(
+    /// <summary>What everyone but an admin is told when the last refresh failed.</summary>
+    public const string RefreshFailed = "The last refresh failed. An administrator can see why.";
+
+    /// <summary>
+    /// <paramref name="detailed"/> is for admins: the recorded reason names the source (its host and
+    /// path), which the rest of the portal's users are not shown. They learn that it failed, and when.
+    /// </summary>
+    public static FeedFreshness Freshness(InventoryFeed? feed, InventorySnapshot? snapshot, string feedType, bool detailed) => new(
         feedType,
         string.IsNullOrEmpty(snapshot?.Period) ? null : snapshot!.Period,
         snapshot is null ? null : VersionLabel(snapshot),
         snapshot?.FetchedAt,
         feed?.LastSuccessAt,
         feed?.LastAttemptAt,
-        feed?.LastError,
+        feed?.LastError is null ? null : detailed ? feed.LastError : RefreshFailed,
         feed?.ConsecutiveFailures ?? 0);
 
     public static string VersionLabel(InventorySnapshot s) => s.FeedType switch

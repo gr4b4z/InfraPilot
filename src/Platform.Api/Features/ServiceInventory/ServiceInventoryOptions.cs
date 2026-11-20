@@ -26,8 +26,33 @@ public class ServiceInventoryOptions
 
     public List<InventoryFeedOptions> Feeds { get; set; } = [];
 
-    public bool IsHostAllowed(string host) =>
-        AllowedHosts.Any(h => string.Equals(h.Trim(), host, StringComparison.OrdinalIgnoreCase));
+    /// <summary>
+    /// An entry is a host, or <c>host:port</c> for a port other than 443. The port is part of the
+    /// match: listing <c>registry.example.com</c> does not allow <c>registry.example.com:8443</c>.
+    /// </summary>
+    public bool IsHostAllowed(string authority)
+    {
+        var wanted = HostAuthority.Normalize(authority);
+        return AllowedHosts.Any(h => HostAuthority.Normalize(h) == wanted);
+    }
+
+    public bool IsAllowed(Uri uri) => IsHostAllowed(HostAuthority.Of(uri));
+}
+
+/// <summary>
+/// A host with its port, the unit the allowlist and every credential are bound to: lower case, the
+/// port left out when it is 443. Another port on the same host is another authority.
+/// </summary>
+public static class HostAuthority
+{
+    public static string Of(Uri uri) =>
+        uri.IsDefaultPort || uri.Port == 443 ? uri.IdnHost.ToLowerInvariant() : $"{uri.IdnHost.ToLowerInvariant()}:{uri.Port}";
+
+    public static string Normalize(string? configured)
+    {
+        var value = (configured ?? "").Trim().ToLowerInvariant();
+        return value.EndsWith(":443", StringComparison.Ordinal) ? value[..^4] : value;
+    }
 }
 
 public static class InventoryFeedTypes
@@ -130,7 +155,9 @@ public class ClosedMonthsOptions
 /// </summary>
 public static partial class ServiceInventoryOptionsValidator
 {
-    [GeneratedRegex(@"^\d{4}-(0[1-9]|1[0-2])$")]
+    // \A…\z and [0-9]: "$" also matches before a trailing newline and "\d" any Unicode digit, and a
+    // period ends up in URLs and in fixed-width columns.
+    [GeneratedRegex(@"\A[0-9]{4}-(0[1-9]|1[0-2])\z")]
     public static partial Regex PeriodPattern();
 
     public static IReadOnlyList<string> Validate(ServiceInventoryOptions options)
@@ -240,7 +267,7 @@ public static partial class ServiceInventoryOptionsValidator
         if (!string.IsNullOrEmpty(uri.UserInfo))
             errors.Add($"feed '{feed}': {field} must not carry a user name or password; use a named credential");
         if (!string.IsNullOrEmpty(uri.Query)) errors.Add($"feed '{feed}': {field} must not carry a query string; put a SAS token in a query credential");
-        CheckHost(options, feed, uri.Host, errors);
+        CheckHost(options, feed, HostAuthority.Of(uri), errors);
     }
 
     private static void CheckHost(ServiceInventoryOptions options, string feed, string host, List<string> errors)

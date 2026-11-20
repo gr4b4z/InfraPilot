@@ -33,7 +33,7 @@ public static partial class DocumentReader
         [InventoryFeedTypes.Cost] = 2,
     };
 
-    [GeneratedRegex("^[A-Z]{3}$")]
+    [GeneratedRegex(@"\A[A-Z]{3}\z")]
     private static partial Regex CurrencyCode();
 
     private static readonly JsonSerializerOptions Json = new()

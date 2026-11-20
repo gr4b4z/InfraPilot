@@ -63,6 +63,9 @@ public partial class OciArtifactSource : IArtifactSource
     [GeneratedRegex("""<([^>]+)>\s*;\s*rel="?next"?""")]
     private static partial Regex NextLink();
 
+    [GeneratedRegex(@"\Asha256:[0-9a-f]{64}\z")]
+    private static partial Regex Sha256Digest();
+
     private readonly InventoryHttpClient _http;
     private readonly OciTokenCache _tokens;
     private readonly TimeProvider _clock;
@@ -78,11 +81,11 @@ public partial class OciArtifactSource : IArtifactSource
         string registry, string repository, string tag, string file, InventoryCredentialOptions? credential,
         string? authHost = null)
     {
-        _authHost = string.IsNullOrWhiteSpace(authHost) ? null : authHost.Trim();
+        _authHost = string.IsNullOrWhiteSpace(authHost) ? null : HostAuthority.Normalize(authHost);
         _http = http;
         _tokens = tokens;
         _clock = clock;
-        _registry = registry;
+        _registry = HostAuthority.Normalize(registry);
         _repository = repository;
         _tag = tag;
         _file = file;
@@ -149,6 +152,8 @@ public partial class OciArtifactSource : IArtifactSource
             var match = link is null ? null : NextLink().Match(link);
             // A relative link is relative to the page just read (RFC 8288), not to the registry root.
             next = match is { Success: true } ? new Uri(current, match.Groups[1].Value) : null;
+            if (next is not null && HostAuthority.Of(next) != _registry)
+                throw new InventoryFetchException($"{Location}: the tag list continues on another host.");
         }
 
         var thisMonth = now.UtcDateTime.ToString("yyyy-MM");
@@ -183,7 +188,9 @@ public partial class OciArtifactSource : IArtifactSource
                         && Str(title) == _file
                         && layer.TryGetProperty("digest", out var digest)
                         && Str(digest) is { } value
-                        && value.StartsWith("sha256:", StringComparison.Ordinal))
+                        // Exactly a sha256 digest: the value goes into the blob URL, so nothing else
+                        // (a path, a query) may ride along.
+                        && Sha256Digest().IsMatch(value))
                         return value;
                 }
             }
@@ -239,18 +246,17 @@ public partial class OciArtifactSource : IArtifactSource
             throw new InventoryFetchException("The registry's token realm is not a valid URL.");
         // The challenge comes from the remote side: the feed's credential goes only to the registry
         // itself or to the token host configured for it, never to whatever host the challenge names.
-        var trusted = string.Equals(realmUri.Host, _registry, StringComparison.OrdinalIgnoreCase)
-                      || string.Equals(realmUri.Host, _authHost, StringComparison.OrdinalIgnoreCase);
-        if (!trusted)
+        var realmAuthority = HostAuthority.Of(realmUri);
+        if (realmAuthority != _registry && realmAuthority != _authHost)
             throw new InventoryFetchException(
-                $"The registry {_registry} asked for a token from {realmUri.Host}; set AuthHost for this feed to allow it.");
+                $"The registry {_registry} asked for a token from {realmAuthority}; set AuthHost for this feed to allow it.");
         var query = $"scope={Uri.EscapeDataString($"repository:{_repository}:pull")}";
         if (!string.IsNullOrEmpty(service)) query = $"service={Uri.EscapeDataString(service)}&{query}";
         var tokenUri = new UriBuilder(realmUri) { Query = query }.Uri;
 
         var response = await _http.SendAsync(new InventoryRequest(HttpMethod.Get, tokenUri)
         {
-            Credential = RequestCredential.From(_credential, tokenUri.Host),
+            Credential = RequestCredential.From(_credential, realmAuthority),
             ExpectJson = true,
         }, ct);
         if (response.Status == HttpStatusCode.Unauthorized)

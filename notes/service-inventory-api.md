@@ -25,6 +25,8 @@ A service is addressed by its **portal service name**: the catalog `id` is the s
 ```
 
 A failed refresh never removes data: the previous copy keeps being served, with `lastError` set.
+Admins get the recorded reason, which names the source; everyone else gets
+`"The last refresh failed. An administrator can see why."`.
 
 ## `GET /services/{serviceName}`
 
@@ -109,5 +111,8 @@ when that month was never read or has no such service.
 See `docs/plans/service-inventory.md`, "Configuration". Feeds are listed under `ServiceInventory`
 in configuration; credential values come from the secret configuration, for example
 `ServiceInventory__Credentials__registry__Password`, and are never returned by this API. A URL may
-not carry a user name, password or query string: use a named credential. A registry whose token
+not carry a user name, password or query string: use a named credential. `AllowedHosts` entries are
+hosts on port 443, or `host:port`; credentials are bound to that host and port. The registry's blob
+redirect may leave the allowlist only for a public address: if the registry's storage is on a private
+address (a private endpoint), add its host to `AllowedHosts`. A registry whose token
 service is on another host needs that host as the source's `AuthHost`.

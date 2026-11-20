@@ -40,11 +40,11 @@ public static class ServiceInventoryEndpoints
     private static string Key(string serviceName) => serviceName.Trim().ToLowerInvariant();
 
     private static async Task<IResult> GetServiceAsync(
-        string serviceName, InventoryReadService read, PlatformDbContext db, CancellationToken ct)
+        string serviceName, InventoryReadService read, PlatformDbContext db, ICurrentUser user, CancellationToken ct)
     {
         var feed = await read.FeedAsync(InventoryFeedTypes.Catalog, ct: ct);
         var current = await read.DocumentAsync<CatalogDocument>(feed, ct);
-        var freshness = InventoryReadService.Freshness(feed, current?.Snapshot, InventoryFeedTypes.Catalog);
+        var freshness = InventoryReadService.Freshness(feed, current?.Snapshot, InventoryFeedTypes.Catalog, user.IsAdmin);
         var id = Key(serviceName);
         var entry = current?.Document.Services.FirstOrDefault(s => s.Id.Trim().ToLowerInvariant() == id);
         if (current is null || entry is null)
@@ -96,13 +96,14 @@ public static class ServiceInventoryEndpoints
         });
     }
 
-    private static async Task<IResult> GetObservedAsync(string serviceName, InventoryReadService read, CancellationToken ct)
+    private static async Task<IResult> GetObservedAsync(
+        string serviceName, InventoryReadService read, ICurrentUser user, CancellationToken ct)
     {
         var id = Key(serviceName);
         var statusFeed = await read.FeedAsync(InventoryFeedTypes.Status, ct: ct);
         var status = await read.DocumentAsync<StatusDocument>(statusFeed, ct);
         var catalog = await read.DocumentAsync<CatalogDocument>(await read.FeedAsync(InventoryFeedTypes.Catalog, ct: ct), ct);
-        var freshness = InventoryReadService.Freshness(statusFeed, status?.Snapshot, InventoryFeedTypes.Status);
+        var freshness = InventoryReadService.Freshness(statusFeed, status?.Snapshot, InventoryFeedTypes.Status, user.IsAdmin);
 
         var entry = status?.Document.Services.FirstOrDefault(s => s.Id.Trim().ToLowerInvariant() == id);
         if (status is null || entry is null)
@@ -148,7 +149,7 @@ public static class ServiceInventoryEndpoints
     }
 
     private static async Task<IResult> GetCostAsync(
-        string serviceName, string? period, InventoryReadService read, PlatformDbContext db, CancellationToken ct)
+        string serviceName, string? period, InventoryReadService read, PlatformDbContext db, ICurrentUser user, CancellationToken ct)
     {
         var id = Key(serviceName);
         if (period is not null && !ServiceInventoryOptionsValidator.PeriodPattern().IsMatch(period))
@@ -165,7 +166,7 @@ public static class ServiceInventoryEndpoints
         // refresh says so). The default month reports the latest file's state, which is what
         // refreshes it, unless only the month's own row recorded a failure.
         var stateRow = requested ? monthRow : feedRow?.LastError is null && monthRow?.LastError is not null ? monthRow : feedRow;
-        var freshness = InventoryReadService.Freshness(stateRow, month?.Snapshot, InventoryFeedTypes.Cost);
+        var freshness = InventoryReadService.Freshness(stateRow, month?.Snapshot, InventoryFeedTypes.Cost, user.IsAdmin);
         if (month is null)
             return Results.NotFound(new { error = period is null ? "No cost has been read yet." : $"No cost has been read for {period}.", freshness });
 

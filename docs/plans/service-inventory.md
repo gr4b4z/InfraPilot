@@ -79,8 +79,9 @@ Added to `GLOSSARY.md` with this plan:
 
 ```jsonc
 "ServiceInventory": {
-  // Every host the inventory may call. HTTPS only. A redirect to a host not listed is refused,
-  // except the OCI blob redirect (no credentials, content checked against its digest).
+  // Every host the inventory may call. HTTPS only. An entry is a host (port 443) or host:port.
+  // A redirect to a host not listed is refused, except the OCI blob redirect (no credentials,
+  // content checked against its digest, public addresses only — list private storage here).
   "AllowedHosts": ["registry.example.com", "files.example.com"],
   "MaxResponseBytes": 20971520,      // 20 MiB per response
   "TimeoutSeconds": 30,

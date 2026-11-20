@@ -175,6 +175,13 @@ public class ServiceInventoryEndpointTests : IClassFixture<ServiceInventoryEndpo
             Assert.Equal("2026-10", body.GetProperty("period").GetString());
             Assert.Equal("The registry refused the credentials (401).", body.GetProperty("freshness").GetProperty("lastError").GetString());
             Assert.Equal(3, body.GetProperty("freshness").GetProperty("consecutiveFailures").GetInt32());
+
+            // Everyone else learns that it failed, not the reason: the reason names the source.
+            var forUser = await Json(await _factory.CreateAuthenticatedClient("user@localhost", "user123")
+                .GetAsync("/api/service-inventory/services/order-router/cost?period=2026-10"));
+            Assert.Equal("The last refresh failed. An administrator can see why.",
+                forUser.GetProperty("freshness").GetProperty("lastError").GetString());
+            Assert.Equal(3, forUser.GetProperty("freshness").GetProperty("consecutiveFailures").GetInt32());
         }
         finally
         {

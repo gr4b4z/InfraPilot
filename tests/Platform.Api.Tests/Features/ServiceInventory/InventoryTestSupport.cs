@@ -98,8 +98,16 @@ internal static class Http
         TimeoutSeconds = 5,
     };
 
-    public static InventoryHttpClient Client(HttpMessageHandler handler, ServiceInventoryOptions options) =>
-        new(new SingleClientFactory(handler), new StaticOptions<ServiceInventoryOptions>(options));
+    /// <summary>
+    /// No test touches DNS: every name resolves to a public (documentation-range) address unless the
+    /// test says otherwise.
+    /// </summary>
+    public static InventoryHttpClient Client(HttpMessageHandler handler, ServiceInventoryOptions options,
+        Func<string, IPAddress[]>? resolve = null) =>
+        new(new SingleClientFactory(handler), new StaticOptions<ServiceInventoryOptions>(options))
+        {
+            Resolve = (host, _) => Task.FromResult(resolve?.Invoke(host) ?? [IPAddress.Parse("203.0.113.10")]),
+        };
 }
 
 internal static class Db

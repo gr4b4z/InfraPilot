@@ -44,7 +44,7 @@ public class HttpsArtifactSource : IArtifactSource
 
         var response = await _http.SendAsync(new InventoryRequest(HttpMethod.Get, _url)
         {
-            Credential = RequestCredential.From(_credential, _url.Host),
+            Credential = RequestCredential.From(_credential, HostAuthority.Of(_url)),
             Headers = headers,
             ExpectJson = true,
         }, ct);
