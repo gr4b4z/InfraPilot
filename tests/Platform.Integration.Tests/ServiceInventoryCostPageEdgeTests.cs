@@ -199,4 +199,30 @@ public class ServiceInventoryCostPageEdgeTests
         var payments = await Get(factory, "/cost?product=payments&period=2026-10");
         Assert.Equal("billing", Assert.Single(payments.GetProperty("services").EnumerateArray()).GetProperty("deployments").GetProperty("product").GetString());
     }
+
+    [Fact]
+    public async Task The_default_month_is_the_latest_files_month_even_when_that_file_is_an_older_open_copy()
+    {
+        using var factory = new ServiceInventoryEndpointTests.InventoryFactory();
+        factory.Seed();
+        // The source falls back to an open copy of October, which is already closed here.
+        var open = Fixture("cost-2026-10.json");
+        open["complete"] = false;
+        factory.Sources.Overrides["cost-2026-10.json"] = Bytes(open);
+        factory.Sources.Files["cost"] = "cost-2026-10.json";
+        using (var scope = factory.Services.CreateScope())
+        {
+            await scope.ServiceProvider.GetRequiredService<InventoryRefresher>().RefreshAsync(
+                new InventoryFeedOptions { Name = "cost", Type = "cost", Source = new() { Kind = "https" } }, default);
+        }
+
+        var perService = await Get(factory, "/services/order-router/cost");
+        foreach (var page in new[] { "/cost", "/coverage" })
+        {
+            var body = await Get(factory, page);
+            Assert.Equal(perService.GetProperty("period").GetString(), body.GetProperty("period").GetString());
+            Assert.Equal("2026-10", body.GetProperty("period").GetString());
+            Assert.Equal(perService.GetProperty("complete").GetBoolean(), body.GetProperty("complete").GetBoolean());
+        }
+    }
 }

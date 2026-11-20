@@ -58,10 +58,15 @@ public static class InventoryCostEndpoints
             return (null, [], Results.BadRequest(new { error = "period must be YYYY-MM" }));
         var months = await MonthsAsync(read, db, ct);
         // Without a period: the month of the latest cost file, the same default as a service's cost.
-        var latest = (await read.FeedAsync(InventoryFeedTypes.Cost, ct: ct))?.CurrentSnapshotId;
-        var month = period is null
-            ? months.FirstOrDefault(m => m.SnapshotId == latest) ?? months.LastOrDefault()
-            : months.FirstOrDefault(m => m.Period == period);
+        // By the latest file's month, not its snapshot id: when the source falls back to an open copy
+        // of a month already closed, that month keeps pointing at its closed copy.
+        if (period is null && (await read.FeedAsync(InventoryFeedTypes.Cost, ct: ct))?.CurrentSnapshotId is { } latest)
+        {
+            var latestPeriod = await db.InventorySnapshots.AsNoTracking()
+                .Where(s => s.Id == latest).Select(s => s.Period).FirstOrDefaultAsync(ct);
+            return (months.FirstOrDefault(m => m.Period == latestPeriod) ?? months.LastOrDefault(), months, null);
+        }
+        var month = period is null ? months.LastOrDefault() : months.FirstOrDefault(m => m.Period == period);
         return (month, months, null);
     }
 

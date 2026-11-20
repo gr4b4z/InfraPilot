@@ -129,7 +129,8 @@ function MonthNotice({ data }: { data: InventoryCostResponse }) {
         >
           <b style={{ color: 'var(--text-primary)' }}>No cost is attributed to any service in {monthLabel(data.period!)} yet.</b>{' '}
           Everything read so far (<MoneyLines money={data.month?.total} className="!inline-flex !flex-row gap-2 font-medium" />)
-          is on resources without a service tag. <InventoryLink to="/inventory/coverage">See what is not attributed</InventoryLink>
+          is not attributed to a service.{' '}
+          <InventoryLink to={`/inventory/coverage?month=${encodeURIComponent(data.period!)}`}>See what is not attributed and why</InventoryLink>
         </div>
       )}
     </div>
