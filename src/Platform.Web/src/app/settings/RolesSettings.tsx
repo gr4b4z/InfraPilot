@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Plus, Trash2, Check, AlertTriangle } from 'lucide-react';
-import { useSettingsStore, type RoleConfig } from '@/stores/settingsStore';
+import { useSettingsStore, type RoleConfig, type RoleTeamMember } from '@/stores/settingsStore';
 // Shared with the pickers and the unrecognised-role marking, so "is this the same role?" is one
 // answer everywhere.
 import { canonicaliseRoleKey } from '@/lib/roleKey';
-import { GroupPicker } from './approverPickers';
+import { GroupPicker, PersonPicker } from './approverPickers';
 import { inputClass, inputStyle, labelClass, labelStyle } from './formStyles';
 
 /**
@@ -17,6 +17,8 @@ import { inputClass, inputStyle, labelClass, labelStyle } from './formStyles';
  *   so it applies to the tickets already on screen.
  * - **Assignee groups** — the person picker for this role only offers members of these directory
  *   groups.
+ * - **Team** — the people who usually take the role. Every assignment picker for it lists them first,
+ *   and the work-items "Assigned to" filter always offers them.
  *
  * Aliases are held as the comma-separated text being typed and split only on save, the same way the
  * environment editor does it: splitting on every keystroke would eat the comma as it is typed.
@@ -41,6 +43,7 @@ export function RolesSettings() {
           displayName: r.displayName.trim(),
           aliases: parseAliases(r.aliasText, key),
           assigneeGroups: r.assigneeGroups,
+          team: r.team,
         };
       })
       .filter((r) => r.key.length > 0);
@@ -63,7 +66,7 @@ export function RolesSettings() {
   };
   const removeItem = (index: number) => setItems((prev) => prev.filter((_, i) => i !== index));
   const addItem = () =>
-    setItems((prev) => [...prev, { key: '', displayName: '', aliasText: '', assigneeGroups: [] }]);
+    setItems((prev) => [...prev, { key: '', displayName: '', aliasText: '', assigneeGroups: [], team: [] }]);
 
   // The same two collisions the server refuses, shown on the row while the admin is still typing.
   const problems = useMemo(() => aliasProblems(items), [items]);
@@ -93,6 +96,13 @@ export function RolesSettings() {
           items straight away. A name can&rsquo;t be both an alias and a role of its own, so delete
           the <code>qa</code> role first. <strong>Pick people from</strong> limits the person picker
           for the role to members of those Entra groups; leave it empty to search everyone.
+        </p>
+        <p className="text-[13px] mt-2" style={{ color: 'var(--text-muted)' }}>
+          <strong>Team</strong> lists the people who usually take the role &mdash; your QA team on{' '}
+          <code>qa-owner</code>. Whenever someone is assigned to the role, the picker offers them
+          first, before anything is typed. They are also always listed in the{' '}
+          <strong>Assigned to</strong> filter on <strong>Work items</strong>, whether or not they have
+          anything assigned right now.
         </p>
       </div>
 
@@ -158,6 +168,16 @@ export function RolesSettings() {
                   onChange={(next) => updateItem(index, { assigneeGroups: next })}
                 />
               </div>
+              <div className="space-y-1 min-w-0 md:col-span-2">
+                <span className={labelClass} style={labelStyle}>
+                  Team
+                </span>
+                <PersonPicker
+                  values={item.team}
+                  onChange={(next) => updateItem(index, { team: next })}
+                  placeholder="Add a person who usually takes this role..."
+                />
+              </div>
             </div>
 
             {problems.get(index)?.map((message) => (
@@ -211,6 +231,7 @@ interface EditableRole {
   displayName: string;
   aliasText: string;
   assigneeGroups: { id: string; name: string }[];
+  team: RoleTeamMember[];
 }
 
 function toEditable(role: RoleConfig): EditableRole {
@@ -219,6 +240,7 @@ function toEditable(role: RoleConfig): EditableRole {
     displayName: role.displayName,
     aliasText: (role.aliases ?? []).join(', '),
     assigneeGroups: [...(role.assigneeGroups ?? [])],
+    team: [...(role.team ?? [])],
   };
 }
 

@@ -82,6 +82,59 @@ public class WorkItemRoleAliasAndBulkAssignTests
     }
 
     [Fact]
+    public async Task Settings_Team_IsCleanedAndRoundTrips()
+    {
+        try
+        {
+            var put = await SaveRolesAsync(new
+            {
+                key = QaOwner,
+                displayName = "QA owner",
+                team = new object[]
+                {
+                    new { email = " ada@example.com ", displayName = " Ada Tester " },
+                    new { email = "ADA@example.com", displayName = "Ada again" },
+                    new { email = "bo@example.com", displayName = "" },
+                },
+            });
+            Assert.Equal(HttpStatusCode.NoContent, put.StatusCode);
+
+            var settings = await Deserialize(await _adminClient.GetAsync("/api/settings"));
+            var owner = settings.GetProperty("roles").EnumerateArray()
+                .Single(r => r.GetProperty("key").GetString() == QaOwner);
+            var team = owner.GetProperty("team").EnumerateArray()
+                .Select(m => (m.GetProperty("email").GetString()!, m.GetProperty("displayName").GetString()!))
+                .ToList();
+            Assert.Equal(new[] { ("ada@example.com", "Ada Tester"), ("bo@example.com", "bo@example.com") }, team);
+        }
+        finally
+        {
+            await ResetSettingsAsync();
+        }
+    }
+
+    [Fact]
+    public async Task Settings_TeamMemberWithoutAnAddress_IsRejected()
+    {
+        try
+        {
+            var put = await SaveRolesAsync(new
+            {
+                key = QaOwner,
+                displayName = "QA owner",
+                team = new object[] { new { email = "Ada Tester", displayName = "Ada Tester" } },
+            });
+
+            Assert.Equal(HttpStatusCode.BadRequest, put.StatusCode);
+            Assert.Contains("'Ada Tester'", (await Deserialize(put)).GetProperty("error").GetString() ?? "");
+        }
+        finally
+        {
+            await ResetSettingsAsync();
+        }
+    }
+
+    [Fact]
     public async Task Settings_AliasThatIsAlsoARole_IsRejectedAndSaysHowToFoldIt()
     {
         try
