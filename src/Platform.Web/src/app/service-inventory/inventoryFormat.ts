@@ -94,7 +94,11 @@ export function findBinding<B extends { environment: string; kind: string; datab
   const candidates = (bindings ?? []).filter(
     (b) => b.environment === environment && b.database === db.database && b.kind === db.kind,
   );
-  const server = (v: string | null | undefined) => (v ?? '').trim().toLowerCase();
+  // The catalog's word `default` names no server, like leaving it out.
+  const server = (v: string | null | undefined) => {
+    const name = (v ?? '').trim().toLowerCase();
+    return name === 'default' ? '' : name;
+  };
   const exact = candidates.find((b) => server(b.server) === server(db.server));
   if (exact) return exact;
   const only = candidates.length === 1 ? candidates[0] : undefined;

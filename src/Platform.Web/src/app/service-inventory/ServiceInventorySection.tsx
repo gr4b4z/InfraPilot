@@ -132,7 +132,8 @@ export function ServiceInventorySection({ product, service }: { product: string;
   const month = cost && 'data' in cost ? cost.data : null;
   const envKeys = svc.environments.map((e) => e.environment);
   const repo = repoLink(svc.repo);
-  const sharedUsed = state?.azure?.shared.filter((sh) => svc.databases.some((d) => d.server === sh.id)) ?? [];
+  // Already narrowed to this service by the API (bound servers, and databases that name it).
+  const sharedUsed = state?.azure?.shared ?? [];
   const tagged = (state?.azure?.taggedResources ?? []).flatMap((t) => t.resources ?? []);
 
   return (
