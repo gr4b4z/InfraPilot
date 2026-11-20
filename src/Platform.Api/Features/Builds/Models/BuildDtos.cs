@@ -86,7 +86,7 @@ public record BuildDetailDto(
 ///
 /// <para><paramref name="Query"/> is the free-text box: a case-insensitive substring matched across
 /// product, service, version, branch, commit and CI build id at once, so "aws" finds
-/// <c>swo-extension-aws</c> without the reader knowing which column the word lives in. The named
+/// <c>acx-extension-aws</c> without the reader knowing which column the word lives in. The named
 /// fields are the opposite — they exist to *identify*, and each is filled from a known value
 /// (a facet pick or a link), so product and service match exactly (case-insensitively) and
 /// <paramref name="Version"/> stays exact so a promotion's "built from …" link points at one build.

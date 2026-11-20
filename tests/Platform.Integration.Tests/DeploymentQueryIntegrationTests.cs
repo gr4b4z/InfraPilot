@@ -170,7 +170,7 @@ public class DeploymentQueryIntegrationTests : IClassFixture<DeploymentQueryInte
     {
         // Written straight to the table, as rows stored before ingest-time redaction were.
         var logId = Guid.NewGuid();
-        const string leaked = "      PYRA_Database__Password:  FAKE-STORED-PW\n";
+        const string leaked = "      ACX_Database__Password:  FAKE-STORED-PW\n";
         using (var scope = _factory.Services.CreateScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
@@ -202,7 +202,7 @@ public class DeploymentQueryIntegrationTests : IClassFixture<DeploymentQueryInte
         {
             var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
             var row = await db.DeployEventLogs.FindAsync(logId);
-            Assert.Equal("      PYRA_Database__Password:  [redacted]\n", row!.Content);
+            Assert.Equal("      ACX_Database__Password:  [redacted]\n", row!.Content);
         }
         var after = await Deserialize(await _adminClient.GetAsync("/api/deployments/admin/logs/secrets"));
         Assert.Equal(0, after.GetProperty("deployLogs").GetInt32());

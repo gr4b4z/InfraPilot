@@ -58,8 +58,8 @@ public class DeploymentServiceRunAndLogTests : IDisposable
         new(
             Provider: "github-actions", RunId: "30464088990", RunNumber: "294", Attempt: 1,
             WorkflowName: "Reconcile dev", JobName: "Deploy Helm (api)",
-            RunUrl: "https://github.com/softwareone-platform/mpt-release/actions/runs/30464088990",
-            JobUrl: "https://github.com/softwareone-platform/mpt-release/actions/runs/30464088990/job/90617803378",
+            RunUrl: "https://github.com/acmetrix/mpt-release/actions/runs/30464088990",
+            JobUrl: "https://github.com/acmetrix/mpt-release/actions/runs/30464088990/job/90617803378",
             TriggeredBy: "plebann", StartedAt: DeployedAt.AddMinutes(-6), CompletedAt: DeployedAt,
             FailureReason: reason);
 
@@ -133,14 +133,14 @@ public class DeploymentServiceRunAndLogTests : IDisposable
         const string diagnostics =
             "--- Describe pod: api-x2klm ---\n" +
             "    Environment:\n" +
-            "      PYRA_ServiceBus__ConnectionString:  Endpoint=sb://fake.servicebus.windows.net/;SharedAccessKeyName=app;SharedAccessKey=FAKEKEY0123=\n" +
+            "      ACX_ServiceBus__ConnectionString:  Endpoint=sb://fake.servicebus.windows.net/;SharedAccessKeyName=app;SharedAccessKey=FAKEKEY0123=\n" +
             "    Mounts:\n";
 
         var ev = await _sut.IngestEvent(Dto(status: "failed", logs: [new("failure diagnostics", "kubectl", diagnostics)]));
 
         var log = await _db.DeployEventLogs.SingleAsync(l => l.DeployEventId == ev.Id);
         Assert.DoesNotContain("FAKEKEY", log.Content);
-        Assert.Contains("      PYRA_ServiceBus__ConnectionString:  [redacted]\n", log.Content);
+        Assert.Contains("      ACX_ServiceBus__ConnectionString:  [redacted]\n", log.Content);
         Assert.Contains("--- Describe pod: api-x2klm ---", log.Content);
         // Sizes describe what is stored, not what was sent.
         Assert.Equal(Encoding.UTF8.GetByteCount(log.Content), log.ByteCount);

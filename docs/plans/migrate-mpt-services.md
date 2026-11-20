@@ -59,11 +59,11 @@ and `helm`. Everything up to step 4 is read-only.
   - Is it a spec owner (`specifications`)? mpt-release `components.yaml` `openApi.specifications`
     already lists every one.
   - Is it a data-migration owner (`migrations.data`)? `migrations.data` in mpt-release must list it.
-  - Check the blocked services in the gap doc (§3). `swo-auth`, `swo-extension-nav` and
-    `swo-web-shell` have no build registration.
+  - Check the blocked services in the gap doc (§3). `acx-auth`, `acx-extension-nav` and
+    `acx-web-shell` have no build registration.
 - **The version running in each environment.**
   ```bash
-  for h in api.s1.today api.s1.show api.s1.live api.platform.softwareone.com; do echo -n "$h "; curl -s -H 'Accept: application/json' https://$h/public | jq -r --arg s $SVC '.components[$s]'; done
+  for h in api.dev.example.com api.test.example.com api.staging.example.com api.platform.example.com; do echo -n "$h "; curl -s -H 'Accept: application/json' https://$h/public | jq -r --arg s $SVC '.components[$s]'; done
   ```
   The hosts are dev, test, staging and prod.
 - **Each of those versions is a registered build with a manifest digest.**
@@ -74,7 +74,7 @@ and `helm`. Everything up to step 4 is read-only.
   versions are in staging and prod.
 - **Chart `appVersion` equals the version.** If it doesn't, reconcile sees drift forever.
   ```bash
-  helm show chart oci://nlpapp0336cre.azurecr.io/helm/$SVC --version <version> --username 00000000-0000-0000-0000-000000000000 --password "$(az acr login --name nlpapp0336cre --expose-token --output tsv --query accessToken)" | grep -E '^(version|appVersion):'
+  helm show chart oci://acmetrixcr.azurecr.io/helm/$SVC --version <version> --username 00000000-0000-0000-0000-000000000000 --password "$(az acr login --name acmetrixcr --expose-token --output tsv --query accessToken)" | grep -E '^(version|appVersion):'
   ```
 - **SDP's last deploy per environment**, for the seeded `deployment-status.yaml`:
   `GET /api/deployments/history/mpt/$SVC?environment=<env>&limit=1`.
@@ -82,7 +82,7 @@ and `helm`. Everything up to step 4 is read-only.
   same for `Approved` and `Deploying`. An approval in flight during the switch is skipped by both
   sides.
 - **Leftovers from the pilot.** If `<env>/$SVC/` already exists in mpt-release (`mpt-export`,
-  `mpt-web-currency`, `mpt-web-publiccatalog`, `swo-web-notifications`), it holds an old version.
+  `mpt-web-currency`, `mpt-web-publiccatalog`, `acx-web-notifications`), it holds an old version.
   The seed replaces it, and `Save-EnvironmentBuildManifest` archives the old one.
 
 ### 2. marketplace PRs (master and release/5)
@@ -161,13 +161,13 @@ approvals.
 | A service's first build after the switch can fail for reasons that have nothing to do with the migration. Spotlight's first master build failed NuGet audit (NU1903, `System.Security.Cryptography.Pkcs` via `Microsoft.Data.SqlClient`) because versions float (`7.*`) and `TreatWarningsAsErrors` is on. | Before cutting over, run `dotnet restore` (or `dotnet list package --vulnerable --include-transitive`) on master **and** release/5. Fix by pinning the patched transitive version where it enters: mpt-spotlight !152695 / !152697 pinned Pkcs `10.*` and `Microsoft.OpenApi.Readers` `1.6.*`. Other services with SqlClient and WireMock.Net 1.7 will hit the same. |
 | The reconcile OpenAPI publish and the API-model trigger had never run for real before spotlight. | Both worked first time (dev and test, 2026-10-22). Nothing more to prepare for later spec owners. |
 | mpt-release squash-merges PRs and deletes the branch. | Start a follow-up from `origin/main`. Pushing to the merged branch recreates it with the pre-squash history. |
-| `mpt-project scan` (the daily 09:00 run of 5399) still bumps excluded services in `manifest.json` and stamps the marketplace version in Jira Fixed In Build. | Harmless for deployment, so leave it. `sdp.exclude` cannot gate it: `swo-web-maintenence` is excluded from SDP but deploys through its own pipeline, which the scan tracks. |
+| `mpt-project scan` (the daily 09:00 run of 5399) still bumps excluded services in `manifest.json` and stamps the marketplace version in Jira Fixed In Build. | Harmless for deployment, so leave it. `sdp.exclude` cannot gate it: `acx-web-maintenence` is excluded from SDP but deploys through its own pipeline, which the scan tracks. |
 | The 5685/5686 promotion branches used to take every approved `mpt` promotion, including excluded services. | marketplace !152683 drops `sdp.exclude` services, so an approval of only those ends at "Nothing to release". |
 
 ## Moving a service to `mpt-extensions` as well
 
 The extension services also change product, like `mpt-extension-operations` and
-`swo-extension-mscsp` before them. Changing product adds four things to the checklist:
+`acx-extension-mscsp` before them. Changing product adds four things to the checklist:
 
 - **Build pipeline.** The publish step names the product, so new builds register as
   `mpt-extensions` (and their manifests carry `spec.product: mpt-extensions`):
@@ -213,19 +213,19 @@ to, the one mpt-release `main` already declares for dev.
 
 ## Helm readiness for GitHub (2026-11-18 audit)
 
-A service built on GitHub deploys with the shared chart `ops-helm-charts/charts/swo-service` and a
+A service built on GitHub deploys with the shared chart `ops-helm-charts/charts/acx-service` and a
 `deploy/deployment-manifest.yaml` in its build metadata, as mpt-spotlight will
 ([migrate-spotlight-to-github.md](migrate-spotlight-to-github.md)). This audit checked every
 mpt-release Helm component for what stops that. "own" means a per-service chart today.
 
 | Component(s) | Chart | Blocker |
 |---|---|---|
-| nav-stats, csp-pricing-fix, interim-renewals, marketo-sync, nav-tools, platform-stats, weekly-digest, aws-management, platform-support | swo-service@2.2.0 | none |
-| mpt-extensions, -producthub, -procurement, -nav-billing, swo-extension-mscsp | own | ADO repos; `apipool` |
-| mpt-extension-adobe, -installation, -usage-reporting, -delivery | own | repo name ≠ component name. Resolved 2026-11-18: the existing GitHub repositories (delivery's is `mpt-extension-dcrm`) keep their names and publish under the component name through the `.github` allow-list ([.github#113](https://github.com/softwareone-platform/.github/pull/113)) |
+| nav-stats, csp-pricing-fix, interim-renewals, marketo-sync, nav-tools, platform-stats, weekly-digest, aws-management, platform-support | acx-service@2.2.0 | none |
+| mpt-extensions, -producthub, -procurement, -nav-billing, acx-extension-mscsp | own | ADO repos; `apipool` |
+| mpt-extension-adobe, -installation, -usage-reporting, -delivery | own | repo name ≠ component name. Resolved 2026-11-18: the existing GitHub repositories (delivery's is `mpt-extension-dcrm`) keep their names and publish under the component name through the `.github` allow-list ([.github#113](https://github.com/acmetrix/.github/pull/113)) |
 | mpt-extension-scrm | own | manifest at the repo root; image component `api`; its build is disabled. With `main` in the `mpt` `build → dev` policy, re-enabling it auto-deploys to dev |
-| swo-extension-adobe, swo-extension-aws | own + alias Service | needs extra objects |
-| swo-extension-nav | own + 4 workers + cli chart | needs multiple workers |
+| acx-extension-adobe, acx-extension-aws | own + alias Service | needs extra objects |
+| acx-extension-nav | own + 4 workers + cli chart | needs multiple workers |
 | mpt-extension-operations | config-only chart + weekly schedule | redesign as a cronjob |
 | ops-litellm | third-party chart | stays on its own chart |
 
@@ -233,12 +233,12 @@ mpt-release Helm component for what stops that. "own" means a per-service chart 
 
 | Owner | Blocker | Blocks |
 |---|---|---|
-| `.github` (reusable-ci) | Names the service, the release folder and the image paths after the GitHub repository, not `app.name`. Resolved 2026-11-18 ("Repository naming", below) | No longer blocks. The six repositories already on GitHub under another name (mpt-extension-adobe, -installation, -usage-reporting, -delivery, swo-extension-adobe, swo-extension-aws) go through the `.github` allow-list ([.github#115](https://github.com/softwareone-platform/.github/pull/115)); repositories still on Azure DevOps are named after their component at import |
-| `swo-service` | No extra objects or Service aliases | swo-extension-adobe/aws |
-| | No multiple workers | swo-extension-nav |
+| `.github` (reusable-ci) | Names the service, the release folder and the image paths after the GitHub repository, not `app.name`. Resolved 2026-11-18 ("Repository naming", below) | No longer blocks. The six repositories already on GitHub under another name (mpt-extension-adobe, -installation, -usage-reporting, -delivery, acx-extension-adobe, acx-extension-aws) go through the `.github` allow-list ([.github#115](https://github.com/acmetrix/.github/pull/115)); repositories still on Azure DevOps are named after their component at import |
+| `acx-service` | No extra objects or Service aliases | acx-extension-adobe/aws |
+| | No multiple workers | acx-extension-nav |
 | | No config-only mode | mpt-extension-operations |
-| | `values.schema.json` forbids `nodeSelector` / `tolerations` on `api` (`additionalProperties: false`), so `apipool` placement is lost | Every service that wants `apipool`, mpt-spotlight first (its decision 6). The fix would be `swo-service` 2.4.0 with the keys |
-| mpt-release | Hard-codes the `swo-service` version it seeds, 2.2.0. The chart is already at 2.3.0 | Every new `swo-service` seed |
+| | `values.schema.json` forbids `nodeSelector` / `tolerations` on `api` (`additionalProperties: false`), so `apipool` placement is lost | Every service that wants `apipool`, mpt-spotlight first (its decision 6). The fix would be `acx-service` 2.4.0 with the keys |
+| mpt-release | Hard-codes the `acx-service` version it seeds, 2.2.0. The chart is already at 2.3.0 | Every new `acx-service` seed |
 | ops-infra-terraform | `stack` is gone since fe0796e (2026-11-17). Each new data file, `data/repositories/<component>.yaml`, needs `acr_publish: true`, or the ACR push fails with AADSTS700213 | Every repository that publishes to ACR |
 
 **Repository naming (decided 2026-11-18).**
@@ -249,9 +249,9 @@ mpt-release Helm component for what stops that. "own" means a per-service chart 
   exception.
 - **Repositories already on GitHub under another name** keep their names and publish under their
   component name through the closed allow-list
-  `.github/actions/service-name/service-names.yaml` in `softwareone-platform/.github`
-  ([.github#113](https://github.com/softwareone-platform/.github/pull/113) and
-  [.github#115](https://github.com/softwareone-platform/.github/pull/115), merged 2026-11-18).
+  `.github/actions/service-name/service-names.yaml` in `acmetrix/.github`
+  ([.github#113](https://github.com/acmetrix/.github/pull/113) and
+  [.github#115](https://github.com/acmetrix/.github/pull/115), merged 2026-11-18).
   It has six entries:
 
   | GitHub repository | Publishes as |
@@ -260,8 +260,8 @@ mpt-release Helm component for what stops that. "own" means a per-service chart 
   | `mpt-extension-dcrm` | mpt-extension-delivery |
   | `mpt-installation-extension` | mpt-extension-installation |
   | `mpt-usage-reporting-extension` | mpt-extension-usage-reporting |
-  | `swo-adobe-vipm-extension` | swo-extension-adobe |
-  | `swo-aws-extension` | swo-extension-aws |
+  | `acx-adobe-vipm-extension` | acx-extension-adobe |
+  | `acx-aws-extension` | acx-extension-aws |
 - **The allow-list is closed.** A migrated repository is never added to it; rename it to the
   component instead.
 - **No GitHub App Variables permission is needed.** ops-infra-terraform#165, which kept the list in
@@ -278,7 +278,7 @@ as its only consumer, which is wrong. Revoke it only after both have moved to `a
 - `.github`: the reusable workflows with no callers: reusable-service-build,
   reusable-service-publish, reusable-docker-build and reusable-dotnet-ci;
 - `.github`: the `dispatch_release` input alias;
-- `swo-service`: the `dbup` block (mpt-spotlight's cli image only feeds it; `migrations.schema` is
+- `acx-service`: the `dbup` block (mpt-spotlight's cli image only feeds it; `migrations.schema` is
   the replacement);
 - mpt-release: the dead `pipelines/deploy/helm/scripts/Prepare-Helm-Values.ps1` and
   `Convert-FlatToNested.ps1`.
@@ -304,8 +304,8 @@ as its only consumer, which is wrong. Revoke it only after both have moved to `a
   - Reconcile Dev redeployed 6.0.29 (the takeover, deploy event at 11:05:48); test, staging and
     prod deployed nothing.
 - **11:19:** mpt-release #1653 merged. It disables the six missing SDP services
-  (`mpt-web-servernotifications`, `swo-auth`, `swo-extension-nav`, `swo-web-errorpages`,
-  `swo-web-oneheader-container`, `swo-web-shell`) and makes promotions of disabled components a
+  (`mpt-web-servernotifications`, `acx-auth`, `acx-extension-nav`, `acx-web-errorpages`,
+  `acx-web-oneheader-container`, `acx-web-shell`) and makes promotions of disabled components a
   skip. The InfraPortal wiring was then applied.
 - **Spotlight's first master build after the switch** failed NuGet audit. mpt-spotlight !152695
   fixed master; !152697 is the same fix for release/5.
@@ -322,8 +322,8 @@ as its only consumer, which is wrong. Revoke it only after both have moved to `a
 **2026-10-22: the extension services migrated (dev and test proven; staging and prod wait for QA)**
 
 Seven services move together, and to `mpt-extensions`: `mpt-extensions`, `mpt-web-extensions`,
-`mpt-web-extensions-pages`, `mpt-extensions-ui-bootstrap`, `swo-extension-nav`,
-`swo-extension-adobe` and `swo-extension-aws`. All seven ran under `mpt` only, deployed by
+`mpt-web-extensions-pages`, `mpt-extensions-ui-bootstrap`, `acx-extension-nav`,
+`acx-extension-adobe` and `acx-extension-aws`. All seven ran under `mpt` only, deployed by
 `marketplace-sdp` / `marketplace-sdp-prod`.
 
 | Service | dev = test | staging | prod | Seeded | Pending (carried over) |
@@ -332,9 +332,9 @@ Seven services move together, and to `mpt-extensions`: `mpt-extensions`, `mpt-we
 | mpt-web-extensions | 6.0.23-g1bc70123 | 5.9.4-gfe0d8441 | 5.9.1-gd6e8c9b4 | all | staging → prod 5.9.4 |
 | mpt-web-extensions-pages | 6.0.13-gfe29a3a0 | 5.9.1-gae99e43a | 5.9.1-gae99e43a | all | — |
 | mpt-extensions-ui-bootstrap | 6.0.3-gb934f24d | 5.9.1-g8828f18e | 5.9.1-g8828f18e | staging, prod | — |
-| swo-extension-nav | 6.0.19-gdd23bebb | 5.9.1-g182c494d | 5.9.1-g182c494d | dev, test | build → staging 5.9.2 |
-| swo-extension-adobe | 6.0.304-g4fa98b86 | 5.23.186-g06dd58b6 | 5.23.176-g65a0b289 | all | staging → prod 5.23.186 |
-| swo-extension-aws | 6.0.293-g3937a24e | 5.9.34-gcf350709 | 5.9.28-g92a56b29 | all | staging → prod 5.9.34 |
+| acx-extension-nav | 6.0.19-gdd23bebb | 5.9.1-g182c494d | 5.9.1-g182c494d | dev, test | build → staging 5.9.2 |
+| acx-extension-adobe | 6.0.304-g4fa98b86 | 5.23.186-g06dd58b6 | 5.23.176-g65a0b289 | all | staging → prod 5.23.186 |
+| acx-extension-aws | 6.0.293-g3937a24e | 5.9.34-gcf350709 | 5.9.28-g92a56b29 | all | staging → prod 5.9.34 |
 
 - **Not seeded:**
   - ui-bootstrap dev/test: 6.0.3 predates its build registration. Its next master build lands
@@ -343,8 +343,8 @@ Seven services move together, and to `mpt-extensions`: `mpt-extensions`, `mpt-we
 - **Checks:**
   - Dry runs of `Import-SdpComponent` (`-Product mpt`, `-AllowPendingPromotions`) passed for all
     seven: digests, chart `appVersion`, and deploy events outside dev.
-  - `dotnet restore` is clean on master and release/5 for `mpt-extensions` and `swo-extension-nav`.
-  - `swo-extension-adobe` and `-aws` build from `main`. The `mpt-extensions` `build → dev` default
+  - `dotnet restore` is clean on master and release/5 for `mpt-extensions` and `acx-extension-nav`.
+  - `acx-extension-adobe` and `-aws` build from `main`. The `mpt-extensions` `build → dev` default
     auto-creates from `main` as well as `master`.
 - **Planned cutover order (one sitting):**
   1. `migrate-extension-services.cutover.py --apply`: overrides and remap. Approvals stop reaching
@@ -381,7 +381,7 @@ Seven services move together, and to `mpt-extensions`: `mpt-extensions`, `mpt-we
   - The container restarted at 14:55 with the new env and stayed Ready.
 - **15:09, `cutover.py --dispatch-dev --apply`.** One Deploy Registered Build run each for
   `mpt-extensions` 6.0.75, `mpt-web-extensions` 6.0.24, `-pages` 6.0.14, ui-bootstrap 6.0.4 and
-  `swo-extension-aws` 6.0.295. `swo-extension-adobe` was skipped:
+  `acx-extension-aws` 6.0.295. `acx-extension-adobe` was skipped:
   - its 6.0.308 was approved after #1655 and went through on its own;
   - the older 6.0.306 was still Approved, so `--dispatch-dev` was changed to send only the newest
     per service and to skip a version already in dev (InfraPilot #401).
@@ -394,12 +394,12 @@ Seven services move together, and to `mpt-extensions`: `mpt-extensions`, `mpt-we
   | mpt-web-extensions | 6.0.24-ga59e5942 |
   | mpt-web-extensions-pages | 6.0.14-g82a2e782 |
   | mpt-extensions-ui-bootstrap | 6.0.4-g77773857 (its first build mpt-release deployed) |
-  | swo-extension-adobe | 6.0.308-g67a00692 |
-  | swo-extension-aws | 6.0.295-gc779b996 |
+  | acx-extension-adobe | 6.0.308-g67a00692 |
+  | acx-extension-aws | 6.0.295-gc779b996 |
 
   The 6.0.75 rollout cleared the failed takeover record. No Deploy Registered Build, Promote Single
   Build Manifest, or Reconcile Dev/Test run of the seven failed.
-- **`swo-extension-nav`.** Its master build 6.0.20 failed in coverlet ("Unable to read beyond the
+- **`acx-extension-nav`.** Its master build 6.0.20 failed in coverlet ("Unable to read beyond the
   end of the stream"; all 301 tests passed). After a rerun it registered on 2026-10-23 at 07:42, and
   Deploy Registered Build landed it in dev at 07:43. Reconcile Dev deployed it at 07:47, and
   Promote Single Build Manifest and Reconcile Test deployed it to test at 07:53. Both candidates
@@ -419,7 +419,7 @@ hand-over. The cutover script gained `--services` and `--version` for them (Infr
 - **`mpt-extension-finops`: refiled only.**
   - It has been off the SDP since marketplace !150776 (MPT-24995, 2026-09-08; the ticket says
     "prod migration was completed").
-  - Its repository, `softwareone-platform/mpt-finops-extension`, is archived (last push
+  - Its repository, `acmetrix/mpt-finops-extension`, is archived (last push
     2026-04-22). It never registered a build: its last builds, in April, predate build
     registration. mpt-release cannot seed it, and it cannot be built.
   - The SDP's last Helm releases still run (dev and test 6.0.1-g5051f315, staging and prod

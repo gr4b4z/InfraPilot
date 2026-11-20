@@ -28,7 +28,7 @@ def body_from(p, **over):
 ops = []
 mpt_stable = find('mpt', None, 'stable', 'staging')
 ext_stable = find('mpt-extensions', None, 'stable', 'staging')
-mscsp_stable = find('mpt-extensions', 'swo-extension-mscsp', 'stable', 'staging')
+mscsp_stable = find('mpt-extensions', 'acx-extension-mscsp', 'stable', 'staging')
 ext_build = find('mpt-extensions', None, 'build', 'staging')
 aws_build = find('mpt-extensions', 'mpt-extension-aws-management', 'build', 'staging')
 assert mpt_stable and ext_stable and mscsp_stable and ext_build and aws_build, 'unexpected policy set'
@@ -36,14 +36,14 @@ assert find('mpt', None, 'build', 'staging') is None, 'mpt build -> staging alre
 
 # 1. mpt: build -> staging with the same approvers and work-item rules as stable -> staging.
 ops.append(('POST', '/api/promotions/admin/policies', body_from(mpt_stable, sourceEnv='build', sourceRequiresDeploy=False, autoCreateFromBranches=RELEASE), 'mpt build->staging (release/*)'))
-# 2. No stable -> staging anywhere: services that do not register release builds yet (swo-auth,
-#    swo-extension-nav, swo-web-shell) get no staging promotion until they do.
+# 2. No stable -> staging anywhere: services that do not register release builds yet (acx-auth,
+#    acx-extension-nav, acx-web-shell) get no staging promotion until they do.
 # 3. mpt-extensions: the dormant default goes live; the aws-management copy is now identical to it.
 ops.append(('PUT', f"/api/promotions/admin/policies/{ext_build['id']}", body_from(ext_build, autoCreateFromBranches=RELEASE), 'mpt-extensions build->staging auto-create release/*'))
 ops.append(('DELETE', f"/api/promotions/admin/policies/{aws_build['id']}", None, 'delete aws-management build->staging copy (product default covers it)'))
 # 4. No more stable -> staging promotions (pending ones keep their snapshot and stay approvable).
 ops.append(('DELETE', f"/api/promotions/admin/policies/{ext_stable['id']}", None, 'delete mpt-extensions stable->staging'))
-ops.append(('DELETE', f"/api/promotions/admin/policies/{mscsp_stable['id']}", None, 'delete swo-extension-mscsp stable->staging'))
+ops.append(('DELETE', f"/api/promotions/admin/policies/{mscsp_stable['id']}", None, 'delete acx-extension-mscsp stable->staging'))
 ops.append(('DELETE', f"/api/promotions/admin/policies/{mpt_stable['id']}", None, 'delete mpt stable->staging (default)'))
 # 5. Work items for mpt build candidates come from mpt-release's refresh workflow, like the extensions'.
 subs = call('GET', '/api/webhooks')[1]

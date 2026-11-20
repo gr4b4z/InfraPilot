@@ -75,7 +75,7 @@ public static class SeedData
             RequesterId = "user-1",
             RequesterName = "Jan Kowalski",
             Status = RequestStatus.Completed,
-            InputsJson = """{"repo_name":"SWO-PLT-payments-intg","platform":"azure-devops","project":"MPT","template":"dotnet-api","setup_pipeline":true,"description":"Payments integration service"}""",
+            InputsJson = """{"repo_name":"ACX-PLT-payments-intg","platform":"azure-devops","project":"MPT","template":"dotnet-api","setup_pipeline":true,"description":"Payments integration service"}""",
             CreatedAt = now.AddDays(-3),
             UpdatedAt = now.AddDays(-2),
         };
@@ -88,7 +88,7 @@ public static class SeedData
             RequesterId = "user-1",
             RequesterName = "Jan Kowalski",
             Status = RequestStatus.AwaitingApproval,
-            InputsJson = """{"namespace_name":"swo-plt-analytics","cluster":"aks-prod-weu","environment":"production","cpu_limit":4,"memory_limit":8,"enable_network_policy":true}""",
+            InputsJson = """{"namespace_name":"acx-plt-analytics","cluster":"aks-prod-weu","environment":"production","cpu_limit":4,"memory_limit":8,"enable_network_policy":true}""",
             CreatedAt = now.AddHours(-6),
             UpdatedAt = now.AddHours(-6),
         };
@@ -101,7 +101,7 @@ public static class SeedData
             RequesterId = "user-2",
             RequesterName = "Anna Nowak",
             Status = RequestStatus.Completed,
-            InputsJson = """{"record_type":"CNAME","hostname":"api.acmetrix.com","value":"swo-api-gateway.azurefd.net","ttl":3600,"zone":"external"}""",
+            InputsJson = """{"record_type":"CNAME","hostname":"api.acmetrix.com","value":"acx-api-gateway.azurefd.net","ttl":3600,"zone":"external"}""",
             CreatedAt = now.AddDays(-5),
             UpdatedAt = now.AddDays(-4),
         };
@@ -140,7 +140,7 @@ public static class SeedData
             RequesterId = "user-2",
             RequesterName = "Anna Nowak",
             Status = RequestStatus.Draft,
-            InputsJson = """{"repo_name":"SWO-PLT-notifications","platform":"github","template":"node-api"}""",
+            InputsJson = """{"repo_name":"ACX-PLT-notifications","platform":"github","template":"node-api"}""",
             CreatedAt = now.AddMinutes(-30),
             UpdatedAt = now.AddMinutes(-30),
         };
@@ -156,7 +156,7 @@ public static class SeedData
                 ServiceRequestId = req1.Id,
                 Attempt = 1,
                 Status = "Completed",
-                OutputJson = """{"repoUrl":"https://dev.azure.com/SWO/MPT/_git/SWO-PLT-payments-intg","pipelineId":1042}""",
+                OutputJson = """{"repoUrl":"https://dev.azure.com/acmetrix-pc/MPT/_git/ACX-PLT-payments-intg","pipelineId":1042}""",
                 StartedAt = now.AddDays(-2).AddMinutes(-5),
                 CompletedAt = now.AddDays(-2),
             },
@@ -190,7 +190,7 @@ public static class SeedData
             Strategy = ApprovalStrategy.Any,
             Status = "Pending",
             TimeoutAt = now.AddHours(42),
-            EscalationGroup = "SWO-PLT-TeamLeads",
+            EscalationGroup = "ACX-PLT-TeamLeads",
             CreatedAt = now.AddHours(-6),
         };
 

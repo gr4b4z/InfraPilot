@@ -6,7 +6,7 @@ description: Work with InfraPilot (InfraPortal) — read what is deployed where,
 # InfraPilot API
 
 InfraPilot (also branded **InfraPortal**) is an infrastructure portal tracking deployments,
-promotions between environments, builds, and release notes. Prod: `https://infraportal.s1.team`.
+promotions between environments, builds, and release notes. Prod: `https://infraportal.example.com`.
 
 ## How to call it — MCP first
 
@@ -66,7 +66,7 @@ The InfraPilot repo's `.mcp.json` does the same from the environment. Design and
   older than about an hour, `diagnose_promotion` → lead with the top cause that has
   `supportedByEvidence: true` and cite its evidence line. Approved-but-not-deployed usually breaks in
   mpt-release (webhook delivery → `promote-single-build-manifest` / `deploy-registered-build` →
-  reconcile); check those runs with `gh run list --repo softwareone-platform/mpt-release`.
+  reconcile); check those runs with `gh run list --repo acmetrix/mpt-release`.
 - **Failed deploy:** `list_recent_deployments` (`status: "failed"`) → `diagnose_deployment` → quote
   the `logExcerpts` line verbatim; read more with `get_deployment_log` (`match: "error"`).
 - **"Is X in prod?":** `get_deployment_state` with the service (a fragment is fine) and

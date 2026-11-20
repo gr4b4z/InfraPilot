@@ -24,7 +24,7 @@ public class DeploymentLogRedactionTests : IDisposable
     private const string LeakedDiagnostics =
         "--- Describe pod: export-7d9f ---\n" +
         "    Environment:\n" +
-        "      PYRA_ServiceBus__ConnectionString:  Endpoint=sb://fake.servicebus.windows.net/;SharedAccessKeyName=app;SharedAccessKey=FAKEKEY0123=\n";
+        "      ACX_ServiceBus__ConnectionString:  Endpoint=sb://fake.servicebus.windows.net/;SharedAccessKeyName=app;SharedAccessKey=FAKEKEY0123=\n";
 
     public DeploymentLogRedactionTests()
     {
@@ -110,7 +110,7 @@ public class DeploymentLogRedactionTests : IDisposable
         _db.ChangeTracker.Clear();
         var deployRow = await _db.DeployEventLogs.SingleAsync(l => l.Id == leaked);
         Assert.DoesNotContain("FAKEKEY", deployRow.Content);
-        Assert.Contains("PYRA_ServiceBus__ConnectionString:  [redacted]", deployRow.Content);
+        Assert.Contains("ACX_ServiceBus__ConnectionString:  [redacted]", deployRow.Content);
         Assert.Equal(Encoding.UTF8.GetByteCount(deployRow.Content), deployRow.ByteCount);
         Assert.Equal(clean, (await _db.DeployEventLogs.SingleAsync(l => l.Id == untouched)).Content);
         var migrationRow = await _db.MigrationRunLogs.SingleAsync(l => l.Id == migration);

@@ -70,8 +70,8 @@ stay `pending` and the next run picks them up (marketplace SDP reads them back f
 `GET /api/migrations/runs?kind=data&status=pending`). `production-migrations` recognises them: a
 pending data migration whose run (`run.runUrl`) also has a failed production deploy — the service's
 last attempt in that run — gets the issue *"Data migration of 5.10.133 waits for the next run:
-swo-platform failed to deploy in marketplace-sdp-prod 8971132"*, and the check one warning per run:
-*"swo-platform failed to deploy in marketplace-sdp-prod 8971132, so that run skipped the data
+acx-platform failed to deploy in marketplace-sdp-prod 8971132"*, and the check one warning per run:
+*"acx-platform failed to deploy in marketplace-sdp-prod 8971132, so that run skipped the data
 migrations of mpt-helpdesk and mpt-notifications. They run with the next deploy run to prod."* The
 state stays `in_progress`; once the next run reports them running or succeeded, it all goes away.
 
@@ -220,7 +220,7 @@ Every field is optional. `null` leaves a field as it is, and an empty string cle
   "status": "done",                        // pending | in_progress | done | skipped
   "startedAt": "2026-11-12T09:00:51Z",     // backdate; never in the future
   "completedAt": "2026-11-12T10:26:20Z",
-  "note": "Mass approve at 09:01; swo-platform approved again at 10:26",
+  "note": "Mass approve at 09:01; acx-platform approved again at 10:26",
   "links": [                               // replaces the step's links; [] removes them
     { "label": "prod-branch run", "url": "https://dev.azure.com/.../_build/results?buildId=123" }
   ]

@@ -393,9 +393,9 @@ public class ReleaseEndpointsTests : IClassFixture<ReleaseEndpointsTests.Release
         const string hotfixRun = """{"provider":"azure-devops","runId":"8971293","workflowName":"marketplace-sdp-prod","runUrl":"https://dev.azure.example.com/MPT/_build/results?buildId=8971293&view=logs"}""";
         const string otherRun = """{"provider":"azure-devops","runId":"8971400","workflowName":"marketplace-sdp-prod","runUrl":"https://dev.azure.example.com/MPT/_build/results?buildId=8971400&view=logs"}""";
 
-        // swo-platform failed in the release's run; the others deployed and queued their data
+        // acx-platform failed in the release's run; the others deployed and queued their data
         // migrations, which the run then skipped.
-        await SeedDeploy(product, "swo-platform", "prod", "5.10.23", "failed", t0.AddHours(1), failedRun);
+        await SeedDeploy(product, "acx-platform", "prod", "5.10.23", "failed", t0.AddHours(1), failedRun);
         await SeedDeploy(product, "mpt-helpdesk", "prod", "5.10.133", "succeeded", t0.AddHours(1), failedRun);
         await SeedDeploy(product, "mpt-notifications", "prod", "5.10.8", "succeeded", t0.AddHours(1), failedRun);
         await SeedMigration(product, "mpt-helpdesk", "5.10.133", MigrationKinds.Data, MigrationRunStatus.Pending, null, t0.AddHours(1), 0, failedRun);
@@ -412,17 +412,17 @@ public class ReleaseEndpointsTests : IClassFixture<ReleaseEndpointsTests.Release
         Assert.Equal("in_progress", check.GetProperty("state").GetString());
         var warning = Assert.Single(check.GetProperty("warnings").EnumerateArray()).GetString();
         Assert.Equal(
-            "swo-platform failed to deploy in marketplace-sdp-prod 8971132, so that run skipped the data migrations of "
+            "acx-platform failed to deploy in marketplace-sdp-prod 8971132, so that run skipped the data migrations of "
             + "mpt-helpdesk and mpt-notifications. They run with the next deploy run to prod.",
             warning);
         var problems = check.GetProperty("issues").EnumerateArray()
             .ToDictionary(i => i.GetProperty("service").GetString()!, i => i.GetProperty("problem").GetString()!);
-        Assert.Equal("Data migration of 5.10.133 waits for the next run: swo-platform failed to deploy in marketplace-sdp-prod 8971132",
+        Assert.Equal("Data migration of 5.10.133 waits for the next run: acx-platform failed to deploy in marketplace-sdp-prod 8971132",
             problems["mpt-helpdesk"]);
         Assert.Equal("Data migration of 5.10.1 is pending", problems["mpt-procurement"]);
 
-        // The hotfix run deploys swo-platform and runs the waiting data migrations with it.
-        await SeedDeploy(product, "swo-platform", "prod", "5.10.27", "succeeded", t0.AddHours(2), hotfixRun);
+        // The hotfix run deploys acx-platform and runs the waiting data migrations with it.
+        await SeedDeploy(product, "acx-platform", "prod", "5.10.27", "succeeded", t0.AddHours(2), hotfixRun);
         foreach (var (service, version) in new[] { ("mpt-helpdesk", "5.10.133"), ("mpt-notifications", "5.10.8"), ("mpt-procurement", "5.10.1") })
             await MarkDataMigrationRun(product, service, version, MigrationRunStatus.Succeeded, hotfixRun, t0.AddHours(2).AddMinutes(10));
 

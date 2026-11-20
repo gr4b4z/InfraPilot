@@ -16,7 +16,7 @@ public class DeploymentDetailIntegrationTests
     private const string TestApiKey = "test-detail-key-12345";
 
     private const string JobUrl =
-        "https://github.com/softwareone-platform/mpt-release/actions/runs/30464088990/job/90617803378";
+        "https://github.com/acmetrix/mpt-release/actions/runs/30464088990/job/90617803378";
 
     private readonly HttpClient _apiKeyClient;
     private readonly HttpClient _adminClient;
@@ -53,7 +53,7 @@ public class DeploymentDetailIntegrationTests
                 new
                 {
                     type = "build-manifest",
-                    url = "https://github.com/softwareone-platform/mpt-release/blob/abc123/staging/api/build-metadata.yaml",
+                    url = "https://github.com/acmetrix/mpt-release/blob/abc123/staging/api/build-metadata.yaml",
                     provider = "github",
                     key = "api/build-metadata.yaml",
                 },
@@ -66,7 +66,7 @@ public class DeploymentDetailIntegrationTests
                 attempt = 1,
                 workflowName = "Reconcile staging",
                 jobName = "Deploy Helm (api)",
-                runUrl = "https://github.com/softwareone-platform/mpt-release/actions/runs/30464088990",
+                runUrl = "https://github.com/acmetrix/mpt-release/actions/runs/30464088990",
                 jobUrl = JobUrl,
                 triggeredBy = "plebann",
                 failureReason = "pod api-x2klm keeps crash-looping (restartCount=4)",

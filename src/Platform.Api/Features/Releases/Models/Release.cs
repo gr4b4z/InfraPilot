@@ -110,7 +110,7 @@ public class ReleaseStep
     public string? CompletedBy { get; set; }
     public string? CompletedByName { get; set; }
 
-    /// <summary>What happened — "swo-platform needed a rebuild", "signed off in the QA channel".</summary>
+    /// <summary>What happened — "acx-platform needed a rebuild", "signed off in the QA channel".</summary>
     public string? Note { get; set; }
 
     /// <summary>Evidence, as a JSON array of <see cref="ReleaseLink"/>: pipeline runs, a test report, a tag, a ticket.</summary>

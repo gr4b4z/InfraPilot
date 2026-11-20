@@ -233,7 +233,7 @@ public static class PromotionSeedData
                             MinApprovers: 1),
                     }),
                 },
-                EscalationGroup = "SWO-PLT-TeamLeads",
+                EscalationGroup = "ACX-PLT-TeamLeads",
                 // Production promotions must name a QA owner per work item. Seeded candidates carry no
                 // participants, so this is what makes the "needs attention" / "Not assigned" surfaces
                 // show something in a fresh dev database instead of looking unimplemented.

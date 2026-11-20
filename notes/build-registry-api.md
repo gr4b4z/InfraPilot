@@ -88,7 +88,7 @@ How each filter matches:
 
 | Param | Match |
 | --- | --- |
-| `q` | case-insensitive substring across product, service, version, branch, commit sha and CI build id — `q=aws` finds `swo-extension-aws` |
+| `q` | case-insensitive substring across product, service, version, branch, commit sha and CI build id — `q=aws` finds `acx-extension-aws` |
 | `product`, `service` | exact, case-insensitive — they identify rather than search |
 | `version` | exact — `(product, service, version)` is the registry's unique triple, so it names ONE build |
 | `branch` | case-insensitive substring — `branch=MPT-1234` without the `refs/heads/` prefix |
@@ -148,7 +148,7 @@ registration. A key with a `Scopes` list needs `build:retire`.
 {
   "reason": "acr cleanup MPT-20257 plan 3c9cff94",
   "items": [
-    { "service": "swo-platform", "version": "5.0.440-g330344b3" },
+    { "service": "acx-platform", "version": "5.0.440-g330344b3" },
     { "product": "mpt", "service": "mpt-audit", "version": "6.0.12-g6d9b56e1" }
   ]
 }

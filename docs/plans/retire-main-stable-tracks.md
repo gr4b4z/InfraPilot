@@ -10,12 +10,12 @@
 - Backed up 17 promotion policies, the rollback policies and the webhooks (session scratchpad `backup/`).
 - Tagged mpt-release `pre-stable-retirement` at `fde06d83`.
 - Phase 1 policies applied in prod InfraPortal:
-  - Dormant `build → staging` for the mpt-extensions default (`1bd11b27…`) and for `swo-extension-mscsp` (`b03b7d42…`). No auto-create yet.
+  - Dormant `build → staging` for the mpt-extensions default (`1bd11b27…`) and for `acx-extension-mscsp` (`b03b7d42…`). No auto-create yet.
   - Pilot: `mpt-extension-aws-management` `build → staging` with auto-create on `refs/heads/release/*` (`1e24c2ea…`).
   - Deleted the aws-management `build → stable` policy (`db24e2e7…`).
 - Phase 0.2: the 14 stuck Approved `build → dev` promotions were not stale data. `PromotionVersionOrder` ignored the `-<run>.<sha>` build counter, so a newer build of the same release never superseded an older approved one. Fixed in this branch, with tests; run `reconcile-completions` once it is deployed.
-  - 3 of the 14 (mpt-interim-renewals, mpt-platform-stats, mpt-swo-powerapps) are real dev deploy failures: missing App Configuration secrets, e.g. `secretValues.airtableApiKey`. They are not caused by the migration.
-- Phase 0.3 + 0.4: [mpt-release PR #1633](https://github.com/softwareone-platform/mpt-release/pull/1633) (branch `claude/registered-build-onboarding`):
+  - 3 of the 14 (mpt-interim-renewals, mpt-platform-stats, mpt-acx-powerapps) are real dev deploy failures: missing App Configuration secrets, e.g. `secretValues.airtableApiKey`. They are not caused by the migration.
+- Phase 0.3 + 0.4: [mpt-release PR #1633](https://github.com/acmetrix/mpt-release/pull/1633) (branch `claude/registered-build-onboarding`):
   - the onboarding (5691) trigger in Deploy Registered Build;
   - the dev/test/staging/prod guard in `Promote-RegisteredBuild.ps1`;
   - removal of `stable/mpt-extension-aws-management`.
@@ -23,12 +23,12 @@
 **2026-10-14 (later)**
 - #1633 merged.
 - D4 resolved from deploy history (`local/versions.json` = marketplace, `/home/runner/work/mpt-release/...` = mpt-release):
-  - `mpt-web-currency` belongs to marketplace. mpt-release's staging reconcile reverted marketplace's 5.9.1 back to 5.0.44 on 09-30. [#1634](https://github.com/softwareone-platform/mpt-release/pull/1634) disables it in mpt-release.
+  - `mpt-web-currency` belongs to marketplace. mpt-release's staging reconcile reverted marketplace's 5.9.1 back to 5.0.44 on 09-30. [#1634](https://github.com/acmetrix/mpt-release/pull/1634) disables it in mpt-release.
   - `mpt-extension-operations`: mpt-release owns dev (the only deployer since June). Staging stays with marketplace (Phase 5).
-- Pilot moved to `swo-extension-mscsp`. [#1635](https://github.com/softwareone-platform/mpt-release/pull/1635):
+- Pilot moved to `acx-extension-mscsp`. [#1635](https://github.com/acmetrix/mpt-release/pull/1635):
   - the stable → staging walker now honours `disabledComponents`;
   - `stable/components.yaml` lists mscsp. That file is the switch for each component.
-- Phase 2: [#1636](https://github.com/softwareone-platform/mpt-release/pull/1636) removes the `main/` → dev copy. Do not merge until the operations prerequisites below are done.
+- Phase 2: [#1636](https://github.com/acmetrix/mpt-release/pull/1636) removes the `main/` → dev copy. Do not merge until the operations prerequisites below are done.
 - Open InfraPortal steps (for the user; auto mode can't write them):
   - mpt/`mpt-extension-operations` `build → dev` policy;
   - a deploy-build webhook subscription for it (filters: products `[mpt]`, services `[mpt-extension-operations]`, environments `[dev]`; needs a GitHub token);
@@ -50,22 +50,22 @@
 - **mscsp pilot live:** #1635 merged at 13:45. The mscsp `build → staging` policy (`b03b7d42…`) auto-creates on `refs/heads/release/*` since about 14:20. No mscsp release build fell between the two.
   - Exit criterion: its next release build creates one `build → staging` promotion with work items, deploys through Deploy Registered Build, and closes.
 - **Marketplace PRs** stop the `stable` feed for components marketplace never deploys:
-  - [!152350](https://dev.azure.com/softwareone-pc/MPT/_git/marketplace/pullrequest/152350) (release/5, the live copy): master's library filter plus `sdp.exclude`, and `swo-extension-mscsp` moved into `sdp.exclude`;
-  - [!152351](https://dev.azure.com/softwareone-pc/MPT/_git/marketplace/pullrequest/152351) (master): `sdp.exclude` subtraction.
-  - Effect: the 11 library/template candidates, `mpt-extension-operations` and `swo-extension-mscsp` stop getting marketplace "Staging Candidate" markers.
+  - [!152350](https://dev.azure.com/acmetrix-pc/MPT/_git/marketplace/pullrequest/152350) (release/5, the live copy): master's library filter plus `sdp.exclude`, and `acx-extension-mscsp` moved into `sdp.exclude`;
+  - [!152351](https://dev.azure.com/acmetrix-pc/MPT/_git/marketplace/pullrequest/152351) (master): `sdp.exclude` subtraction.
+  - Effect: the 11 library/template candidates, `mpt-extension-operations` and `acx-extension-mscsp` stop getting marketplace "Staging Candidate" markers.
 
 **2026-10-14 (decision: no pilot, switch everything; no stable → staging left anywhere)**
-- **Coverage:** every `mpt` and `mpt-extensions` service on the stable track registers its release builds, at the same version its stable marker shows. The exceptions are `swo-auth`, `swo-extension-nav` and `swo-web-shell`. The user accepted that those three get no staging promotion until they register.
+- **Coverage:** every `mpt` and `mpt-extensions` service on the stable track registers its release builds, at the same version its stable marker shows. The exceptions are `acx-auth`, `acx-extension-nav` and `acx-web-shell`. The user accepted that those three get no staging promotion until they register.
 - **InfraPortal switch:** [`retire-main-stable-tracks.cutover.py`](retire-main-stable-tracks.cutover.py). Dry-run by default, `--apply` to execute. Auto mode refused to run it, so the user runs it.
   1. Create `mpt` `build → staging`: a copy of mpt `stable → staging` (QA Review + Release Approval incl. the DevOps approver group), auto-create `refs/heads/release/*`, `sourceRequiresDeploy: false`.
   2. Turn on auto-create `refs/heads/release/*` for the mpt-extensions default `build → staging`; delete the now-identical aws-management copy.
-  3. Delete `stable → staging` for the mpt-extensions default, `swo-extension-mscsp` and the mpt default. Pending stable candidates keep their snapshot and stay approvable.
+  3. Delete `stable → staging` for the mpt-extensions default, `acx-extension-mscsp` and the mpt default. Pending stable candidates keep their snapshot and stay approvable.
   4. Webhook `mpt-release update-promotion-work-items`: products += `mpt`, so mpt build candidates get commits and work items. CommitDiffResolver handles ADO repos; the workflow's lock is per candidate, about 20 no-op runs a day.
   - Backup before the switch: scratchpad `backup/policies.prod.20261014T145651Z.json` and `webhooks.prod.20261014T145651Z.json`.
 - **Producer cleanup PRs, to merge after the switch:**
-  - [mpt-release #1639](https://github.com/softwareone-platform/mpt-release/pull/1639): removes Ingest Build Metadata; refresh skips stable.
-  - [marketplace !152351](https://dev.azure.com/softwareone-pc/MPT/_git/marketplace/pullrequest/152351) (master, merge first): removes the stable-release steps from 5399 and `push-stable-release.ps1`.
-  - [marketplace !152350](https://dev.azure.com/softwareone-pc/MPT/_git/marketplace/pullrequest/152350) (release/5): the same for release/5, plus mscsp into `sdp.exclude`.
+  - [mpt-release #1639](https://github.com/acmetrix/mpt-release/pull/1639): removes Ingest Build Metadata; refresh skips stable.
+  - [marketplace !152351](https://dev.azure.com/acmetrix-pc/MPT/_git/marketplace/pullrequest/152351) (master, merge first): removes the stable-release steps from 5399 and `push-stable-release.ps1`.
+  - [marketplace !152350](https://dev.azure.com/acmetrix-pc/MPT/_git/marketplace/pullrequest/152350) (release/5): the same for release/5, plus mscsp into `sdp.exclude`.
 - After all merges, nothing writes `stable` except imports into mpt-release `stable/` (5617, Phase 4).
 
 **2026-10-14 15:10 — Phase 3 done (both products)**
@@ -80,29 +80,29 @@
 
 **2026-10-14 — Phase 4 step 1 (template PRs)**
 - Only two live copies of the 5617 trigger exist, found by searching every branch of `ops-build-templates-aks-releases`, `ops-build-templates` and `ops-mpt-infra`:
-  - aks-releases `releases/v15` → [!152355](https://dev.azure.com/softwareone-pc/MPT/_git/ops-build-templates-aks-releases/pullrequest/152355);
-  - ops-build-templates `feature/build_template` client-portal v2 → [!152356](https://dev.azure.com/softwareone-pc/MPT/_git/ops-build-templates/pullrequest/152356).
+  - aks-releases `releases/v15` → [!152355](https://dev.azure.com/acmetrix-pc/MPT/_git/ops-build-templates-aks-releases/pullrequest/152355);
+  - ops-build-templates `feature/build_template` client-portal v2 → [!152356](https://dev.azure.com/acmetrix-pc/MPT/_git/ops-build-templates/pullrequest/152356).
   - A third copy sits on someone's in-progress branch `fix/extract-openapi-spec-before-swagger-upload` and was left alone.
 - "Upload build metadata to Storage" is kept; only its comment changed.
-- Preview with the `templates` resource on the PR branch: mpt-billing (5352) and swo-platform (5294) compile, have no trigger, and keep registration and upload.
+- Preview with the `templates` resource on the PR branch: mpt-billing (5352) and acx-platform (5294) compile, have no trigger, and keep registration and upload.
 - Next: when both are merged and 5617 has had no new runs for 2–3 days, disable 5617 and 5657.
 
 **2026-10-15 — re-queue on build → staging**
 - InfraPilot #369 (the version-order fix) is merged.
 - Created 14 `build → staging` promotions from registered builds with `POST /api/promotions/from-build`, all Pending with change sets attached:
   - the 13 that were pending as `stable → staging`;
-  - `swo-web-oneheader-container` 5.9.3, replacing the `5.9.0` placeholder.
+  - `acx-web-oneheader-container` 5.9.3, replacing the `5.9.0` placeholder.
   - Build list: [retire-main-stable-tracks.pending-builds.md](retire-main-stable-tracks.pending-builds.md).
-- The automatic route is firing: release builds created `build → staging` for `mpt-public-catalog` 5.9.8 and `swo-extension-adobe` 5.23.176 on their own.
+- The automatic route is firing: release builds created `build → staging` for `mpt-public-catalog` 5.9.8 and `acx-extension-adobe` 5.23.176 on their own.
 - Next: reject the 25 `stable → staging` promotions with the comment "release/5 migration".
   - 23 can be rejected by the DevOps approver group or the named QA/Release approvers. They are done in the browser pane after the user signs in.
-  - `mpt-extension-adobe` only by the named QA/Release approvers; `swo-extension-mscsp` only by the mscsp Guardians approver.
+  - `mpt-extension-adobe` only by the named QA/Release approvers; `acx-extension-mscsp` only by the mscsp Guardians approver.
 
 **2026-10-15 — stable queue cleared**
 - Rejected 23 `stable → staging` promotions as an admin who is also in the DevOps approver group with the comment "release/5 migration", in that admin's own browser session. Verified via the API.
 - Still pending, because only other people can reject them:
   - `mpt-extension-adobe` 5.1.211: the named QA/Release approvers;
-  - `swo-extension-mscsp` 5.9.117: the mscsp Guardians approver.
+  - `acx-extension-mscsp` 5.9.117: the mscsp Guardians approver.
   - Their `build → staging` replacements are already waiting.
 - No other `stable → staging` promotion is pending in any product. Once those two are gone, `stable/` has no readers and Phase 4 step 3 (delete `main/` and `stable/`) can go.
 
@@ -118,10 +118,10 @@
 - Prod check:
   - no product card lists `stable`;
   - `/state?environment=stable` returns 0 rows;
-  - service detail (e.g. swo-platform) shows dev/test/staging/prod only;
+  - service detail (e.g. acx-platform) shows dev/test/staging/prod only;
   - per-service history still returns the stable events.
 - Template PRs !152355 and !152356 merged on 10-14 at 15:19. Since then 21 builds registered through the templates, and 5617 was queued 0 times; its last run was 14:31. The trigger is gone.
-- Remaining stable → staging: `mpt-extension-adobe` 5.1.211 and `swo-extension-mscsp` 5.9.117, waiting on their own approvers.
+- Remaining stable → staging: `mpt-extension-adobe` 5.1.211 and `acx-extension-mscsp` 5.9.117, waiting on their own approvers.
 
 **2026-10-15 — Phase 4 steps 2–3**
 - ADO 5617 (`mpt-release.import-build`) and 5657 (`-dev`) set to `queueStatus: disabled` (revisions 5 and 3; reversible). Original definitions saved in the session scratchpad under `ado/`.
@@ -130,7 +130,7 @@
   - It removes the `main`/`stable` stages and `-EnsureSourceDeployEvent`, and updates the docs.
 
 **2026-10-15 — Phase 4 cleanup PR**
-- [mpt-release #1646](https://github.com/softwareone-platform/mpt-release/pull/1646):
+- [mpt-release #1646](https://github.com/acmetrix/mpt-release/pull/1646):
   - deletes `main/`, `stable/`, metadata-import (ADO YAMLs, scripts, GHA workflow);
   - the map keeps dev → test, test → staging, staging → prod;
   - Promote-BuildMetadata loses its automatic mode and `main` default;
@@ -146,9 +146,9 @@
   2. Delete the disabled ADO definitions 5617 and 5657 after a release cycle.
   3. InfraPortal: delete the `mpt-release-promotion` generic webhook (no consumer) and check the `GithubPromotion` function's failure rate.
   4. InfraPilot knowledge docs (`knowledge/delivery-tracks.yaml`, `environments-and-tracks.yaml`, `promotion-policies.yaml`, `deploy-event-sources.yaml`) and `docs/plans/feature-branch-builds.md`: describe the build-registry-only flow.
-  5. Release registration for `swo-auth`, `swo-extension-nav` and `swo-web-shell`. They have no way into staging until it exists.
+  5. Release registration for `acx-auth`, `acx-extension-nav` and `acx-web-shell`. They have no way into staging until it exists.
   6. Migrate the remaining `mpt` services from marketplace into mpt-release, one at a time: `sdp.exclude` + an mpt-release directory + InfraPortal wiring. `mpt-web-currency` is the first obvious one.
-  7. Unrelated, but seen repeatedly: `mpt-interim-renewals`, `mpt-platform-stats` and `mpt-swo-powerapps` fail in dev on missing App Config secrets (`airtableApiKey` / `airtableToken`).
+  7. Unrelated, but seen repeatedly: `mpt-interim-renewals`, `mpt-platform-stats` and `mpt-acx-powerapps` fail in dev on missing App Config secrets (`airtableApiKey` / `airtableToken`).
 
 ## 1. Goal
 
@@ -204,7 +204,7 @@
 
 - `stable → staging` Pending:
   - **mpt-extensions: 3**: nav-billing 5.0.13, adobe 5.1.207, mscsp 5.9.117.
-  - **mpt: 24**. 11 of these are libraries or templates that can never deploy: `swo-lib-*` ×3, `mpt-library-framework`, `swo-design-system`, `swo-dynamic-translations`, `mpt-cli-adobe-plugin`, `swo-new-react-template`, `swo-web-libraries`, `swo-web-healthcheck`, `swo-web-maintenence`. They come from release/5's `push-stable-release.ps1`, which lacks master's modules.yaml filter.
+  - **mpt: 24**. 11 of these are libraries or templates that can never deploy: `acx-lib-*` ×3, `mpt-library-framework`, `acx-design-system`, `acx-dynamic-translations`, `mpt-cli-adobe-plugin`, `acx-new-react-template`, `acx-web-libraries`, `acx-web-healthcheck`, `acx-web-maintenence`. They come from release/5's `push-stable-release.ps1`, which lacks master's modules.yaml filter.
 - 14 `build → dev` candidates are stuck **Approved** and never closed (oldest 2026-08-27). Clear them first, so that a new stuck one is visible.
 
 **Onboarding gap**
@@ -227,22 +227,22 @@ Key: ✓ = registered builds seen in the last 30 days, ✗ = none, — = not app
 | mpt-extension-platform-support | ext | Y | – | ✗ (last build 08-27) | – | verify on next build; product `build → dev` applies |
 | mpt-extension-procurement / -scrm | ext | Y | – | ✓ | – | ready |
 | mpt-extension-producthub / -usage-reporting | ext | Y | Y | ✓ | ✓ | ready |
-| swo-extension-mscsp | ext | Y | Y | ✓ | ✓ | ready (service-specific approvers; pending candidate) |
+| acx-extension-mscsp | ext | Y | Y | ✓ | ✓ | ready (service-specific approvers; pending candidate) |
 | mpt-nav-stats | support-tools | Y | Y | ✓ (09-09) | ✓ (08-24) | ready (`build → staging` policy already exists) |
 | mpt-web-currency | **mpt** | Y | Y | ✗ | ✓ | **D4**: also in the marketplace manifest — pick one owner |
-| mpt-audit, mpt-export, mpt-web-publiccatalog, swo-web-notifications | mpt | Y (disabled) | – | — | — | delete; no effect |
+| mpt-audit, mpt-export, mpt-web-publiccatalog, acx-web-notifications | mpt | Y (disabled) | – | — | — | delete; no effect |
 | ops-dotnet-ci-sample | — | Y | – | — | — | delete; dev stays frozen at 08-04 |
 
 `components.yaml` overlays in `main/` and `stable/` are empty, so nothing is lost. The only unique file is `stable/mpt-extension-operations/instance.yaml`; copy it if D4 keeps operations in mpt-release staging.
 
 ## 4. Target InfraPortal configuration
 
-Prod InfraPortal only. The dev instance (infraportal-dev.s1.team) is out of scope.
+Prod InfraPortal only. The dev instance (infraportal-dev.example.com) is out of scope.
 
 | Product / service | Add | Remove | Keep |
 |---|---|---|---|
 | mpt-extensions (default) | `build → staging`, a copy of today's `stable → staging` steps (QA Review + Release Approval, tracksWorkItems) | `stable → staging` | `build → dev`, `dev → test`, `staging → prod` |
-| mpt-extensions / swo-extension-mscsp | `build → staging`, a copy of its `stable → staging` (QA Review, single approver) | `stable → staging` | `dev → test`, `staging → prod` |
+| mpt-extensions / acx-extension-mscsp | `build → staging`, a copy of its `stable → staging` (QA Review, single approver) | `stable → staging` | `dev → test`, `staging → prod` |
 | mpt-extensions / mpt-extension-aws-management | — | `build → stable` | — (falls back to the product defaults) |
 | mpt-extensions / mpt-extension-delivery | — | — | `build → dev` |
 | mpt-support-tools | — | — | everything (already target) |
@@ -323,8 +323,8 @@ Required to remove "Staging Candidate" altogether. It is independent of Phases 2
 
 **Prerequisites**
 1. **Registration:** every *deployable* mpt component registers its release/5 builds. Not yet registered, from the 30-day data:
-   - `swo-auth` and `swo-extension-nav` (PRs merged 14 Oct, so expected on their next build);
-   - `swo-web-shell` (bespoke, WI-5);
+   - `acx-auth` and `acx-extension-nav` (PRs merged 14 Oct, so expected on their next build);
+   - `acx-web-shell` (bespoke, WI-5);
    - `mpt-web-spotlight` release builds;
    - `mpt-extension-finops`.
    Without a registered build, a component has **no way into staging** after the cutover.

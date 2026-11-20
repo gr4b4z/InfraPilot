@@ -827,13 +827,13 @@ public class PromotionServiceTests : IDisposable
         var c = SeedCandidateWithWorkItem("OBS-1");
 
         var participants = await _sut.UpsertReferenceParticipantAsync(
-            c.Id, "OBS-1", "reviewer", new ParticipantDto("reviewer", "Sylwester Grabowski", "syl@softwareone.com"));
+            c.Id, "OBS-1", "reviewer", new ParticipantDto("reviewer", "Sylwester Grabowski", "syl@example.com"));
 
-        Assert.Contains(participants, p => p.Role == "reviewer" && p.Email == "syl@softwareone.com");
+        Assert.Contains(participants, p => p.Role == "reviewer" && p.Email == "syl@example.com");
         // Persisted onto the candidate's work-item reference (what GetWorkItemParticipants reads).
         var stored = _db.PromotionCandidates.Single(x => x.Id == c.Id)
             .References.Single(r => r.Key == "OBS-1").Participants;
-        Assert.Contains(stored!, p => p.Role == "reviewer" && p.Email == "syl@softwareone.com");
+        Assert.Contains(stored!, p => p.Role == "reviewer" && p.Email == "syl@example.com");
     }
 
     [Fact]

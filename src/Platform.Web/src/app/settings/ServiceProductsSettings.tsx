@@ -169,7 +169,7 @@ function AddOverrideForm({ onSaved }: { onSaved: () => void }) {
             type="text"
             value={service}
             onChange={(e) => setService(e.target.value)}
-            placeholder="swo-extension-mscsp"
+            placeholder="acx-extension-mscsp"
             className={`${inputClass} font-mono min-w-0`}
             style={inputStyle}
           />

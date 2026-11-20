@@ -223,7 +223,7 @@ public class MigrationLogParserTests
 
             --- Describe pod: mpt-export-migrations-rhbwz ---
             Environment:
-              PYRA_ServiceBus__ConnectionString:  Endpoint=sb://example/;SharedAccessKey=not-a-real-key
+              ACX_ServiceBus__ConnectionString:  Endpoint=sb://example/;SharedAccessKey=not-a-real-key
 
             === Failed Job Logs ===
 

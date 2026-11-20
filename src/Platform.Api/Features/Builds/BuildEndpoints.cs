@@ -48,7 +48,7 @@ public static class BuildEndpoints
 
         // List for the UI picker and the registry page. Newest first. `q` is the free-text search
         // (case-insensitive substring across product, service, version, branch, commit and CI build
-        // id — "aws" finds swo-extension-aws); the named fields identify instead of search, so
+        // id — "aws" finds acx-extension-aws); the named fields identify instead of search, so
         // product/service match exactly and `version` pins ONE build, which is what a promotion's
         // "built from …" link needs. `branch` stays a substring match. `since`/`until` window the
         // registration time (since inclusive, until exclusive).

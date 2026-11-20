@@ -38,7 +38,7 @@ public class DeploymentServiceReplayHookTests : IDisposable
 
     private static CreateDeployEventDto Dto() => new(
         Product: "mpt",
-        Service: "swo-web-billing",
+        Service: "acx-web-billing",
         Environment: "test",
         Version: "6.0.11-gc80d1593",
         Source: "web-deploy",

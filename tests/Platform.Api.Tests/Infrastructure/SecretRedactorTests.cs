@@ -17,8 +17,8 @@ public class SecretRedactorTests
         var describe = string.Join("\n",
             "    Environment:",
             "      ASPNETCORE_ENVIRONMENT:             Staging",
-            "      PYRA_ServiceBus__ConnectionString:  Endpoint=sb://fake.servicebus.windows.net/;SharedAccessKeyName=app;SharedAccessKey=FAKEKEY0123456789abcdef=",
-            "      PYRA_Database__Password:            FAKE-DB-PASSWORD",
+            "      ACX_ServiceBus__ConnectionString:  Endpoint=sb://fake.servicebus.windows.net/;SharedAccessKeyName=app;SharedAccessKey=FAKEKEY0123456789abcdef=",
+            "      ACX_Database__Password:            FAKE-DB-PASSWORD",
             "      FROM_SECRET:                        <set to the key 'k' in secret 's'>  Optional: false",
             "    Mounts:");
 
@@ -26,8 +26,8 @@ public class SecretRedactorTests
 
         Assert.DoesNotContain("FAKEKEY", redacted);
         Assert.DoesNotContain("FAKE-DB-PASSWORD", redacted);
-        Assert.Contains($"      PYRA_ServiceBus__ConnectionString:  {R}", redacted);
-        Assert.Contains($"      PYRA_Database__Password:            {R}", redacted);
+        Assert.Contains($"      ACX_ServiceBus__ConnectionString:  {R}", redacted);
+        Assert.Contains($"      ACX_Database__Password:            {R}", redacted);
         // Not secrets: an ordinary setting, and a reference that only names where the secret lives.
         Assert.Contains("      ASPNETCORE_ENVIRONMENT:             Staging", redacted);
         Assert.Contains("<set to the key 'k' in secret 's'>", redacted);
@@ -60,11 +60,11 @@ public class SecretRedactorTests
     [Fact]
     public void ManifestEnvEntries_LoseTheValueOfASecretNamedOnThePreviousLine()
     {
-        var yaml = "        - name: PYRA_Database__Password\n          value: FAKE-manifest-pw\n        - name: LOG_LEVEL\n          value: Debug";
+        var yaml = "        - name: ACX_Database__Password\n          value: FAKE-manifest-pw\n        - name: LOG_LEVEL\n          value: Debug";
         var json = "{\"name\":\"DB_PASSWORD\",\"value\":\"FAKE-json-env\"},{\"name\":\"LOG_LEVEL\",\"value\":\"Debug\"}";
 
         Assert.Equal(
-            $"        - name: PYRA_Database__Password\n          value: {R}\n        - name: LOG_LEVEL\n          value: Debug",
+            $"        - name: ACX_Database__Password\n          value: {R}\n        - name: LOG_LEVEL\n          value: Debug",
             SecretRedactor.Redact(yaml));
         Assert.Equal(
             $"{{\"name\":\"DB_PASSWORD\",\"value\":\"{R}\"}},{{\"name\":\"LOG_LEVEL\",\"value\":\"Debug\"}}",
@@ -110,7 +110,7 @@ public class SecretRedactorTests
     public void Redaction_IsIdempotent()
     {
         var input = string.Join("\n",
-            "      PYRA_ServiceBus__ConnectionString:  Endpoint=sb://x/;SharedAccessKeyName=a;SharedAccessKey=FAKE=",
+            "      ACX_ServiceBus__ConnectionString:  Endpoint=sb://x/;SharedAccessKeyName=a;SharedAccessKey=FAKE=",
             "Authorization: Bearer FAKEbearerTOKEN0123456789",
             "amqps://u:FAKE@h/",
             "password=\"FAKE\"",

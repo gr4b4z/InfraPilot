@@ -26,7 +26,7 @@
          the `app.kubernetes.io/version` label, grouped by `app.kubernetes.io/instance`. The cluster is
          read to confirm the manifest before anything is written: a component whose manifest version
          differs from what the cluster runs is reported and left alone, never recorded. Micro-frontends
-         (mpt-web-*, swo-web-*) are static sites and are not in the cluster; those are recorded from the
+         (mpt-web-*, acx-web-*) are static sites and are not in the cluster; those are recorded from the
          manifest alone, and their notes say so.
 
     For each component the script compares the manifest version with what InfraPortal currently shows
@@ -111,7 +111,7 @@
     The real thing. Run after an outage or a restore.
 
 .EXAMPLE
-    .\scripts\sync-mpt-versions.ps1 -Target production -Service 'swo-web-*' -NoClusterCheck
+    .\scripts\sync-mpt-versions.ps1 -Target production -Service 'acx-web-*' -NoClusterCheck
 
     Only the production micro-frontends, which the cluster cannot confirm anyway.
 #>

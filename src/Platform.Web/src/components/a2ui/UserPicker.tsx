@@ -3,11 +3,11 @@ import { User } from 'lucide-react';
 import type { ComponentProps } from './A2UIRenderer';
 
 const MOCK_USERS = [
-  { id: 'user-1', name: 'Alice Chen', email: 'alice@swo.dev', initials: 'AC' },
-  { id: 'user-2', name: 'Bob Martinez', email: 'bob@swo.dev', initials: 'BM' },
-  { id: 'user-3', name: 'Carol Williams', email: 'carol@swo.dev', initials: 'CW' },
-  { id: 'user-4', name: 'David Kim', email: 'david@swo.dev', initials: 'DK' },
-  { id: 'user-5', name: 'Eva Novak', email: 'eva@swo.dev', initials: 'EN' },
+  { id: 'user-1', name: 'Alice Chen', email: 'alice@example.com', initials: 'AC' },
+  { id: 'user-2', name: 'Bob Martinez', email: 'bob@example.com', initials: 'BM' },
+  { id: 'user-3', name: 'Carol Williams', email: 'carol@example.com', initials: 'CW' },
+  { id: 'user-4', name: 'David Kim', email: 'david@example.com', initials: 'DK' },
+  { id: 'user-5', name: 'Eva Novak', email: 'eva@example.com', initials: 'EN' },
 ];
 
 export function UserPicker({ component, value, error, onChange, readOnly }: ComponentProps) {

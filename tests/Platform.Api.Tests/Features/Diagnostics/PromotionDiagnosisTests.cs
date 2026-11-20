@@ -124,7 +124,7 @@ public class PromotionDiagnosisTests : IDisposable
     private const string FailedRunNote =
         "Deploy Registered Build failed at step \"Azure Login\" before committing anything, so this promotion was not deployed and stays Approved.\n"
         + "Once the cause is fixed, re-run the failed jobs on GitHub; the re-run deploys this same promotion.\n"
-        + "Run: https://github.com/softwareone-platform/mpt-release/actions/runs/41435628245/job/120001";
+        + "Run: https://github.com/acmetrix/mpt-release/actions/runs/41435628245/job/120001";
 
     private void GivenComment(Guid candidateId, string body, TimeSpan ago,
         string authorEmail = "", string authorName = "mpt-release")
@@ -302,7 +302,7 @@ public class PromotionDiagnosisTests : IDisposable
         Assert.Contains(Observations.NoDeployEventSinceApproval, result.Observations);
         Assert.Contains(result.Evidence, e => e.Contains("'mpt-release'")
             && e.Contains("at step \"Azure Login\" before committing anything")
-            && e.Contains("Run: https://github.com/softwareone-platform/mpt-release/actions/runs/41435628245/job/120001"));
+            && e.Contains("Run: https://github.com/acmetrix/mpt-release/actions/runs/41435628245/job/120001"));
         Assert.Equal("dispatch-run-failed", result.ProbableCauses[0].Cause.Id);
         // Still offered, below it — a later attempt may have committed after all.
         Assert.Contains(result.ProbableCauses.Skip(1), c => c.Cause.Id == "no-diff-landing");

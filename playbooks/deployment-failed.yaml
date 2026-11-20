@@ -26,7 +26,7 @@ causes:
     matches_when:
       - log_chart_values_rejected
     explanation: >-
-      `execution error at (<template>:<line>)` is a `fail` guard inside the chart (swo-service):
+      `execution error at (<template>:<line>)` is a `fail` guard inside the chart (acx-service):
       Helm stopped while rendering, so no pod, job or event exists. The failure diagnostics showing
       "No resources found" are consistent with that, not a separate problem. Two forms recur.
       `secretValues.<name> is required` means the deployment manifest declares a secret under

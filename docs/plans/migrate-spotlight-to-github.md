@@ -2,8 +2,8 @@
 
 Both services already deploy through mpt-release (since 2026-10-22/23, see
 [migrate-mpt-services.md](migrate-mpt-services.md)). What moves now is the **source and the build**:
-the repositories go to `softwareone-platform` on GitHub, governed by `ops-infra-terraform`, and are
-built by the platform CI (`softwareone-platform/.github` `reusable-ci.yml`). The deployer stays the
+the repositories go to `acmetrix` on GitHub, governed by `ops-infra-terraform`, and are
+built by the platform CI (`acmetrix/.github` `reusable-ci.yml`). The deployer stays the
 same. The build still registers in InfraPortal under product `mpt` with the same service names, so
 promotions, history and Jira "Fixed In Build" carry on.
 
@@ -25,7 +25,7 @@ a GitHub-built `release/5` build has reached staging.
 - The GitHub build only has to suit mpt-release. ADO web-build features that serve only the SDP, or
   nothing, are deprecated rather than ported (see "Deprecated with the move").
 - The repositories carry the least build code possible: `.github/workflows/build.yml` is a verbatim
-  copy of `softwareone-platform/.github` `workflow-templates/ci-standard.yml`, plus
+  copy of `acmetrix/.github` `workflow-templates/ci-standard.yml`, plus
   `.github/ci-config.yaml`. Everything reusable lives in `.github`.
 - GitHub zip builds register the web artifact shape ADO web builds already use, with the digest
   recorded at build time. mpt-release accepts only that shape (gap 1).
@@ -33,27 +33,27 @@ a GitHub-built `release/5` build has reached staging.
   `node`), so callers pass no inputs.
 
 **In review (2026-11-18), none merged:**
-- [softwareone-platform/.github#111](https://github.com/softwareone-platform/.github/pull/111): the
+- [acmetrix/.github#111](https://github.com/acmetrix/.github/pull/111): the
   web contract, `runtimes:`, the verbatim template. CI green.
-- [mpt-release#1676](https://github.com/softwareone-platform/mpt-release/pull/1676) (draft): one
+- [mpt-release#1676](https://github.com/acmetrix/mpt-release/pull/1676) (draft): one
   web contract in `Download-Build-Artifact.ps1`. **Merge after #111.**
-- [ADO ops-build-templates PR 153829](https://dev.azure.com/softwareone-pc/MPT/_git/ops-build-templates/pullrequest/153829):
+- [ADO ops-build-templates PR 153829](https://dev.azure.com/acmetrix-pc/MPT/_git/ops-build-templates/pullrequest/153829):
   the ADO web template drops what nothing reads.
 
 **Done:**
 - mpt-release deploys web packages from ACR only:
-  [mpt-release#1672](https://github.com/softwareone-platform/mpt-release/pull/1672), merged 12:14 UTC.
+  [mpt-release#1672](https://github.com/acmetrix/mpt-release/pull/1672), merged 12:14 UTC.
   - Proven in dev the same day: all four web components were force-redeployed and pulled by digest
-    from `nlpapp0336cre`, with no storage read (Reconcile Dev 44081823510).
+    from `acmetrixcr`, with no storage read (Reconcile Dev 44081823510).
   - A new registered build, mpt-web-extensions `6.0.28-g4f9a9a58`, then deployed to dev the
     same way.
   - All four show `succeeded` in dev at their desired versions (mpt-web-spotlight after a fresh
     Reconcile Dev, 44084431202).
-- [mpt-release#1673](https://github.com/softwareone-platform/mpt-release/pull/1673), merged 12:37 UTC:
+- [mpt-release#1673](https://github.com/acmetrix/mpt-release/pull/1673), merged 12:37 UTC:
   `Import-PowerShellYamlModule` retries the PSGallery install. A truncated download had failed
   spotlight's first attempt.
 - The OpenAPI spec now comes from ACR:
-  [mpt-release#1674](https://github.com/softwareone-platform/mpt-release/pull/1674), merged 13:07 UTC.
+  [mpt-release#1674](https://github.com/acmetrix/mpt-release/pull/1674), merged 13:07 UTC.
   - The `components.yaml` entry has `image: mpt-spotlight/web-api`, and the spec is copied out of
     `<ACR>/<image>:<deployed version>`.
   - Dry runs of Publish OpenAPI in all four environments read it from ACR, each with the same
@@ -79,17 +79,17 @@ a GitHub-built `release/5` build has reached staging.
   - **v5, 2026-11-18 (status Active):** repository naming. The GitHub repository and its data file
     take the mpt-release component name (Steps 2 and 3, with `<ado-repo>` in the import and lock
     commands), a "Service name not allowed" troubleshooting row, and a link to .github#113.
-  - **v6, 2026-11-18 (status Active):** corrects v5's example. swo-extension-adobe and
-    swo-extension-aws are already on GitHub (`swo-adobe-vipm-extension`, `swo-aws-extension`) and
+  - **v6, 2026-11-18 (status Active):** corrects v5's example. acx-extension-adobe and
+    acx-extension-aws are already on GitHub (`acx-adobe-vipm-extension`, `acx-aws-extension`) and
     are in the `.github` allow-list, so they keep their names. The rename-at-import rule applies to
     services still on Azure DevOps.
 - **The repos:** they only link it, via a README note.
   - mpt-spotlight: ADO PR 153777. Merge it after the runbook is published.
   - mpt-web-spotlight: ADO PR 153782, committed with `--no-verify` at the user's OK. Its PR build
-    will likely fail on the 12 outdated `@swo/*` packages, so it needs a separate bump or a policy
+    will likely fail on the 12 outdated `@acx/*` packages, so it needs a separate bump or a policy
     override.
 - **The announcement:** it goes to the migration chat, not a document.
-- **Old draft:** an earlier announcement-style draft on softwareone.atlassian.net (page 8187838466)
+- **Old draft:** an earlier announcement-style draft on acmetrix.atlassian.net (page 8187838466)
   is to be deleted by hand. The Atlassian connector has no delete operation.
 
 **Still open:**
@@ -104,7 +104,7 @@ The platform team must also run `ado2gh`, as org owner or with the migrator role
    other field is unchanged, and no pending candidate was re-applied. The rollback copy is
    `mpt-build-dev-policy.before.json`: PUT it back with only `refs/heads/master`.
 2. **ops-infra-terraform PR (gap 7, data files, import blocks):** drafted as
-   [ops-infra-terraform#161](https://github.com/softwareone-platform/ops-infra-terraform/pull/161)
+   [ops-infra-terraform#161](https://github.com/acmetrix/ops-infra-terraform/pull/161)
    (2026-11-17).
    - The PR holds both data files, `stack: nodejs` in the schema, and import blocks.
    - **Needs a rebase (found 2026-11-18):** ops-infra-terraform replaced `stack` with
@@ -116,7 +116,7 @@ The platform team must also run `ado2gh`, as org owner or with the migrator role
      import non-existent remote object" for the two repositories, as expected until `ado2gh` has
      created them. Mark it ready and merge after that, and after the `master` → `main` rename.
    **Chart comparison, done 2026-11-17.** I rendered two charts with the same inputs: the deployed
-   `oci://nlpapp0336cre.azurecr.io/helm/mpt-spotlight:6.0.33-ga15a3b5f`, and `swo-service` 2.2.0 with
+   `oci://acmetrixcr.azurecr.io/helm/mpt-spotlight:6.0.33-ga15a3b5f`, and `acx-service` 2.2.0 with
    `deploy/deployment-manifest.yaml` as base values. The values were placeholders built from dev's App
    Configuration key names and `base64encode` tags (no values or Key Vault read) and
    `version=6.0.33-ga15a3b5f`.
@@ -125,25 +125,25 @@ The platform team must also run `ado2gh`, as org owner or with the migrator role
    Deployment, VirtualService, the hook Secret and ConfigMap, and the DbUp Job
    `mpt-spotlight-migrations`. Env, secrets, selectors, ports, probes, routes and the Job image
    are identical. The differences:
-   - **Label `app.pyracloud.com/repository` is dropped** on every resource. Cosmetic unless
+   - **Label `app.acxcloud.com/repository` is dropped** on every resource. Cosmetic unless
      something selects on it.
    - **`checksum/config` and `checksum/secret` pod annotations are added.** Pods restart when
      config changes, an improvement.
-   - **Replicas stay 1 in practice.** `swo-service` reads `api.replicaCount`, which is
+   - **Replicas stay 1 in practice.** `acx-service` reads `api.replicaCount`, which is
      `shared/api.replicaCount` = 1 in dev and unset in test, staging and prod (chart default 1). No
      environment has `mpt-spotlight/apis.*` overrides.
-   - **The Pyra Key Vault certificate is dropped:** the env var
-     `Pyra_Pyra__AzureAd__Authentication__CertificatePassword` and the volume
-     `ops-pyc-cluster-teamsetup-pyra-keyvault-certificate`, which the releases/v1 generator
-     injects into every API. Neither the spotlight code nor any of its `Mpt.*`, `Pyra.*` or
-     `SoftwareOne.*` packages references them (scanned the restored DLLs), so this is safe.
-   - **`nodeSelector: agentpool: apipool` is dropped.** releases/v1 forces it, and `swo-service`
+   - **The Acx Key Vault certificate is dropped:** the env var
+     `Acx_Acx__AzureAd__Authentication__CertificatePassword` and the volume
+     `ops-cluster-teamsetup-acx-keyvault-certificate`, which the releases/v1 generator
+     injects into every API. Neither the spotlight code nor any of its `Mpt.*`, `Acx.*` or
+     `Acmetrix.*` packages references them (scanned the restored DLLs), so this is safe.
+   - **`nodeSelector: agentpool: apipool` is dropped.** releases/v1 forces it, and `acx-service`
      2.2.0 has no nodeSelector option, so the pod can land on any schedulable pool, as for the
-     other `swo-service` services. A values override can't bring it back either: the chart's
+     other `acx-service` services. A values override can't bring it back either: the chart's
      `values.schema.json` forbids `nodeSelector` and `tolerations` on `api`
      (`additionalProperties: false`, found 2026-11-18). Open as decision 6.
    - **The cli image only feeds the DbUp hook,** through the manifest's `dbup` block, which
-     `swo-service` marks deprecated. Optional follow-up: move it to `migrations.schema`.
+     `acx-service` marks deprecated. Optional follow-up: move it to `migrations.schema`.
    **mpt-spotlight branch prepared, 2026-11-17:** local commit `4ab4a8e` on `feature/move-to-github`
    (from ADO `master` a15a3b5, not pushed). **2026-11-18:** `9fac249` on top makes
    `.github/workflows/build.yml` the verbatim `ci-standard.yml` and declares `runtimes.dotnet:
@@ -165,7 +165,7 @@ The platform team must also run `ado2gh`, as org owner or with the migrator role
    .github#111 before it goes to GitHub.
    - Contents: caller + `ci-config.yaml` (zip `web`, lint and unit suites with
      `kind: unit`, since the schema requires `kind` and has no lint kind), CODEOWNERS/SECURITY/PR
-     template, the PyraCloud feed moved to its GUID path in `.npmrc` and the 29 lockfile URLs (gap
+     template, the AcxCloud feed moved to its GUID path in `.npmrc` and the 29 lockfile URLs (gap
      5), and `pipelines/` removed.
    - Feed check: `npm ci` with GUID-only auth installs 1518 packages. The old name-path lockfile
      with the same auth fails with E401, which proves gap 5.
@@ -173,7 +173,7 @@ The platform team must also run `ado2gh`, as org owner or with the migrator role
      which CI uses (npm 11 locally).
    - **Blocked commit:** the worktree's `core.hooksPath` points at husky's raw hook, which can't
      execute. Run the husky way, the hook's `mp-cli update-packages --mode check` fails because 12
-     `@swo/*` packages on master are outdated (master's existing state, not this change).
+     `@acx/*` packages on master are outdated (master's existing state, not this change).
 3. **Migration branches, prepared locally:** these can't be pushed until the GitHub repositories
    exist.
    - Both repositories: `ci-config.yaml` + caller.
@@ -202,15 +202,15 @@ are equal; this matters for versioning below.
 
 ## Target state
 
-- `softwareone-platform/mpt-spotlight` and `softwareone-platform/mpt-web-spotlight`, `internal`, full
+- `acmetrix/mpt-spotlight` and `acmetrix/mpt-web-spotlight`, `internal`, full
   history and tags, described by `ops-infra-terraform/data/repositories/<name>.yaml`.
 - Each repository owns two build files and nothing else: `.github/workflows/build.yml`, a verbatim
   copy of `.github` `workflow-templates/ci-standard.yml` (required check `ci / summary`), and
   `.github/ci-config.yaml` (what to build, and the toolchain versions under `runtimes:`).
-- A push to the default branch or `release/*` publishes to `nlpapp0336cre` and registers the build in
+- A push to the default branch or `release/*` publishes to `acmetrixcr` and registers the build in
   InfraPortal (`POST /api/builds`). The existing policies then open `build → dev` (auto) and
   `build → staging` (QA and release approval), and mpt-release deploys as it does today.
-- mpt-spotlight deploys with the shared chart `ops-helm-charts/charts/swo-service` and a
+- mpt-spotlight deploys with the shared chart `ops-helm-charts/charts/acx-service` and a
   `deploy/deployment-manifest.yaml` bundled into the build's OCI metadata, like the other
   GitHub-built services. It no longer uses a per-service chart. The manifest contract is the same
   as the ops-mpt-infra generator's, so the App Configuration keys stay valid.
@@ -267,7 +267,7 @@ versioning:
 
 `runtimes.node` covers the bundle build and the node test suites, so the component no longer
 repeats `node_version` and the caller passes nothing. The bundle is pushed as
-`nlpapp0336cre.azurecr.io/mpt-web-spotlight/web:<v>`, and that is its only copy (see below). The
+`acmetrixcr.azurecr.io/mpt-web-spotlight/web:<v>`, and that is its only copy (see below). The
 build registers it as a `type: web` artifact with the digest it pushed.
 
 ### Web artifacts: ACR only (decided 2026-11-17)
@@ -283,7 +283,7 @@ mpt-release deploy path instead of carrying them over:
   storage.
 - **Nothing needs moving into ACR first.** Checked 2026-11-17: every current and archived
   `build-metadata.yaml` of those four (16 + 16 files, every environment) carries `ociRef` and
-  `ociDigest`, and all 17 distinct digests exist in `nlpapp0336cre` under `web/<component>`. So
+  `ociDigest`, and all 17 distinct digests exist in `acmetrixcr` under `web/<component>`. So
   rollbacks to ADO-built versions keep working from ACR.
 - **mpt-release ignores the outside-ACR fields** that ADO metadata still carries: `uri`/`blobUri`
   on `*.blob.core.windows.net`, `pipelineArtifactName`, and the `web-release` artifact.
@@ -319,7 +319,7 @@ mpt-release deploy path instead of carrying them over:
   SDP, or nothing, is deprecated, not ported.
 - **The repository carries the least build code possible:** `.github/workflows/build.yml`, a
   verbatim copy of `.github` `workflow-templates/ci-standard.yml`, and `.github/ci-config.yaml`.
-  Everything reusable lives in `softwareone-platform/.github`.
+  Everything reusable lives in `acmetrix/.github`.
 
 **What goes, and why:**
 
@@ -341,7 +341,7 @@ deploys), so there is nothing to port from them either.
 rule doesn't settle them. Decide each when a service that uses it migrates:
 - npm audit;
 - the `mp-cli` package check;
-- bundle-size: only swo-web-billing uses it;
+- bundle-size: only acx-web-billing uses it;
 - Playwright `test:integration`: 4 SDP repositories use it on master, and reusable-ci has no
   support for it yet.
 
@@ -349,9 +349,9 @@ rule doesn't settle them. Decide each when a service that uses it migrates:
 
 | PR | Does |
 |---|---|
-| [softwareone-platform/.github#111](https://github.com/softwareone-platform/.github/pull/111) | The web contract in reusable-ci (`type: web` with `ociRef` + `ociDigest`, `labels.type: web`); `runtimes:` in the schema and reusable-ci; `ci-standard.yml` usable verbatim; drops the Kendo secret; new `tests/build-metadata-test.sh`. CI green |
-| [mpt-release#1676](https://github.com/softwareone-platform/mpt-release/pull/1676) (draft) | One web contract in `Download-Build-Artifact.ps1`: `ociRef` + `ociDigest` required, pulled by digest; the tag-resolve path removed. **Merge after #111**: until then a GitHub zip build registers no `web` artifact, and #1676 rejects it |
-| [ADO ops-build-templates PR 153829](https://dev.azure.com/softwareone-pc/MPT/_git/ops-build-templates/pullrequest/153829) | Removes the RELEASE variant, the `manifest.json` version, the metadata pipeline artifact, `blobUri` and `pipelineArtifactName`, the Kendo licence and `release.yml` / `release-to-env.yml`; the web `uri` becomes `oci://`; marks the `nltapp0762sda` upload `DEPRECATED (SDP-only)`; `blockOutdatedPackages` becomes a declared no-op |
+| [acmetrix/.github#111](https://github.com/acmetrix/.github/pull/111) | The web contract in reusable-ci (`type: web` with `ociRef` + `ociDigest`, `labels.type: web`); `runtimes:` in the schema and reusable-ci; `ci-standard.yml` usable verbatim; drops the Kendo secret; new `tests/build-metadata-test.sh`. CI green |
+| [mpt-release#1676](https://github.com/acmetrix/mpt-release/pull/1676) (draft) | One web contract in `Download-Build-Artifact.ps1`: `ociRef` + `ociDigest` required, pulled by digest; the tag-resolve path removed. **Merge after #111**: until then a GitHub zip build registers no `web` artifact, and #1676 rejects it |
+| [ADO ops-build-templates PR 153829](https://dev.azure.com/acmetrix-pc/MPT/_git/ops-build-templates/pullrequest/153829) | Removes the RELEASE variant, the `manifest.json` version, the metadata pipeline artifact, `blobUri` and `pipelineArtifactName`, the Kendo licence and `release.yml` / `release-to-env.yml`; the web `uri` becomes `oci://`; marks the `nltapp0762sda` upload `DEPRECATED (SDP-only)`; `blockOutdatedPackages` becomes a declared no-op |
 
 ## Gaps found, and the fix for each
 
@@ -371,8 +371,8 @@ migration if nobody handles it.
      .github#111 registers the same `type: web` artifact as ADO, with `ociRef` and `ociDigest`
      recorded at build time, and mpt-release#1676 accepts only that shape and drops the
      tag lookup. One contract for both CI systems. Merge #111 first.
-   - **Both artifact shapes:** ADO pushes `application/vnd.softwareone.web-package.v1+zip` with
-     `<component>-<version>.zip`, GitHub pushes `application/vnd.softwareone.webapp.zip` with
+   - **Both artifact shapes:** ADO pushes `application/vnd.acmetrix.web-package.v1+zip` with
+     `<component>-<version>.zip`, GitHub pushes `application/vnd.acmetrix.webapp.zip` with
      `<name>.zip`. Take the single `application/zip` layer, whatever the file is called.
      `artifactComponent` in `instance.yaml` still selects the repository.
    - **Login:** reuse the existing ACR login pattern (`az acr login --expose-token`, data-plane
@@ -391,10 +391,10 @@ migration if nobody handles it.
    storage account. ADO-built services keep their blob specs until they migrate. Before dropping
    `mpt-spotlight.v6-latest.json`, find who reads it (nothing in mpt-release does).
 
-3. **The Dockerfiles can't build on GitHub.** They start `FROM nlpapp0336cre.azurecr.io/dotnet/sdk:10.0`,
+3. **The Dockerfiles can't build on GitHub.** They start `FROM acmetrixcr.azurecr.io/dotnet/sdk:10.0`,
    but the reusable CI only logs in to ACR when it publishes, so PR builds can't pull it. That image
    also supplied the private NuGet feed config, and the projects need `Mpt.Framework.*`,
-   `Mpt.Essentials.*`, `Pyra.*`, `SoftwareOne.AppInsights.Kubernetes` and the `Mpt.OpenApiCli`
+   `Mpt.Essentials.*`, `Acx.*`, `Acmetrix.AppInsights.Kubernetes` and the `Mpt.OpenApiCli`
    tool from it. Fix in the service: `FROM mcr.microsoft.com/dotnet/sdk:10.0`, and
    `RUN --mount=type=secret,id=nuget_config dotnet restore … --configfile /run/secrets/nuget_config`
    (the same for `dotnet tool install`). This only works on GitHub, so it lands with the migration
@@ -406,8 +406,8 @@ migration if nobody handles it.
    fixture (no tool), or add `.config/dotnet-tools.json` and run the tool through
    `dotnet tool restore`/`dotnet tool run`.
 
-5. **The `npm ci` auth is likely to fail for `@swo`. To verify on the first PR build.** The repository's
-   `.npmrc` and 29 lockfile `resolved` URLs use `softwareone-pc.pkgs.visualstudio.com/_packaging/PyraCloud/…`
+5. **The `npm ci` auth is likely to fail for `@acx`. To verify on the first PR build.** The repository's
+   `.npmrc` and 29 lockfile `resolved` URLs use `acmetrix-pc.pkgs.visualstudio.com/_packaging/AcxCloud/…`
    (the feed **name**). `setup-package-feeds` writes the token for `…/_packaging/18b4703c-…/` (the
    feed **GUID**), in both host forms, and npm matches auth by URL path. Fix in the service: switch
    `.npmrc` and the lockfile URLs to the GUID form `feeds.yaml` uses, and check `npm ci` locally.
@@ -466,8 +466,8 @@ ADO-only OpenAPI lint step goes too.
    - **Who runs it:** an org owner or a holder of the migrator role (`grant-migrator-role`). In
      practice that's the platform team.
    - **The command:**
-     `gh ado2gh migrate-repo --ado-org softwareone-pc --ado-team-project MPT --ado-repo <repo>
-     --github-org softwareone-platform --github-repo <repo> --target-repo-visibility internal`.
+     `gh ado2gh migrate-repo --ado-org acmetrix-pc --ado-team-project MPT --ado-repo <repo>
+     --github-org acmetrix --github-repo <repo> --target-repo-visibility internal`.
    - **Repository name (decided 2026-11-18):** `--github-repo` is the mpt-release component name
      ([migrate-mpt-services.md](migrate-mpt-services.md), "Repository naming"). Spotlight already
      complies: `mpt-spotlight` and `mpt-web-spotlight` are both component names.
@@ -508,11 +508,11 @@ ADO-only OpenAPI lint step goes too.
    covers part of it, and either can come back when the platform CI implements `quality.sonar` /
    `security.sbom`.
 6. **`apipool` placement for mpt-spotlight: open (2026-11-18).** releases/v1 pins the API pod to
-   `agentpool: apipool`. `swo-service` 2.2.0 can't: its `values.schema.json` forbids `nodeSelector`
+   `agentpool: apipool`. `acx-service` 2.2.0 can't: its `values.schema.json` forbids `nodeSelector`
    and `tolerations` on `api` (`additionalProperties: false`), so the pod can land on any
    schedulable pool. The choice:
-   - **Accept it,** as for the other `swo-service` services. Nothing else changes.
-   - **Ship `swo-service` 2.4.0 with the keys** (`api.nodeSelector`, `api.tolerations`) and pin the
+   - **Accept it,** as for the other `acx-service` services. Nothing else changes.
+   - **Ship `acx-service` 2.4.0 with the keys** (`api.nodeSelector`, `api.tolerations`) and pin the
      spotlight `instance.yaml` to it. The same applies to every own-chart service that uses
      `apipool` (see [migrate-mpt-services.md](migrate-mpt-services.md), "Helm readiness for
      GitHub").
@@ -525,16 +525,16 @@ ADO-only OpenAPI lint step goes too.
 | Repository | Change | When |
 |---|---|---|
 | **mpt-release** | (a) web packages from ACR only, for all four web components (gap 1): **done**, #1672 + #1673, proven in dev. (b) OpenAPI spec read from the image in ACR (gap 2): **done**, #1674, proven by dry runs in all four environments | Done |
-| | (c) `dev/` + `test/` `mpt-spotlight/instance.yaml`: `chartPath: charts/swo-service`, `chartVersion: 2.2.0` (or 2.4.0, decision 6). Without it the chart resolves to `helm/mpt-spotlight@<version>`, which doesn't exist for a GitHub build, so the deploy fails safely | In the same window as the first GitHub master build |
+| | (c) `dev/` + `test/` `mpt-spotlight/instance.yaml`: `chartPath: charts/acx-service`, `chartVersion: 2.2.0` (or 2.4.0, decision 6). Without it the chart resolves to `helm/mpt-spotlight@<version>`, which doesn't exist for a GitHub build, so the deploy fails safely | In the same window as the first GitHub master build |
 | | (d) `staging/` + `prod/` the same | In the same window as the first GitHub release/5 build, before its `build → staging` is approved |
-| | (e) [#1676](https://github.com/softwareone-platform/mpt-release/pull/1676): one web contract, pull by the recorded digest | After .github#111, before the first GitHub web build |
-| **softwareone-platform/.github** | [#111](https://github.com/softwareone-platform/.github/pull/111): the web contract, `runtimes:`, `ci-standard.yml` usable verbatim, Kendo secret dropped (gaps 1 and 9) | Before mpt-release (e) and before the migration PRs |
+| | (e) [#1676](https://github.com/acmetrix/mpt-release/pull/1676): one web contract, pull by the recorded digest | After .github#111, before the first GitHub web build |
+| **acmetrix/.github** | [#111](https://github.com/acmetrix/.github/pull/111): the web contract, `runtimes:`, `ci-standard.yml` usable verbatim, Kendo secret dropped (gaps 1 and 9) | Before mpt-release (e) and before the migration PRs |
 | **ops-build-templates** (ADO) | PR 153829: the ADO web template drops what nothing reads (see "Deprecated with the move") | Independent of the cutover |
 | **ops-infra-terraform** | `data/repositories/mpt-spotlight.yaml` and `mpt-web-spotlight.yaml`, both with `acr_publish: true` (gap 7; #161 still has `stack` and needs a rebase), hand-authored like `mpt-extension-dcrm.yaml`: no `seed`/`template`, `product: mpt`, `tier: high`, `visibility: internal`, `owning_team: Kumo`, `contributor_teams: [MPT_Developers]` (the schema's product-devs rule, as in mpt-extension-platform-support), `default_branch: main`, ruleset with `required_status_checks: ["ci / summary"]`, `branch_rulesets` for `release/*`, security features; `import {}` blocks | Reviewed in prep; merged after the repositories exist |
 | **mpt-spotlight** (GitHub PR to default branch, then a cherry-pick PR to release/5) | verbatim caller + `ci-config.yaml` with `runtimes.dotnet`; baseline files the health report checks (CODEOWNERS, SECURITY.md, PR template); Dockerfiles (gap 3); sql-cache (gap 4); `deployment-manifest.yaml` → `deploy/`, remove `helm/` and `pipelines/`; CLAUDE.md/README CI section; `dotnet restore` NuGet-audit check on both branches first (the 2026-10-22 lesson) | After import |
 | **mpt-web-spotlight** (same two PRs) | verbatim caller + `ci-config.yaml` with `runtimes.node`; baseline files; `.npmrc` + lockfile URLs (gap 5); remove `pipelines/` | After import |
 | **InfraPortal** | Add `refs/heads/main` to `mpt` `build → dev`, keeping `refs/heads/master` (gap 8): **done 2026-11-17**. Confirm the org-level `DEPLOYMENTS_URL` / `DEPLOYMENTS_API_KEY` are visible to the new repositories and the key allows product `mpt` with `build:register` (the GitHub builds registered so far are under `mpt-extensions` and `mpt-support-tools`) | Prep |
-| **marketplace** (ADO, master + release/5) | `.gitmodules` for both submodules → `git@github.com:softwareone-platform/<repo>` (the existing GitHub-submodule convention), pointers to the GitHub commits. `sdp.exclude` and the commented changelog triggers stay | After cutover |
+| **marketplace** (ADO, master + release/5) | `.gitmodules` for both submodules → `git@github.com:acmetrix/<repo>` (the existing GitHub-submodule convention), pointers to the GitHub commits. `sdp.exclude` and the commented changelog triggers stay | After cutover |
 | **Azure DevOps** | Disable definitions 5383 and 5608; `gh ado2gh lock-ado-repo` for both repositories (read-only, still readable); decide on load-test definitions 5446/5447 | At cutover |
 
 ## Cutover sequence
@@ -565,7 +565,7 @@ at all, so keep the freeze short.
    - **Tags:** the first GitHub build is `6.0.35-g…` or later once `v6.0` exists, and `0.0.N`
      without it (gap 6).
 3. Prepare both migration branches locally. For mpt-spotlight, render the old chart
-   (ops-mpt-infra `releases/v1` generator) against the new one (`swo-service` 2.2.0 with
+   (ops-mpt-infra `releases/v1` generator) against the new one (`acx-service` 2.2.0 with
    `deploy/deployment-manifest.yaml` and the same Prepare-Helm-Values inputs) for dev and test, and
    compare names, env, secrets, selectors, routes and the DbUp job image. This is the method from
    the common-Helm-template migration.
@@ -608,10 +608,10 @@ at all, so keep the freeze short.
   versions, and `register_build` logs HTTP 2xx.
 - InfraPortal `list_builds` for both services shows a `github` build on the default branch, and a
   `build → dev` candidate appears and closes as Deployed.
-- dev: helm release `mpt-spotlight` on `swo-service`, the DbUp job ran with
-  `mpt-spotlight/cli:<new version>`, and `/swo-spotlight-api/` routes. The web app serves the new
+- dev: helm release `mpt-spotlight` on `acx-service`, the DbUp job ran with
+  `mpt-spotlight/cli:<new version>`, and `/acx-spotlight-api/` routes. The web app serves the new
   version (`versions.json`), with configuration substituted from App Configuration. The web job
-  pulled it from `nlpapp0336cre.azurecr.io/mpt-web-spotlight/web` by digest, and nothing was read
+  pulled it from `acmetrixcr.azurecr.io/mpt-web-spotlight/web` by digest, and nothing was read
   from a storage account. `dev/mpt-web-spotlight/build-metadata.yaml` has `labels.type: web` and a
   `type: web` artifact whose `ociDigest` is the digest the build pushed, and the deploy pulled
   exactly that one.

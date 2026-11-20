@@ -27,7 +27,7 @@ causes:
       - work_items_outstanding
     explanation: >-
       No approval decision has been recorded. The policy for this edge names who can clear it —
-      typically QA Manager, and Guardians for `swo-extension-mscsp`. Approvers are not notified
+      typically QA Manager, and Guardians for `acx-extension-mscsp`. Approvers are not notified
       automatically unless a subscription is configured to tell them.
     confirm: The approval card on the promotion lists every gate and who can clear it.
     fix: Ask a named approver to review it. Assigning a QA participant makes the ownership visible.

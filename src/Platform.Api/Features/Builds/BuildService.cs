@@ -292,7 +292,7 @@ public class BuildService
             builds = builds.Where(b => b.Version == query.Version);
 
         // The free-text box. One needle across every column a person might half-remember, so
-        // searching "aws" finds swo-extension-aws whether the word sits in the product, the
+        // searching "aws" finds acx-extension-aws whether the word sits in the product, the
         // service or the branch, and a commit sha off a PR finds the build it came from.
         if (!string.IsNullOrWhiteSpace(query.Query))
         {

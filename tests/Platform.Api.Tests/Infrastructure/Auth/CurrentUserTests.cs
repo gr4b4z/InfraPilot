@@ -19,10 +19,10 @@ public class CurrentUserTests
     public void Email_prefers_preferred_username_for_v2_tokens()
     {
         var sut = BuildFor(
-            new Claim("preferred_username", "v2@softwareone.com"),
-            new Claim("upn", "ignored@softwareone.com"));
+            new Claim("preferred_username", "v2@example.com"),
+            new Claim("upn", "ignored@example.com"));
 
-        Assert.Equal("v2@softwareone.com", sut.Email);
+        Assert.Equal("v2@example.com", sut.Email);
     }
 
     [Fact]
@@ -31,27 +31,27 @@ public class CurrentUserTests
         // A real Entra v1.0 access token: no "preferred_username", no "email" — the identity
         // lives in "upn" / "unique_name". Regression guard: previously Email resolved to "".
         var sut = BuildFor(
-            new Claim("upn", "sylwester.grabowski@softwareone.com"),
-            new Claim("unique_name", "sylwester.grabowski@softwareone.com"),
+            new Claim("upn", "sylwester.grabowski@example.com"),
+            new Claim("unique_name", "sylwester.grabowski@example.com"),
             new Claim("name", "Grabowski, Sylwester"));
 
-        Assert.Equal("sylwester.grabowski@softwareone.com", sut.Email);
+        Assert.Equal("sylwester.grabowski@example.com", sut.Email);
     }
 
     [Fact]
     public void Email_falls_back_to_unique_name_when_only_that_is_present()
     {
-        var sut = BuildFor(new Claim("unique_name", "legacy@softwareone.com"));
+        var sut = BuildFor(new Claim("unique_name", "legacy@example.com"));
 
-        Assert.Equal("legacy@softwareone.com", sut.Email);
+        Assert.Equal("legacy@example.com", sut.Email);
     }
 
     [Fact]
     public void Email_trims_surrounding_whitespace()
     {
-        var sut = BuildFor(new Claim("preferred_username", "  padded@softwareone.com  "));
+        var sut = BuildFor(new Claim("preferred_username", "  padded@example.com  "));
 
-        Assert.Equal("padded@softwareone.com", sut.Email);
+        Assert.Equal("padded@example.com", sut.Email);
     }
 
     [Fact]
@@ -59,9 +59,9 @@ public class CurrentUserTests
     {
         var sut = BuildFor(
             new Claim("preferred_username", "   "),
-            new Claim("upn", "real@softwareone.com"));
+            new Claim("upn", "real@example.com"));
 
-        Assert.Equal("real@softwareone.com", sut.Email);
+        Assert.Equal("real@example.com", sut.Email);
     }
 
     [Fact]

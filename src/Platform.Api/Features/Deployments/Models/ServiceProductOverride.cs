@@ -17,7 +17,7 @@ namespace Platform.Api.Features.Deployments.Models;
 /// <c>null</c> makes it a catch-all for the service, whatever was posted. The most specific match
 /// wins: a row naming the sender's product beats the catch-all. That is what lets a service name
 /// that is genuinely ambiguous across products ("api") be redirected for one sender only, while a
-/// name that is unique platform-wide ("swo-extension-mscsp") needs a single catch-all row.</para>
+/// name that is unique platform-wide ("acx-extension-mscsp") needs a single catch-all row.</para>
 ///
 /// <para><b>Forward-only.</b> Applying an override rewrites entities as they arrive; rows already
 /// stored keep the product they were ingested with. History is moved separately and deliberately —

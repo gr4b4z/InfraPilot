@@ -20,7 +20,7 @@ public class DeploymentServiceManualTests : IDisposable
     private readonly DeploymentService _sut;
 
     private static readonly ManualDeployActor Actor =
-        new("3d56-oid", "Grabowski, Sylwester", "sylwester.grabowski@softwareone.com", "user");
+        new("3d56-oid", "Grabowski, Sylwester", "sylwester.grabowski@example.com", "user");
 
     public DeploymentServiceManualTests()
     {
@@ -82,7 +82,7 @@ public class DeploymentServiceManualTests : IDisposable
         Assert.Equal("v1.0.0", ev.PreviousVersion);
         // Attribution: triggered-by is the caller, not CI.
         var triggeredBy = ev.Participants.Single(p => p.Role == "triggered-by");
-        Assert.Equal("sylwester.grabowski@softwareone.com", triggeredBy.Email);
+        Assert.Equal("sylwester.grabowski@example.com", triggeredBy.Email);
         // Two events now exist; the manual one is the most recent.
         Assert.Equal(2, _db.DeployEvents.Count());
     }
@@ -111,7 +111,7 @@ public class DeploymentServiceManualTests : IDisposable
 
         var triggeredBy = ev.Participants.Where(p => p.Role == "triggered-by").ToList();
         Assert.Single(triggeredBy);
-        Assert.Equal("sylwester.grabowski@softwareone.com", triggeredBy[0].Email);
+        Assert.Equal("sylwester.grabowski@example.com", triggeredBy[0].Email);
         // Non-triggered-by participants are carried over.
         Assert.Contains(ev.Participants, p => p.Role == "reviewer" && p.Email == "bob@acme.com");
     }

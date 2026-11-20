@@ -40,7 +40,7 @@ same as, the one mpt-release main already declares for dev is never sent.
 import argparse, json, os, re, subprocess, sys, urllib.error, urllib.parse, urllib.request
 
 SERVICES = ['mpt-extensions', 'mpt-web-extensions', 'mpt-web-extensions-pages', 'mpt-extensions-ui-bootstrap',
-            'swo-extension-nav', 'swo-extension-adobe', 'swo-extension-aws']
+            'acx-extension-nav', 'acx-extension-adobe', 'acx-extension-aws']
 TARGET, SOURCE = 'mpt-extensions', 'mpt'
 REASON = 'Filed under mpt-extensions with the other extensions (migrate-mpt-services.md)'
 COUNTS = ('deployments', 'builds', 'buildConflicts', 'promotions', 'openPromotions', 'ticketApprovals', 'strandedTicketApprovals')
@@ -106,7 +106,7 @@ def landed_dev_version(svc):
     # What mpt-release main already declares for dev; Deploy Registered Build may have landed a newer
     # approval on its own once the service was enabled.
     out = subprocess.run(['gh', 'api', '-H', 'Accept: application/vnd.github.raw',
-                          f'repos/softwareone-platform/mpt-release/contents/dev/{svc}/build-metadata.yaml'],
+                          f'repos/acmetrix/mpt-release/contents/dev/{svc}/build-metadata.yaml'],
                          capture_output=True, text=True)
     return next((l.split(':', 1)[1].strip() for l in out.stdout.splitlines() if l.strip().startswith('version:')), None)
 
@@ -131,7 +131,7 @@ if args.dispatch_dev:
             # Pin the tag to the registered digest, as Deploy Registered Build does for a candidate.
             repo = ref[:ref.rfind(':')] if ref.rfind(':') > ref.rfind('/') else ref
             ref = f"{repo}@{build['artifactDigest']}"
-        cmd = ['gh', 'workflow', 'run', 'deploy-registered-build.yml', '--repo', 'softwareone-platform/mpt-release',
+        cmd = ['gh', 'workflow', 'run', 'deploy-registered-build.yml', '--repo', 'acmetrix/mpt-release',
                '-f', 'targetEnvironment=dev', '-f', f'manifestRef={ref}', '-f', f'componentName={svc}', '-f', f"version={c['version']}"]
         if not args.apply:
             print('DRY', ' '.join(cmd)); continue

@@ -278,7 +278,7 @@ public class BuildRegistryTests : IClassFixture<BuildRegistryTests.BuildsFactory
     public async Task Search_MatchesAnyNameColumn_CaseInsensitively()
     {
         await _apiKeyClient.PostAsJsonAsync("/api/builds",
-            MakePayload("swo-extension-aws", "provisioner", "1.0.0-gsearch"));
+            MakePayload("acx-extension-aws", "provisioner", "1.0.0-gsearch"));
         await _apiKeyClient.PostAsJsonAsync("/api/builds",
             MakePayload("bld-search", "aws-connector", "1.0.1-gsearch"));
         await _apiKeyClient.PostAsJsonAsync("/api/builds",
@@ -287,7 +287,7 @@ public class BuildRegistryTests : IClassFixture<BuildRegistryTests.BuildsFactory
             MakePayload("bld-search", "gcp-connector", "1.0.3-gsearch"));
 
         // The point of the search box: a word the reader half-remembers, found wherever it lives —
-        // "aws" reaches swo-extension-aws (product), aws-connector (service) and the feature branch,
+        // "aws" reaches acx-extension-aws (product), aws-connector (service) and the feature branch,
         // and casing is not something anyone should have to get right.
         var hits = await _adminClient.GetFromJsonAsync<JsonElement>("/api/builds?q=AWS");
         var versions = hits.GetProperty("results").EnumerateArray()
@@ -314,7 +314,7 @@ public class BuildRegistryTests : IClassFixture<BuildRegistryTests.BuildsFactory
     public async Task ProductFilter_StaysExact_WhileSearchIsSubstring()
     {
         await _apiKeyClient.PostAsJsonAsync("/api/builds",
-            MakePayload("swo-extension-exact", "svc", "3.0.0-gexact"));
+            MakePayload("acx-extension-exact", "svc", "3.0.0-gexact"));
 
         // product= identifies rather than searches: it is filled from a facet pick or a link, and
         // the build picker relies on "the product named X" not also meaning "contains X".
@@ -322,7 +322,7 @@ public class BuildRegistryTests : IClassFixture<BuildRegistryTests.BuildsFactory
         Assert.Empty(exact.GetProperty("results").EnumerateArray());
 
         // Casing still shouldn't matter — a link typed by hand is not a different product.
-        var cased = await _adminClient.GetFromJsonAsync<JsonElement>("/api/builds?product=SWO-Extension-Exact");
+        var cased = await _adminClient.GetFromJsonAsync<JsonElement>("/api/builds?product=ACX-Extension-Exact");
         Assert.Single(cased.GetProperty("results").EnumerateArray());
     }
 

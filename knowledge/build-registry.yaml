@@ -29,7 +29,7 @@ body: |
   `aks-docker-templates/publish-steps.yaml` runs for every publish — nothing to opt into, nothing
   for a consumer pipeline to pass:
 
-  1. Push images and the helm chart to ACR (`nlpapp0336cre.azurecr.io`).
+  1. Push images and the helm chart to ACR (`acmetrixcr.azurecr.io`).
   2. Generate `build-metadata.yaml`/`.json`, resolving `spec.product` from the service name.
   3. `oras attach` the manifest to the helm chart as an OCI **referrer**, producing a digest-pinned
      reference `<acr>/helm/<svc>@sha256:…`. Falls back to `<acr>/<svc>/build-metadata:<tag>` when the

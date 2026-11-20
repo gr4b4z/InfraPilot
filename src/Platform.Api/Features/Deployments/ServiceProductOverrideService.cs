@@ -58,7 +58,7 @@ public class ServiceProductOverrideService
     /// <summary>
     /// Resolves the product for <paramref name="service"/> given the <paramref name="sentProduct"/> the
     /// caller supplied. Both are trimmed; matching is case-insensitive, so a sender that switches to
-    /// "SWO-Extension-MSCSP" keeps hitting the row an admin wrote as "swo-extension-mscsp".
+    /// "ACX-Extension-MSCSP" keeps hitting the row an admin wrote as "acx-extension-mscsp".
     /// <para>A blank service can't be mapped — there is nothing to key on — so it passes through; the
     /// endpoint validators reject it moments later anyway.</para>
     /// </summary>

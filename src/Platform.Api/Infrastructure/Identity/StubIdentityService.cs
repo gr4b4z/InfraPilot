@@ -110,8 +110,8 @@ public class StubIdentityService : IIdentityService
         "InfraPortal.Admin",
         "InfraPortal.QA",
         "InfraPortal.Reviewer",
-        "SWO-PLT-TeamLeads",
-        "SWO-PLT-Engineers",
+        "ACX-PLT-TeamLeads",
+        "ACX-PLT-Engineers",
     ];
 
     public Task<IReadOnlyList<GroupInfo>> SearchGroups(string query, CancellationToken ct = default)

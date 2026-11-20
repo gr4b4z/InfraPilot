@@ -179,7 +179,7 @@ public class CatalogAgent
         When a user asks how the DELIVERY SYSTEM works — what a webhook does, why a policy requires
         what it does, which service is deployed where or by which track, what a deploy-event source
         means, how reconcile or rollback work, how a build reaches an environment:
-        - ALWAYS call search_knowledge. These pipelines are SoftwareONE's own, spread across the
+        - ALWAYS call search_knowledge. These pipelines are Acmetrix's own, spread across the
           marketplace monorepo, the mpt-release GitOps repository and the AKS build templates. You
           cannot infer any of it, and a plausible-sounding wrong answer about a release process is
           expensive.
@@ -529,7 +529,7 @@ public class CatalogAgent
             function = new
             {
                 name = "search_knowledge",
-                description = "Search the platform knowledge base for how the delivery system works — what a webhook does, why a promotion policy is shaped the way it is, which service is deployed where and by which track, what a deploy-event source means, how reconcile and rollback work. ALWAYS use this instead of answering from memory: this describes SoftwareONE's specific pipelines across the marketplace monorepo, mpt-release and the AKS build templates, none of which you can infer. Returns topics with their body, source and as-of date — cite both.",
+                description = "Search the platform knowledge base for how the delivery system works — what a webhook does, why a promotion policy is shaped the way it is, which service is deployed where and by which track, what a deploy-event source means, how reconcile and rollback work. ALWAYS use this instead of answering from memory: this describes Acmetrix's specific pipelines across the marketplace monorepo, mpt-release and the AKS build templates, none of which you can infer. Returns topics with their body, source and as-of date — cite both.",
                 parameters = new
                 {
                     type = "object",

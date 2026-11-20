@@ -199,7 +199,7 @@ is the publish intent**. CI-triggered feature pushes and PR validation builds
 still do not publish (verify each repo's `trigger:` block during rollout — OQ2).
 
 Known consumers: `mpt-spotlight`, `mpt-notifications`, `mpt-public-catalog`,
-`mpt-audit`, `mpt-currency`, `mpt-billing`, `mpt-tasks`, `swo-pyraproxy`.
+`mpt-audit`, `mpt-currency`, `mpt-billing`, `mpt-tasks`, `acx-proxy`.
 
 ### 3.5 `mpt-release` — deploy on dispatch, commit-on-deploy
 

@@ -123,11 +123,11 @@ public class ServiceProductOverrideTests
     {
         var (old, target) = Products();
 
-        (await SaveOverrideAsync("swo-extension-mscsp", target, reason: "MPT migration")).EnsureSuccessStatusCode();
-        await IngestAsync(old, "swo-extension-mscsp");
+        (await SaveOverrideAsync("acx-extension-mscsp", target, reason: "MPT migration")).EnsureSuccessStatusCode();
+        await IngestAsync(old, "acx-extension-mscsp");
 
-        Assert.Contains("swo-extension-mscsp", await MatrixServicesAsync(target));
-        Assert.DoesNotContain("swo-extension-mscsp", await MatrixServicesAsync(old));
+        Assert.Contains("acx-extension-mscsp", await MatrixServicesAsync(target));
+        Assert.DoesNotContain("acx-extension-mscsp", await MatrixServicesAsync(old));
     }
 
     /// <summary>

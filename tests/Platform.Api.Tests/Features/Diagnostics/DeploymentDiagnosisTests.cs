@@ -69,8 +69,8 @@ public class DeploymentDiagnosisTests : IDisposable
     }
 
     [Theory]
-    [InlineData("Release \"mpt-platform-stats\" does not exist. Installing it now.\nError: execution error at (swo-service/templates/secret.yaml:8:4): secretValues.airtableApiKey is required (declared in .Values.secrets/.Values.secretFiles)")]
-    [InlineData("Error: UPGRADE FAILED: execution error at (swo-service/templates/configmap.yaml:1:4): no workload enabled: at least one of api.enabled, web.enabled, worker.enabled must be true, or cronjobs must be non-empty")]
+    [InlineData("Release \"mpt-platform-stats\" does not exist. Installing it now.\nError: execution error at (acx-service/templates/secret.yaml:8:4): secretValues.airtableApiKey is required (declared in .Values.secrets/.Values.secretFiles)")]
+    [InlineData("Error: UPGRADE FAILED: execution error at (acx-service/templates/configmap.yaml:1:4): no workload enabled: at least one of api.enabled, web.enabled, worker.enabled must be true, or cronjobs must be non-empty")]
     public async Task A_Chart_Guard_Failure_Is_Explained_As_Rejected_Values(string helmOutput)
     {
         var id = GivenFailedDeployWithHelmOutput(helmOutput);

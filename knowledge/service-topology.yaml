@@ -50,8 +50,8 @@ body: |
 
   ## Track A services (the monorepo)
 
-  `swo-platform`, `mpt-helpdesk`, `mpt-notifications`, `mpt-public-catalog`, `mpt-export`,
-  `mpt-scheduler`, `swo-web-commerce`, `swo-web-accounts`, `swo-web-shell`, `mpt-web-helpdesk`,
+  `acx-platform`, `mpt-helpdesk`, `mpt-notifications`, `mpt-public-catalog`, `mpt-export`,
+  `mpt-scheduler`, `acx-web-commerce`, `acx-web-accounts`, `acx-web-shell`, `mpt-web-helpdesk`,
   `mpt-extensions`.
 
   `marketplace/modules.yaml` groups these as `libs-frontend`, `libs-backend` and `services` — the
@@ -59,10 +59,10 @@ body: |
 
   ## Track B / C services (mpt-release)
 
-  ADO-built: `mpt-extension-adobe`, `swo-extension-mscsp`, `mpt-extension-installation`,
+  ADO-built: `mpt-extension-adobe`, `acx-extension-mscsp`, `mpt-extension-installation`,
   `mpt-extension-usage-reporting`, `mpt-nav-stats`, `mpt-web-currency`, `mpt-web-publiccatalog`,
   `mpt-extension-nav-billing`, `mpt-extension-procurement`, `mpt-extension-producthub`,
-  `swo-web-notifications`, `mpt-export`.
+  `acx-web-notifications`, `mpt-export`.
 
   Migrated from Track A and still under product `mpt`: `mpt-spotlight` (2026-10).
 

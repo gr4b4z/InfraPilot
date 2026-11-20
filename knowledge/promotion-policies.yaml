@@ -38,8 +38,8 @@ body: |
   | `mpt-extensions` | `mpt-extension-delivery` | build → dev | none (auto), no approval delay | no | `refs/heads/main`, `refs/heads/master` |
   | `mpt-extensions` | all | build → staging | QA Manager ×1, then Release Manager ×1 | tracked | `refs/heads/release/*` |
   | `mpt-extensions` | all | dev → test | none (auto) | no | — |
-  | `mpt-extensions` | `swo-extension-mscsp` | dev → test | Guardians ×1 | no | — |
-  | `mpt-extensions` | `swo-extension-mscsp` | build → staging, staging → prod | Guardians ×1 | tracked (prod: all must be approved) | build: `refs/heads/release/*` |
+  | `mpt-extensions` | `acx-extension-mscsp` | dev → test | Guardians ×1 | no | — |
+  | `mpt-extensions` | `acx-extension-mscsp` | build → staging, staging → prod | Guardians ×1 | tracked (prod: all must be approved) | build: `refs/heads/release/*` |
   | `mpt-extensions` | all | staging → prod | QA Manager ×1, then Release Manager ×1 | tracked, **all must be approved** | — |
   | `mpt-support-tools` | all | build → dev | none (auto) | no | `refs/heads/main`, `refs/heads/master` |
   | `mpt-support-tools` | all | build → staging | QA Manager ×1 | tracked | `refs/heads/release/*` |
@@ -69,7 +69,7 @@ body: |
   misreading — the record exists, only the pause does not.
 
   **Service-specific overrides exist where ownership differs, not where risk does.**
-  `swo-extension-mscsp` carries a Guardians gate even at `dev → test`, which no other service does.
+  `acx-extension-mscsp` carries a Guardians gate even at `dev → test`, which no other service does.
   That is not because the service is riskier; it is because a different team owns the decision, and
   the policy is where that ownership is expressed.
 
