@@ -94,6 +94,17 @@ public record RoleConfigDto(
 /// the display name defaulting to it.</summary>
 public record RoleTeamMemberDto(string Email, string DisplayName);
 
+/// <summary>
+/// A change to one configured role (<c>PATCH /api/settings/roles/{key}</c>). A field left out (or
+/// null) keeps what is stored; an empty list clears it. So an agent can set the QA team without
+/// reading back and resending every other setting.
+/// </summary>
+public record RoleConfigPatchDto(
+    string? DisplayName = null,
+    List<string>? Aliases = null,
+    List<GroupRef>? AssigneeGroups = null,
+    List<RoleTeamMemberDto>? Team = null);
+
 public record ActivityTemplateLineDto(string Template, string Style);
 
 /// <summary>

@@ -77,6 +77,9 @@ public static class PortalRoutes
 
     public static string Webhooks() => "/webhooks";
 
+    /// <summary>Settings → Participant Roles.</summary>
+    public static string ParticipantRoles() => "/settings/roles";
+
     public static string Settings(string? tab = null) =>
         string.IsNullOrWhiteSpace(tab) ? "/settings" : $"/settings/{Slug(tab)}";
 
