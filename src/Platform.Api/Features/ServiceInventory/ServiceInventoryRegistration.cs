@@ -13,7 +13,9 @@ public static class ServiceInventoryRegistration
         services.AddHttpClient(InventoryHttpClient.ClientName)
             // Redirects are followed by InventoryHttpClient, which re-checks every hop and drops
             // credentials off their host; the handler must never follow one on its own.
-            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { AllowAutoRedirect = false })
+            // No cookies either: a cookie set by one host could otherwise reach a sibling host and
+            // bypass the per-host credential rule.
+            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { AllowAutoRedirect = false, UseCookies = false })
             // The default request logging writes the URL, which may carry a SAS token.
             .RemoveAllLoggers();
         services.TryAddSingleton(TimeProvider.System);

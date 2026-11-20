@@ -21,6 +21,7 @@ internal sealed class ScriptedSource : IArtifactSource
 
     public string Kind => "test";
     public string Location => "test.example.com/feed";
+    public string Identity { get; set; } = "test://feed";
 
     public Task<FetchResult> FetchIfChangedAsync(string? lastVersion, CancellationToken ct)
     {
@@ -31,12 +32,13 @@ internal sealed class ScriptedSource : IArtifactSource
     public Task<IReadOnlyList<string>> ListClosedMonthsAsync(string from, ISet<string> stored, DateTimeOffset now, CancellationToken ct) =>
         Task.FromResult<IReadOnlyList<string>>(ListedMonths.Where(m => !stored.Contains(m)).ToList());
 
-    public IArtifactSource ForMonth(string period) => new MonthSource(Months[period]);
+    public IArtifactSource ForMonth(string period) => new MonthSource(Months[period], period);
 
-    private sealed class MonthSource(Func<FetchResult> answer) : IArtifactSource
+    private sealed class MonthSource(Func<FetchResult> answer, string period) : IArtifactSource
     {
         public string Kind => "test";
         public string Location => "test.example.com/month";
+        public string Identity => "test://month/" + period;
         public Task<FetchResult> FetchIfChangedAsync(string? lastVersion, CancellationToken ct) => Task.FromResult(answer());
         public Task<IReadOnlyList<string>> ListClosedMonthsAsync(string from, ISet<string> stored, DateTimeOffset now, CancellationToken ct) => throw new NotSupportedException();
         public IArtifactSource ForMonth(string period) => throw new NotSupportedException();
@@ -84,7 +86,7 @@ public class InventoryRefresherTests
         var row = Row("catalog");
         var snapshot = _db.InventorySnapshots.Single();
         Assert.Equal(snapshot.Id, row.CurrentSnapshotId);
-        Assert.Equal("sha256:v1", row.LastSourceVersion);
+        Assert.EndsWith("|sha256:v1", row.LastSourceVersion);
         Assert.Equal(_clock.Now, row.LastSuccessAt);
         Assert.Null(row.LastError);
         Assert.Equal(5, snapshot.DocumentVersion);
@@ -117,7 +119,7 @@ public class InventoryRefresherTests
         await Refresher().RefreshAsync(Feed("catalog"), default);
 
         Assert.Single(_db.InventorySnapshots);
-        Assert.Equal("digest-2", Row("catalog").LastSourceVersion);
+        Assert.EndsWith("|digest-2", Row("catalog").LastSourceVersion);
     }
 
     [Theory]
@@ -154,7 +156,7 @@ public class InventoryRefresherTests
         Assert.Equal(_clock.Now, tracker.LastAttemptAt);
         Assert.Equal(_clock.Now.AddHours(-1), tracker.LastSuccessAt);
         // A rejected file's version is not recorded, so it is read again next time.
-        Assert.Equal("v1", tracker.LastSourceVersion);
+        Assert.EndsWith("|v1", tracker.LastSourceVersion);
         if (failure == "unsupported") Assert.Contains("unsupported schemaVersion 1", tracker.LastError);
     }
 
@@ -241,7 +243,12 @@ public class InventoryRefresherTests
 
         await Refresher().RefreshAsync(Feed("cost", new ClosedMonthsOptions { From = "2026-10" }), default);
 
-        Assert.False(_db.InventoryFeeds.Any(f => f.FeedKey == "cost:2026-10"));
+        // Only the attempt is remembered (so other months go first next time): no copy, no error.
+        var row = Row("cost:2026-10");
+        Assert.Null(row.CurrentSnapshotId);
+        Assert.Null(row.LastError);
+        Assert.Equal(0, row.ConsecutiveFailures);
+        Assert.Equal(_clock.Now, row.LastAttemptAt);
     }
 
     [Fact]

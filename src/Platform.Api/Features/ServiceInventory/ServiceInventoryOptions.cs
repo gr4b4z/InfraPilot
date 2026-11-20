@@ -101,6 +101,12 @@ public class InventorySourceOptions
     public string Tag { get; set; } = "latest";
     /// <summary>The layer's <c>org.opencontainers.image.title</c>, e.g. <c>catalog.json</c>.</summary>
     public string? File { get; set; }
+    /// <summary>
+    /// The registry's token service when it is on another host (its challenge's <c>realm</c>). The
+    /// feed's credential is sent to the registry host and to this host only; a challenge naming any
+    /// other host is refused, even if that host is on the allowlist for another feed.
+    /// </summary>
+    public string? AuthHost { get; set; }
 
     // ── https ──
     public string? Url { get; set; }
@@ -187,6 +193,7 @@ public static partial class ServiceInventoryOptionsValidator
                     if (string.IsNullOrWhiteSpace(source.File)) errors.Add($"feed '{label}': an oci source needs File");
                     if (credential is not null && IsKind(credential, InventoryCredentialKinds.Query))
                         errors.Add($"feed '{label}': a query credential cannot be used with an oci source");
+                    if (!string.IsNullOrWhiteSpace(source.AuthHost)) CheckHost(options, label, source.AuthHost.Trim(), errors);
                     break;
                 case InventorySourceKinds.Https:
                     CheckUrl(options, label, "Url", source.Url, errors);
@@ -230,6 +237,8 @@ public static partial class ServiceInventoryOptionsValidator
             return;
         }
         if (uri.Scheme != Uri.UriSchemeHttps) errors.Add($"feed '{feed}': {field} must use https");
+        if (!string.IsNullOrEmpty(uri.UserInfo))
+            errors.Add($"feed '{feed}': {field} must not carry a user name or password; use a named credential");
         if (!string.IsNullOrEmpty(uri.Query)) errors.Add($"feed '{feed}': {field} must not carry a query string; put a SAS token in a query credential");
         CheckHost(options, feed, uri.Host, errors);
     }

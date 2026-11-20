@@ -73,18 +73,35 @@ public class InventoryRefresher
             return;
         }
 
-        foreach (var period in months.Take(MaxClosedMonthsPerCycle))
+        // Months never tried first, then the ones tried longest ago, newest first within each: the
+        // per-cycle limit then rotates through the backlog instead of retrying the same unpublished
+        // months forever while later published ones wait.
+        var lastAttempt = await _db.InventoryFeeds.AsNoTracking()
+            .Where(f => f.FeedName == feedName && f.Period != "")
+            .Select(f => new { f.Period, f.LastAttemptAt })
+            .ToDictionaryAsync(f => f.Period, f => f.LastAttemptAt, ct);
+        var due = months
+            .OrderBy(m => lastAttempt.GetValueOrDefault(m) ?? DateTimeOffset.MinValue)
+            .ThenByDescending(m => m, StringComparer.Ordinal)
+            .Take(MaxClosedMonthsPerCycle);
+
+        foreach (var period in due)
         {
             var row = await _db.InventoryFeeds.FirstOrDefaultAsync(f => f.FeedKey == InventoryFeed.KeyFor(feedName, period), ct);
+            var monthSource = source.ForMonth(period);
             try
             {
-                var result = await source.ForMonth(period).FetchIfChangedAsync(row?.LastSourceVersion, ct);
+                var result = await monthSource.FetchIfChangedAsync(row is null ? null : VersionFor(row, monthSource), ct);
                 row ??= await GetOrCreateRowAsync(feedName, InventoryFeedTypes.Cost, period, ct);
-                await AcceptAsync(row, InventoryFeedTypes.Cost, result, expectedPeriod: period, ct);
+                await AcceptAsync(row, InventoryFeedTypes.Cost, monthSource, result, expectedPeriod: period, ct);
             }
             catch (InventoryFetchException ex) when (ex.Status == HttpStatusCode.NotFound)
             {
-                // Over plain HTTPS a month is found by fetching it: 404 means not published yet.
+                // Over plain HTTPS a month is found by fetching it: 404 means not published yet. The
+                // attempt is recorded so the next cycle tries other months first; it is not a failure.
+                row ??= await GetOrCreateRowAsync(feedName, InventoryFeedTypes.Cost, period, ct);
+                row.LastAttemptAt = _clock.GetUtcNow();
+                await _db.SaveChangesAsync(ct);
             }
             catch (InventoryFetchException ex)
             {
@@ -100,22 +117,23 @@ public class InventoryRefresher
         FetchResult result;
         try
         {
-            result = await source.FetchIfChangedAsync(tracker.LastSourceVersion, ct);
+            result = await source.FetchIfChangedAsync(VersionFor(tracker, source), ct);
         }
         catch (InventoryFetchException ex)
         {
             await RecordFailureAsync(tracker, ex.Message, ct);
             return;
         }
-        await AcceptAsync(tracker, type, result, expectedPeriod, ct);
+        await AcceptAsync(tracker, type, source, result, expectedPeriod, ct);
     }
 
-    private async Task AcceptAsync(InventoryFeed tracker, string type, FetchResult result, string? expectedPeriod, CancellationToken ct)
+    private async Task AcceptAsync(
+        InventoryFeed tracker, string type, IArtifactSource source, FetchResult result, string? expectedPeriod, CancellationToken ct)
     {
         var now = _clock.GetUtcNow();
         if (!result.Changed || result.File is null)
         {
-            tracker.LastSourceVersion = result.Version ?? tracker.LastSourceVersion;
+            if (result.Version is not null) tracker.LastSourceVersion = StoredVersion(source, result.Version);
             MarkSuccess(tracker, now);
             await _db.SaveChangesAsync(ct);
             return;
@@ -149,9 +167,14 @@ public class InventoryRefresher
 
         if (existing is not null && target.CurrentSnapshotId == existing.Id)
         {
-            // Same content as the copy already shown: nothing to store.
-            tracker.CurrentSnapshotId ??= existing.Id;
-            tracker.LastSourceVersion = Truncate(file.Version, 200);
+            // Same content as the copy already shown: nothing to store. The feed itself may still
+            // point at another month (the latest file moved back to a stored month): follow it.
+            if (tracker.CurrentSnapshotId != existing.Id)
+            {
+                tracker.CurrentSnapshotId = existing.Id;
+                tracker.LastChangedAt = now;
+            }
+            tracker.LastSourceVersion = StoredVersion(source, file.Version);
             MarkSuccess(tracker, now);
             await _db.SaveChangesAsync(ct);
             return;
@@ -213,7 +236,7 @@ public class InventoryRefresher
         }
         tracker.ProjectionVersion = InventoryProjector.Version;
         tracker.Complete = target == tracker && read.Complete == true;
-        tracker.LastSourceVersion = Truncate(file.Version, 200);
+        tracker.LastSourceVersion = StoredVersion(source, file.Version);
         MarkSuccess(tracker, now);
 
         try
@@ -226,7 +249,8 @@ public class InventoryRefresher
         {
             _logger.LogError(ex, "Service inventory: storing {Feed} failed", LogSanitizer.Clean(tracker.FeedKey));
             _db.ChangeTracker.Clear();
-            var fresh = await _db.InventoryFeeds.FirstAsync(f => f.FeedKey == tracker.FeedKey, ct);
+            // On a feed's first refresh its row was part of the failed save and is gone: recreate it.
+            var fresh = await GetOrCreateRowAsync(tracker.FeedName, tracker.FeedType, tracker.Period, ct);
             await RecordFailureAsync(fresh, "The file could not be stored; the previous copy is kept.", ct);
         }
     }
@@ -299,6 +323,25 @@ public class InventoryRefresher
         _db.InventoryFeeds.Add(row);
         return row;
     }
+
+    /// <summary>
+    /// A version is stored with a short tag of the source's identity and only handed back to the
+    /// same source: a feed moved to another URL, repository, tag or file never sends the old
+    /// ETag or digest, so it can't be told "unchanged" about content it never read.
+    /// </summary>
+    private static string? VersionFor(InventoryFeed row, IArtifactSource source)
+    {
+        var prefix = IdentityTag(source) + "|";
+        return row.LastSourceVersion?.StartsWith(prefix, StringComparison.Ordinal) == true
+            ? row.LastSourceVersion[prefix.Length..]
+            : null;
+    }
+
+    private static string StoredVersion(IArtifactSource source, string version) =>
+        Truncate(IdentityTag(source) + "|" + version, 200);
+
+    private static string IdentityTag(IArtifactSource source) =>
+        ContentHash.Sha256(System.Text.Encoding.UTF8.GetBytes(source.Identity))["sha256:".Length..][..12];
 
     private static void MarkSuccess(InventoryFeed row, DateTimeOffset now)
     {

@@ -51,7 +51,13 @@ public sealed record CatalogService
     [JsonPropertyName("bindings")] public JsonElement? Bindings { get; init; }
     [JsonPropertyName("links")] public JsonElement? Links { get; init; }
 
-    /// <summary>Absent while the service's own file is missing or invalid.</summary>
+    private static readonly JsonSerializerOptions StrictJson = new() { RespectNullableAnnotations = true };
+
+    /// <summary>
+    /// Absent while the service's own file is missing or invalid. Throws <see cref="JsonException"/>
+    /// for a binding that does not match the format; <see cref="DocumentReader"/> calls it once so
+    /// such a file is rejected before it is stored.
+    /// </summary>
     public IReadOnlyList<DatabaseBinding> DatabaseBindings()
     {
         var list = new List<DatabaseBinding>();
@@ -61,7 +67,7 @@ public sealed record CatalogService
             if (!bindings.TryGetProperty(kind, out var entries) || entries.ValueKind != JsonValueKind.Array) continue;
             foreach (var entry in entries.EnumerateArray())
             {
-                var binding = entry.Deserialize<DatabaseBinding>();
+                var binding = entry.Deserialize<DatabaseBinding>(StrictJson);
                 if (binding is not null && !string.IsNullOrEmpty(binding.Database)) list.Add(binding with { Kind = kind });
             }
         }

@@ -24,6 +24,7 @@ public sealed class FixtureSource(Func<string?, FetchResult> answer) : IArtifact
 {
     public string Kind => "https";
     public string Location => "files.example.com/feed.json";
+    public string Identity => "https://files.example.com/feed.json";
     public Task<FetchResult> FetchIfChangedAsync(string? lastVersion, CancellationToken ct) => Task.FromResult(answer(lastVersion));
     public Task<IReadOnlyList<string>> ListClosedMonthsAsync(string from, ISet<string> stored, DateTimeOffset now, CancellationToken ct) =>
         Task.FromResult<IReadOnlyList<string>>([]);
@@ -156,6 +157,36 @@ public class ServiceInventoryEndpointTests : IClassFixture<ServiceInventoryEndpo
     }
 
     [Fact]
+    public async Task A_month_asked_for_by_name_reports_its_own_failed_refresh()
+    {
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            var row = await db.InventoryFeeds.SingleAsync(f => f.FeedKey == "cost:2026-10");
+            row.LastError = "The registry refused the credentials (401).";
+            row.ConsecutiveFailures = 3;
+            await db.SaveChangesAsync();
+        }
+        try
+        {
+            var body = await Json(await _factory.CreateAdminClient().GetAsync("/api/service-inventory/services/order-router/cost?period=2026-10"));
+
+            Assert.Equal("2026-10", body.GetProperty("period").GetString());
+            Assert.Equal("The registry refused the credentials (401).", body.GetProperty("freshness").GetProperty("lastError").GetString());
+            Assert.Equal(3, body.GetProperty("freshness").GetProperty("consecutiveFailures").GetInt32());
+        }
+        finally
+        {
+            using var scope = _factory.Services.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            var row = await db.InventoryFeeds.SingleAsync(f => f.FeedKey == "cost:2026-10");
+            row.LastError = null;
+            row.ConsecutiveFailures = 0;
+            await db.SaveChangesAsync();
+        }
+    }
+
+    [Fact]
     public async Task A_month_that_was_never_read_is_404()
     {
         var response = await _factory.CreateAdminClient().GetAsync("/api/service-inventory/services/order-router/cost?period=2020-01");
@@ -261,11 +292,53 @@ public class ServiceInventoryAtomicityTests
 
         var after = await db.InventoryFeeds.AsNoTracking().SingleAsync(f => f.FeedKey == "cost");
         Assert.Equal(before.CurrentSnapshotId, after.CurrentSnapshotId);
-        Assert.Equal("v1", after.LastSourceVersion);
+        Assert.EndsWith("|v1", after.LastSourceVersion);
         Assert.NotNull(after.LastError);
         Assert.Equal(1, await db.InventorySnapshots.CountAsync());
         Assert.Equal(rowsBefore, await db.InventoryCostServices.CountAsync());
         Assert.False(await db.InventoryFeeds.AnyAsync(f => f.FeedKey == "cost:2026-11"));
+    }
+
+    private sealed class FailOnceOnSnapshotInsert : DbCommandInterceptor
+    {
+        public bool Armed { get; set; } = true;
+
+        public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(DbCommand command, CommandEventData eventData, InterceptionResult<DbDataReader> result, CancellationToken cancellationToken = default)
+        {
+            Throw(command);
+            return ValueTask.FromResult(result);
+        }
+
+        public override ValueTask<InterceptionResult<int>> NonQueryExecutingAsync(DbCommand command, CommandEventData eventData, InterceptionResult<int> result, CancellationToken cancellationToken = default)
+        {
+            Throw(command);
+            return ValueTask.FromResult(result);
+        }
+
+        private void Throw(DbCommand command)
+        {
+            if (!Armed || !command.CommandText.Contains("INSERT INTO \"inventory_snapshots\"", StringComparison.Ordinal)) return;
+            Armed = false;
+            throw new SqliteException("forced failure on the first save", 1);
+        }
+    }
+
+    [Fact]
+    public async Task A_failed_first_save_is_still_recorded_as_the_feeds_failure()
+    {
+        await using var connection = TestDatabase.Open();
+        await using var db = new SqliteTestDbContext(new DbContextOptionsBuilder<SqliteTestDbContext>()
+            .UseSqlite(connection).AddInterceptors(new FailOnceOnSnapshotInsert()).Options);
+        var refresher = new InventoryRefresher(db, new SingleSource(new FixtureSource(_ => FixtureSource.File("catalog.json", "v1"))),
+            TimeProvider.System, NullLogger<InventoryRefresher>.Instance);
+
+        await refresher.RefreshAsync(new InventoryFeedOptions { Name = "catalog", Type = "catalog", Source = new() { Kind = "https" } }, default);
+
+        var row = await db.InventoryFeeds.AsNoTracking().SingleAsync(f => f.FeedKey == "catalog");
+        Assert.Null(row.CurrentSnapshotId);
+        Assert.Contains("could not be stored", row.LastError);
+        Assert.Equal(1, row.ConsecutiveFailures);
+        Assert.Equal(0, await db.InventorySnapshots.CountAsync());
     }
 
     private sealed class SingleSource(IArtifactSource source) : IArtifactSourceFactory

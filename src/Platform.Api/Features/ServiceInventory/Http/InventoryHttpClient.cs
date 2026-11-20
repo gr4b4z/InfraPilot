@@ -229,5 +229,10 @@ public class InventoryHttpClient
         {
             throw new InventoryFetchException($"{Describe(uri)} did not finish within {timeoutSeconds} s.");
         }
+        catch (Exception ex) when (ex is IOException or HttpRequestException)
+        {
+            // A reset or truncated body while streaming: a failed fetch like any other.
+            throw new InventoryFetchException($"The download from {Describe(uri)} was interrupted.");
+        }
     }
 }

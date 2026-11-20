@@ -38,7 +38,8 @@ public class ArtifactSourceFactory : IArtifactSourceFactory
         return source.Kind.Trim().ToLowerInvariant() switch
         {
             InventorySourceKinds.Oci => new OciArtifactSource(_http, _tokens, _clock,
-                source.Registry!.Trim(), source.Repository!.Trim().Trim('/'), source.Tag.Trim(), source.File!.Trim(), credential),
+                source.Registry!.Trim(), source.Repository!.Trim().Trim('/'), source.Tag.Trim(), source.File!.Trim(), credential,
+                source.AuthHost),
             InventorySourceKinds.Https => new HttpsArtifactSource(_http, new Uri(source.Url!),
                 source.ClosedMonths?.UrlTemplate, credential),
             _ => throw new InvalidOperationException($"Unknown source kind '{source.Kind}'."),

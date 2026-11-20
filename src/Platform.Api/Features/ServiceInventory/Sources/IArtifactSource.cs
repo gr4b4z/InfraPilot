@@ -28,6 +28,12 @@ public interface IArtifactSource
     string Location { get; }
 
     /// <summary>
+    /// What this source reads (URL, or registry/repository:tag plus file). A stored version is only
+    /// sent back to the source with the same identity, so moving a feed always fetches afresh.
+    /// </summary>
+    string Identity { get; }
+
+    /// <summary>
     /// Downloads the file only when it changed since <paramref name="lastVersion"/> (null: always).
     /// Throws <see cref="Http.InventoryFetchException"/> on failure.
     /// </summary>

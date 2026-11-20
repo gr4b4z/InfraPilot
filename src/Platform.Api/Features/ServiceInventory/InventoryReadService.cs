@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.Options;
 using Platform.Api.Features.ServiceInventory.Documents;
 using Platform.Api.Features.ServiceInventory.Models;
 using Platform.Api.Infrastructure.Persistence;
@@ -27,16 +28,30 @@ public class InventoryReadService
 
     private readonly PlatformDbContext _db;
     private readonly IMemoryCache _cache;
+    private readonly IOptionsMonitor<ServiceInventoryOptions> _options;
 
-    public InventoryReadService(PlatformDbContext db, IMemoryCache cache)
+    public InventoryReadService(PlatformDbContext db, IMemoryCache cache, IOptionsMonitor<ServiceInventoryOptions> options)
     {
         _db = db;
         _cache = cache;
+        _options = options;
     }
 
-    /// <summary>The feed itself (period <c>""</c>) of a type, or one cost month.</summary>
-    public Task<InventoryFeed?> FeedAsync(string type, string period = "", CancellationToken ct = default) =>
-        _db.InventoryFeeds.AsNoTracking().FirstOrDefaultAsync(f => f.FeedType == type && f.Period == period, ct);
+    /// <summary>
+    /// The feed itself (period <c>""</c>) of a type, or one cost month, read through the feed
+    /// configured for that type: a renamed feed leaves its old rows behind, and they are never
+    /// picked by mistake. With no feed of that type configured (any more), the most recently
+    /// refreshed one.
+    /// </summary>
+    public async Task<InventoryFeed?> FeedAsync(string type, string period = "", CancellationToken ct = default)
+    {
+        var configured = _options.CurrentValue.Feeds
+            .FirstOrDefault(f => string.Equals(f.Type?.Trim(), type, StringComparison.OrdinalIgnoreCase))?.Name;
+        var rows = _db.InventoryFeeds.AsNoTracking().Where(f => f.FeedType == type && f.Period == period);
+        if (configured is not null)
+            return await rows.FirstOrDefaultAsync(f => f.FeedName == configured, ct);
+        return (await rows.ToListAsync(ct)).OrderByDescending(f => f.LastSuccessAt).FirstOrDefault();
+    }
 
     public async Task<(T Document, InventorySnapshot Snapshot)?> DocumentAsync<T>(InventoryFeed? feed, CancellationToken ct)
         where T : class

@@ -154,13 +154,18 @@ public static class ServiceInventoryEndpoints
         if (period is not null && !ServiceInventoryOptionsValidator.PeriodPattern().IsMatch(period))
             return Results.BadRequest(new { error = "period must be YYYY-MM" });
 
+        var requested = period is not null;
         var feedRow = await read.FeedAsync(InventoryFeedTypes.Cost, ct: ct);
         if (period is null && feedRow?.CurrentSnapshotId is { } latest)
             period = await db.InventorySnapshots.AsNoTracking().Where(s => s.Id == latest).Select(s => s.Period).FirstOrDefaultAsync(ct);
 
         var monthRow = period is null ? null : await read.FeedAsync(InventoryFeedTypes.Cost, period, ct);
         var month = await read.DocumentAsync<CostDocument>(monthRow, ct);
-        var freshness = InventoryReadService.Freshness(feedRow, month?.Snapshot, InventoryFeedTypes.Cost);
+        // A month asked for by name reports its own refresh state (a closed month that failed to
+        // refresh says so). The default month reports the latest file's state, which is what
+        // refreshes it, unless only the month's own row recorded a failure.
+        var stateRow = requested ? monthRow : feedRow?.LastError is null && monthRow?.LastError is not null ? monthRow : feedRow;
+        var freshness = InventoryReadService.Freshness(stateRow, month?.Snapshot, InventoryFeedTypes.Cost);
         if (month is null)
             return Results.NotFound(new { error = period is null ? "No cost has been read yet." : $"No cost has been read for {period}.", freshness });
 

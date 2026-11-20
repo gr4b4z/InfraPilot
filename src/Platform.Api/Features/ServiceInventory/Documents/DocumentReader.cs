@@ -41,6 +41,9 @@ public static partial class DocumentReader
         PropertyNameCaseInsensitive = false,
         AllowTrailingCommas = false,
         ReadCommentHandling = JsonCommentHandling.Disallow,
+        // An explicit null for a field the model says cannot be null rejects the file instead of
+        // being stored and failing later on every request that reads it.
+        RespectNullableAnnotations = true,
     };
 
     public static ReadResult Read(string feedType, byte[] content)
@@ -54,8 +57,9 @@ public static partial class DocumentReader
         {
             using var doc = JsonDocument.Parse(content);
             if (doc.RootElement.ValueKind != JsonValueKind.Object) return ReadResult.Rejected("the file is not a JSON object");
-            if (!doc.RootElement.TryGetProperty("schemaVersion", out var v) || !v.TryGetInt32(out schemaVersion))
-                return ReadResult.Rejected("the file has no schemaVersion");
+            if (!doc.RootElement.TryGetProperty("schemaVersion", out var v)
+                || v.ValueKind != JsonValueKind.Number || !v.TryGetInt32(out schemaVersion))
+                return ReadResult.Rejected("the file has no numeric schemaVersion");
         }
         catch (JsonException)
         {
@@ -84,8 +88,18 @@ public static partial class DocumentReader
     private static ReadResult ReadCatalog(byte[] content, int schemaVersion)
     {
         var doc = JsonSerializer.Deserialize<CatalogDocument>(content, Json)!;
+        if (HasNull(doc.Services) || HasNull(doc.Teams) || HasNull(doc.Products) || HasNull(doc.Shared))
+            return ReadResult.Rejected("a list holds a null entry", schemaVersion);
         if (doc.Services.Any(s => string.IsNullOrWhiteSpace(s.Id)))
             return ReadResult.Rejected("a service has no id", schemaVersion);
+        foreach (var service in doc.Services)
+        {
+            if (service.Environments.Values.Any(e => e is null) || service.Workloads?.Values.Any(w => w is null) == true)
+                return ReadResult.Rejected($"service '{Clip(service.Id)}' has a null environment or workload", schemaVersion);
+            // The pages read the database bindings: a binding they cannot read rejects the file now
+            // (a JsonException, caught by the caller) instead of failing every later request.
+            _ = service.DatabaseBindings();
+        }
         return new ReadResult(doc, null, schemaVersion, "", doc.CatalogVersion, null, null);
     }
 
@@ -93,6 +107,14 @@ public static partial class DocumentReader
     {
         var doc = JsonSerializer.Deserialize<StatusDocument>(content, Json)!;
         if (doc.GeneratedAt is null) return ReadResult.Rejected("the file has no generated_at", schemaVersion);
+        var azure = doc.Azure;
+        if (HasNull(doc.Services)
+            || doc.Services.Any(s => HasNull(s.Warnings))
+            || (azure is not null && (HasNull(azure.Shared) || HasNull(azure.Bindings) || HasNull(azure.Untagged)
+                || azure.Shared.Any(sh => HasNull(sh.Resources) || sh.Resources.Any(r => HasNull(r.Databases))))))
+            return ReadResult.Rejected("a list holds a null entry", schemaVersion);
+        if (doc.Services.Any(s => string.IsNullOrWhiteSpace(s.Id)))
+            return ReadResult.Rejected("a service has no id", schemaVersion);
         return new ReadResult(doc, null, schemaVersion, "", doc.CatalogVersion, doc.GeneratedAt, null);
     }
 
@@ -106,12 +128,21 @@ public static partial class DocumentReader
         }
 
         var doc = JsonSerializer.Deserialize<CostDocument>(content, Json)!;
+        if (HasNull(doc.Sources) || HasNull(doc.Services) || HasNull(doc.Shared) || HasNull(doc.Unallocated.ByScope)
+            || doc.Services.Any(s => HasNull(s.Resources) || HasNull(s.SharedFrom))
+            || doc.Shared.Any(s => HasNull(s.Resources)))
+            return ReadResult.Rejected("a list holds a null entry", schemaVersion);
+        if (doc.Services.Any(s => string.IsNullOrWhiteSpace(s.Id)))
+            return ReadResult.Rejected("a service has no id", schemaVersion);
         if (!ServiceInventoryOptionsValidator.PeriodPattern().IsMatch(doc.Period))
             return ReadResult.Rejected("period is not YYYY-MM", schemaVersion);
         if (AllMoney(doc).SelectMany(m => m.Keys).FirstOrDefault(k => !CurrencyCode().IsMatch(k)) is { } bad)
             return ReadResult.Rejected($"'{Clip(bad)}' is not a currency code", schemaVersion);
         return new ReadResult(doc, null, schemaVersion, doc.Period, doc.CatalogVersion, doc.GeneratedAt, doc.Complete);
     }
+
+    /// <summary>Nullable annotations do not cover list elements: <c>[null]</c> is checked here.</summary>
+    private static bool HasNull<T>(IEnumerable<T?> items) => items.Any(i => i is null);
 
     private static string Clip(string value) => value.Length > 12 ? value[..12] + "…" : value;
 

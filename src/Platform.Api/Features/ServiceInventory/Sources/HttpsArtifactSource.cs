@@ -29,7 +29,10 @@ public class HttpsArtifactSource : IArtifactSource
 
     public string Kind => InventorySourceKinds.Https;
 
-    public string Location => _url.GetLeftPart(UriPartial.Path);
+    /// <summary>Scheme, host, port and path: never a query string or user information.</summary>
+    public string Location => new UriBuilder(_url) { UserName = "", Password = "", Query = "", Fragment = "" }.Uri.GetLeftPart(UriPartial.Path);
+
+    public string Identity => Location;
 
     public async Task<FetchResult> FetchIfChangedAsync(string? lastVersion, CancellationToken ct)
     {

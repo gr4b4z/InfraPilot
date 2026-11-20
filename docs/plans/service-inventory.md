@@ -110,9 +110,13 @@ Added to `GLOSSARY.md` with this plan:
 }
 ```
 
-Validated at startup (`ValidateOnStart`): unique feed names; at most one feed per type; every source
-host in `AllowedHosts`; `https` scheme; every `Credential` names a configured entry; a `query`
-credential only on an `https` source. An invalid configuration logs which feed and why and disables
+Checked by the refresh service and shown in `GET /feeds` (not `ValidateOnStart`, so the rest of the portal always starts): unique feed names; at most one feed per type; every source
+host in `AllowedHosts`; `https` scheme; no user name or password in a URL; every `Credential` names a
+configured entry; a `query` credential only on an `https` source.
+
+An `oci` source sends its credential to the registry host only. A registry whose token service is
+on another host (its challenge's `realm`) needs that host named as the source's `AuthHost` (and on
+the allowlist); a challenge naming any other host is refused, even one allowlisted for another feed. An invalid configuration logs which feed and why and disables
 the inventory; the rest of the portal starts normally.
 
 ## Storage (approved)

@@ -108,4 +108,6 @@ when that month was never read or has no such service.
 
 See `docs/plans/service-inventory.md`, "Configuration". Feeds are listed under `ServiceInventory`
 in configuration; credential values come from the secret configuration, for example
-`ServiceInventory__Credentials__registry__Password`, and are never returned by this API.
+`ServiceInventory__Credentials__registry__Password`, and are never returned by this API. A URL may
+not carry a user name, password or query string: use a named credential. A registry whose token
+service is on another host needs that host as the source's `AuthHost`.

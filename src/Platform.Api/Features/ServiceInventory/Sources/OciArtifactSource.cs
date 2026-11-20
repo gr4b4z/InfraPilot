@@ -71,11 +71,14 @@ public partial class OciArtifactSource : IArtifactSource
     private readonly string _tag;
     private readonly string _file;
     private readonly InventoryCredentialOptions? _credential;
+    private readonly string? _authHost;
 
     public OciArtifactSource(
         InventoryHttpClient http, OciTokenCache tokens, TimeProvider clock,
-        string registry, string repository, string tag, string file, InventoryCredentialOptions? credential)
+        string registry, string repository, string tag, string file, InventoryCredentialOptions? credential,
+        string? authHost = null)
     {
+        _authHost = string.IsNullOrWhiteSpace(authHost) ? null : authHost.Trim();
         _http = http;
         _tokens = tokens;
         _clock = clock;
@@ -90,6 +93,8 @@ public partial class OciArtifactSource : IArtifactSource
 
     public string Location => $"{_registry}/{_repository}:{_tag}";
 
+    public string Identity => $"oci://{Location}#{_file}";
+
     private Uri V2(string path) => new($"https://{_registry}/v2/{_repository}/{path}");
 
     public async Task<FetchResult> FetchIfChangedAsync(string? lastVersion, CancellationToken ct)
@@ -99,8 +104,10 @@ public partial class OciArtifactSource : IArtifactSource
         var digest = head.Header("Docker-Content-Digest");
         if (digest is not null && digest == lastVersion) return FetchResult.Unchanged(digest);
 
+        // The tag may have moved since the HEAD: the version stored is the digest of the manifest
+        // actually downloaded, never the HEAD's.
         var manifestResponse = await SendAsync(HttpMethod.Get, manifestUri, accept: ManifestTypes, expectJson: true, ct: ct);
-        digest ??= manifestResponse.Header("Docker-Content-Digest") ?? ContentHash.Sha256(manifestResponse.Body);
+        digest = manifestResponse.Header("Docker-Content-Digest") ?? ContentHash.Sha256(manifestResponse.Body);
         if (digest == lastVersion) return FetchResult.Unchanged(digest);
 
         var layerDigest = FindLayer(manifestResponse.Body);
@@ -118,7 +125,8 @@ public partial class OciArtifactSource : IArtifactSource
         Uri? next = V2("tags/list?n=1000");
         for (var page = 0; next is not null && page < 50; page++)
         {
-            var response = await SendAsync(HttpMethod.Get, next, expectJson: true, ct: ct);
+            var current = next;
+            var response = await SendAsync(HttpMethod.Get, current, expectJson: true, ct: ct);
             using (var doc = JsonDocument.Parse(response.Body))
             {
                 if (doc.RootElement.TryGetProperty("tags", out var list) && list.ValueKind == JsonValueKind.Array)
@@ -126,13 +134,14 @@ public partial class OciArtifactSource : IArtifactSource
             }
             var link = response.Header("Link");
             var match = link is null ? null : NextLink().Match(link);
-            next = match is { Success: true } ? new Uri(new Uri($"https://{_registry}"), match.Groups[1].Value) : null;
+            // A relative link is relative to the page just read (RFC 8288), not to the registry root.
+            next = match is { Success: true } ? new Uri(current, match.Groups[1].Value) : null;
         }
 
-        var current = now.UtcDateTime.ToString("yyyy-MM");
+        var thisMonth = now.UtcDateTime.ToString("yyyy-MM");
         return tags
             .Where(t => ServiceInventoryOptionsValidator.PeriodPattern().IsMatch(t))
-            .Where(t => string.CompareOrdinal(t, from) >= 0 && string.CompareOrdinal(t, current) < 0)
+            .Where(t => string.CompareOrdinal(t, from) >= 0 && string.CompareOrdinal(t, thisMonth) < 0)
             .Where(t => !stored.Contains(t))
             .Distinct()
             .Order(StringComparer.Ordinal)
@@ -140,7 +149,7 @@ public partial class OciArtifactSource : IArtifactSource
     }
 
     public IArtifactSource ForMonth(string period) =>
-        new OciArtifactSource(_http, _tokens, _clock, _registry, _repository, period, _file, _credential);
+        new OciArtifactSource(_http, _tokens, _clock, _registry, _repository, period, _file, _credential, _authHost);
 
     private string FindLayer(byte[] manifest)
     {
@@ -208,6 +217,13 @@ public partial class OciArtifactSource : IArtifactSource
     {
         if (!Uri.TryCreate(realm, UriKind.Absolute, out var realmUri))
             throw new InventoryFetchException("The registry's token realm is not a valid URL.");
+        // The challenge comes from the remote side: the feed's credential goes only to the registry
+        // itself or to the token host configured for it, never to whatever host the challenge names.
+        var trusted = string.Equals(realmUri.Host, _registry, StringComparison.OrdinalIgnoreCase)
+                      || string.Equals(realmUri.Host, _authHost, StringComparison.OrdinalIgnoreCase);
+        if (!trusted)
+            throw new InventoryFetchException(
+                $"The registry {_registry} asked for a token from {realmUri.Host}; set AuthHost for this feed to allow it.");
         var query = $"scope={Uri.EscapeDataString($"repository:{_repository}:pull")}";
         if (!string.IsNullOrEmpty(service)) query = $"service={Uri.EscapeDataString(service)}&{query}";
         var tokenUri = new UriBuilder(realmUri) { Query = query }.Uri;
