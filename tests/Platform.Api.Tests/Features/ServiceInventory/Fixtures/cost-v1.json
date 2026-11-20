@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "period": "2026-10",
+  "generated_at": "2026-11-01T03:08:00.000Z",
+  "catalog_version": 4,
+  "rows": 300,
+  "totals": {
+    "total": {
+      "USD": 100.0
+    },
+    "direct": {},
+    "shared": {},
+    "shared_unsplit": {},
+    "unallocated": {
+      "USD": 100.0
+    }
+  },
+  "services": [],
+  "shared": [],
+  "unallocated": {
+    "untagged": {
+      "USD": 100.0
+    },
+    "unknown_tag": {},
+    "by_subscription": [
+      {
+        "subscription": "11111111-2222-4333-8444-555555555555",
+        "group": "aks-prod-nodes",
+        "cost": {
+          "USD": 100.0
+        }
+      }
+    ]
+  }
+}

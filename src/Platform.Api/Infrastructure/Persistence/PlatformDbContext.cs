@@ -11,6 +11,7 @@ using Platform.Api.Features.Releases.Models;
 using Platform.Api.Features.Rollbacks.Models;
 using Platform.Api.Features.ReleaseNotes.Models;
 using Platform.Api.Features.Requests.Models;
+using Platform.Api.Features.ServiceInventory.Models;
 using Platform.Api.Features.Users.Models;
 using Platform.Api.Features.Webhooks.Models;
 using Platform.Api.Infrastructure.Auth;
@@ -69,6 +70,12 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<Release> Releases => Set<Release>();
     public DbSet<ReleaseStep> ReleaseSteps => Set<ReleaseStep>();
     public DbSet<DataProtectionKey> DataProtectionKeys => Set<DataProtectionKey>();
+    public DbSet<InventoryFeed> InventoryFeeds => Set<InventoryFeed>();
+    public DbSet<InventorySnapshot> InventorySnapshots => Set<InventorySnapshot>();
+    public DbSet<InventoryService> InventoryServices => Set<InventoryService>();
+    public DbSet<InventoryCostMonth> InventoryCostMonths => Set<InventoryCostMonth>();
+    public DbSet<InventoryCostService> InventoryCostServices => Set<InventoryCostService>();
+    public DbSet<InventoryCostUnallocated> InventoryCostUnallocated => Set<InventoryCostUnallocated>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -985,6 +992,100 @@ public class PlatformDbContext : DbContext, IDataProtectionKeyContext
                 .WithMany()
                 .HasForeignKey(x => x.CandidateId)
                 .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        ConfigureServiceInventory(modelBuilder);
+    }
+
+    /// <summary>
+    /// The service inventory's tables (docs/plans/service-inventory.md). No foreign keys: projected
+    /// rows belong to a snapshot by id and are removed by the retention job, never by a cascade.
+    /// </summary>
+    private static void ConfigureServiceInventory(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<InventoryFeed>(e =>
+        {
+            e.ToTable("inventory_feeds");
+            e.HasKey(x => x.FeedKey);
+            e.Property(x => x.FeedKey).HasMaxLength(120);
+            e.Property(x => x.FeedName).HasMaxLength(100).IsRequired();
+            e.Property(x => x.FeedType).HasMaxLength(20).IsRequired();
+            e.Property(x => x.Period).HasMaxLength(7).IsRequired().HasDefaultValue("");
+            e.Property(x => x.LastSourceVersion).HasMaxLength(200);
+            e.Property(x => x.LastError).HasMaxLength(1000);
+            e.HasIndex(x => new { x.FeedName, x.Period }).IsUnique();
+        });
+
+        modelBuilder.Entity<InventorySnapshot>(e =>
+        {
+            e.ToTable("inventory_snapshots");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.FeedName).HasMaxLength(100).IsRequired();
+            e.Property(x => x.FeedType).HasMaxLength(20).IsRequired();
+            e.Property(x => x.Period).HasMaxLength(7).IsRequired().HasDefaultValue("");
+            e.Property(x => x.SourceKind).HasMaxLength(20).IsRequired();
+            e.Property(x => x.SourceLocation).HasMaxLength(500).IsRequired();
+            e.Property(x => x.SourceVersion).HasMaxLength(200).IsRequired();
+            e.Property(x => x.ContentSha256).HasMaxLength(71).IsRequired();
+            e.Property(x => x.ContentGzip).IsRequired();
+            e.HasIndex(x => new { x.FeedName, x.Period, x.ContentSha256 }).IsUnique();
+            e.HasIndex(x => new { x.FeedName, x.Period, x.FetchedAt });
+        });
+
+        modelBuilder.Entity<InventoryService>(e =>
+        {
+            e.ToTable("inventory_services");
+            e.HasKey(x => new { x.SnapshotId, x.ServiceId });
+            e.Property(x => x.ServiceId).HasMaxLength(63);
+            e.Property(x => x.Product).HasMaxLength(100).IsRequired();
+            e.Property(x => x.Team).HasMaxLength(100).IsRequired();
+            e.Property(x => x.Lifecycle).HasMaxLength(20).IsRequired();
+            e.HasIndex(x => new { x.SnapshotId, x.Product });
+            e.HasIndex(x => new { x.SnapshotId, x.Team });
+        });
+
+        modelBuilder.Entity<InventoryCostMonth>(e =>
+        {
+            e.ToTable("inventory_cost_month");
+            e.HasKey(x => new { x.SnapshotId, x.Source, x.Currency });
+            e.Property(x => x.Source).HasMaxLength(100);
+            e.Property(x => x.Currency).HasMaxLength(3).IsFixedLength();
+            e.Property(x => x.Period).HasMaxLength(7).IsRequired();
+            foreach (var amount in new[] { nameof(InventoryCostMonth.Total), nameof(InventoryCostMonth.Direct),
+                         nameof(InventoryCostMonth.Shared), nameof(InventoryCostMonth.SharedUnsplit),
+                         nameof(InventoryCostMonth.Unallocated), nameof(InventoryCostMonth.Untagged),
+                         nameof(InventoryCostMonth.UnknownTag) })
+                e.Property(amount).HasPrecision(19, 4);
+            e.HasIndex(x => x.Period);
+        });
+
+        modelBuilder.Entity<InventoryCostService>(e =>
+        {
+            e.ToTable("inventory_cost_service");
+            e.HasKey(x => new { x.SnapshotId, x.ServiceId, x.Currency });
+            e.Property(x => x.ServiceId).HasMaxLength(63);
+            e.Property(x => x.Currency).HasMaxLength(3).IsFixedLength();
+            e.Property(x => x.Period).HasMaxLength(7).IsRequired();
+            e.Property(x => x.Product).HasMaxLength(100).IsRequired();
+            e.Property(x => x.Team).HasMaxLength(100).IsRequired();
+            e.Property(x => x.Direct).HasPrecision(19, 4);
+            e.Property(x => x.Shared).HasPrecision(19, 4);
+            e.Property(x => x.Total).HasPrecision(19, 4);
+            e.HasIndex(x => new { x.SnapshotId, x.Product });
+            e.HasIndex(x => new { x.SnapshotId, x.Team });
+        });
+
+        modelBuilder.Entity<InventoryCostUnallocated>(e =>
+        {
+            e.ToTable("inventory_cost_unallocated");
+            e.HasKey(x => new { x.SnapshotId, x.Ordinal });
+            e.Property(x => x.Period).HasMaxLength(7).IsRequired();
+            e.Property(x => x.Source).HasMaxLength(100).IsRequired();
+            e.Property(x => x.Scope).HasMaxLength(200).IsRequired();
+            e.Property(x => x.ResourceGroup).HasMaxLength(200).IsRequired().HasDefaultValue("");
+            e.Property(x => x.Currency).HasMaxLength(3).IsFixedLength();
+            e.Property(x => x.Amount).HasPrecision(19, 4);
+            e.HasIndex(x => new { x.SnapshotId, x.Currency, x.Amount });
         });
     }
 }

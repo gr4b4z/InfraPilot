@@ -8,6 +8,8 @@ export const FeatureFlag = {
   Approvals: 'features.approvals',
   ReleaseNotes: 'features.releaseNotes',
   Analytics: 'features.analytics',
+  // The service inventory (ADR-0004). No pages yet; off by default.
+  ServiceInventory: 'features.serviceInventory',
 } as const;
 
 export type FeatureFlagKey = (typeof FeatureFlag)[keyof typeof FeatureFlag];

@@ -30,4 +30,11 @@ public static class FeatureFlagKeys
     public const string Approvals = "features.approvals";
     public const string ReleaseNotes = "features.releaseNotes";
     public const string Analytics = "features.analytics";
+    /// <summary>
+    /// The service inventory (ADR-0004). Deliberately not seeded yet: with no row it reads as off and
+    /// does not show under Settings → Feature Flags, so nothing is visible until its pages exist. An
+    /// admin can turn it on through <c>PUT /api/features/features.serviceInventory</c>; the seeder
+    /// entry comes with the pages.
+    /// </summary>
+    public const string ServiceInventory = "features.serviceInventory";
 }

@@ -17,7 +17,7 @@ namespace Platform.Api.Migrations.SqlServer
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .HasAnnotation("ProductVersion", "10.0.12")
+                .HasAnnotation("ProductVersion", "10.0.15")
                 .HasAnnotation("Relational:MaxIdentifierLength", 128);
 
             SqlServerModelBuilderExtensions.UseIdentityColumns(modelBuilder);
@@ -2127,6 +2127,331 @@ namespace Platform.Api.Migrations.SqlServer
                     b.HasIndex("Product", "TargetEnv");
 
                     b.ToTable("rollback_requests", (string)null);
+                });
+
+            modelBuilder.Entity("Platform.Api.Features.ServiceInventory.Models.InventoryCostMonth", b =>
+                {
+                    b.Property<Guid>("SnapshotId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Source")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("Currency")
+                        .HasMaxLength(3)
+                        .HasColumnType("nchar(3)")
+                        .IsFixedLength();
+
+                    b.Property<bool>("Complete")
+                        .HasColumnType("bit");
+
+                    b.Property<decimal>("Direct")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)");
+
+                    b.Property<string>("Period")
+                        .IsRequired()
+                        .HasMaxLength(7)
+                        .HasColumnType("nvarchar(7)");
+
+                    b.Property<decimal>("Shared")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)");
+
+                    b.Property<decimal>("SharedUnsplit")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)");
+
+                    b.Property<decimal>("Total")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)");
+
+                    b.Property<decimal>("Unallocated")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)");
+
+                    b.Property<decimal?>("UnknownTag")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)");
+
+                    b.Property<decimal?>("Untagged")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)");
+
+                    b.HasKey("SnapshotId", "Source", "Currency");
+
+                    b.HasIndex("Period");
+
+                    b.ToTable("inventory_cost_month", (string)null);
+                });
+
+            modelBuilder.Entity("Platform.Api.Features.ServiceInventory.Models.InventoryCostService", b =>
+                {
+                    b.Property<Guid>("SnapshotId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("ServiceId")
+                        .HasMaxLength(63)
+                        .HasColumnType("nvarchar(63)");
+
+                    b.Property<string>("Currency")
+                        .HasMaxLength(3)
+                        .HasColumnType("nchar(3)")
+                        .IsFixedLength();
+
+                    b.Property<decimal>("Direct")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)");
+
+                    b.Property<string>("Period")
+                        .IsRequired()
+                        .HasMaxLength(7)
+                        .HasColumnType("nvarchar(7)");
+
+                    b.Property<string>("Product")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<decimal>("Shared")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)");
+
+                    b.Property<string>("Team")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<decimal>("Total")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)");
+
+                    b.HasKey("SnapshotId", "ServiceId", "Currency");
+
+                    b.HasIndex("SnapshotId", "Product");
+
+                    b.HasIndex("SnapshotId", "Team");
+
+                    b.ToTable("inventory_cost_service", (string)null);
+                });
+
+            modelBuilder.Entity("Platform.Api.Features.ServiceInventory.Models.InventoryCostUnallocated", b =>
+                {
+                    b.Property<Guid>("SnapshotId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("Ordinal")
+                        .HasColumnType("int");
+
+                    b.Property<decimal>("Amount")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)");
+
+                    b.Property<string>("Currency")
+                        .IsRequired()
+                        .HasMaxLength(3)
+                        .HasColumnType("nchar(3)")
+                        .IsFixedLength();
+
+                    b.Property<string>("Period")
+                        .IsRequired()
+                        .HasMaxLength(7)
+                        .HasColumnType("nvarchar(7)");
+
+                    b.Property<string>("ResourceGroup")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasDefaultValue("");
+
+                    b.Property<string>("Scope")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.HasKey("SnapshotId", "Ordinal");
+
+                    b.HasIndex("SnapshotId", "Currency", "Amount");
+
+                    b.ToTable("inventory_cost_unallocated", (string)null);
+                });
+
+            modelBuilder.Entity("Platform.Api.Features.ServiceInventory.Models.InventoryFeed", b =>
+                {
+                    b.Property<string>("FeedKey")
+                        .HasMaxLength(120)
+                        .HasColumnType("nvarchar(120)");
+
+                    b.Property<bool>("Complete")
+                        .HasColumnType("bit");
+
+                    b.Property<int>("ConsecutiveFailures")
+                        .HasColumnType("int");
+
+                    b.Property<Guid?>("CurrentSnapshotId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("FeedName")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("FeedType")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)");
+
+                    b.Property<DateTimeOffset?>("LastAttemptAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<DateTimeOffset?>("LastChangedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("LastError")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<DateTimeOffset?>("LastErrorAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("LastSourceVersion")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<DateTimeOffset?>("LastSuccessAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("Period")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(7)
+                        .HasColumnType("nvarchar(7)")
+                        .HasDefaultValue("");
+
+                    b.Property<int>("ProjectionVersion")
+                        .HasColumnType("int");
+
+                    b.HasKey("FeedKey");
+
+                    b.HasIndex("FeedName", "Period")
+                        .IsUnique();
+
+                    b.ToTable("inventory_feeds", (string)null);
+                });
+
+            modelBuilder.Entity("Platform.Api.Features.ServiceInventory.Models.InventoryService", b =>
+                {
+                    b.Property<Guid>("SnapshotId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("ServiceId")
+                        .HasMaxLength(63)
+                        .HasColumnType("nvarchar(63)");
+
+                    b.Property<string>("Lifecycle")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)");
+
+                    b.Property<string>("Product")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("Team")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.HasKey("SnapshotId", "ServiceId");
+
+                    b.HasIndex("SnapshotId", "Product");
+
+                    b.HasIndex("SnapshotId", "Team");
+
+                    b.ToTable("inventory_services", (string)null);
+                });
+
+            modelBuilder.Entity("Platform.Api.Features.ServiceInventory.Models.InventorySnapshot", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<bool?>("Complete")
+                        .HasColumnType("bit");
+
+                    b.Property<byte[]>("ContentGzip")
+                        .IsRequired()
+                        .HasColumnType("varbinary(max)");
+
+                    b.Property<int>("ContentLength")
+                        .HasColumnType("int");
+
+                    b.Property<string>("ContentSha256")
+                        .IsRequired()
+                        .HasMaxLength(71)
+                        .HasColumnType("nvarchar(71)");
+
+                    b.Property<int?>("DocumentVersion")
+                        .HasColumnType("int");
+
+                    b.Property<string>("FeedName")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("FeedType")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)");
+
+                    b.Property<DateTimeOffset>("FetchedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<DateTimeOffset?>("GeneratedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("Period")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(7)
+                        .HasColumnType("nvarchar(7)")
+                        .HasDefaultValue("");
+
+                    b.Property<int>("SchemaVersion")
+                        .HasColumnType("int");
+
+                    b.Property<string>("SourceKind")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)");
+
+                    b.Property<string>("SourceLocation")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<string>("SourceVersion")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("FeedName", "Period", "ContentSha256")
+                        .IsUnique();
+
+                    b.HasIndex("FeedName", "Period", "FetchedAt");
+
+                    b.ToTable("inventory_snapshots", (string)null);
                 });
 
             modelBuilder.Entity("Platform.Api.Features.Users.Models.UserPreference", b =>

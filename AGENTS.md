@@ -22,7 +22,7 @@ promotion/deployment diagnostics the REST API lacks. See `notes/mcp-server.md`.
 
 Full API payload references live in `notes/` (`deployment-ingest-api.md`, `promotions-api.md`,
 `build-registry-api.md`, `analytics-api.md`, `release-notes.md`, `migrations-api.md`, `releases-api.md`,
-`mcp-server.md`, `integrations/flux.md`).
+`mcp-server.md`, `service-inventory-api.md`, `integrations/flux.md`).
 
 ## What's new entries (the portal's changelog)
 

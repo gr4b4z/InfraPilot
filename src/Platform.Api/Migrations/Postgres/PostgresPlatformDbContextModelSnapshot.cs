@@ -17,7 +17,7 @@ namespace Platform.Api.Migrations.Postgres
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .HasAnnotation("ProductVersion", "10.0.12")
+                .HasAnnotation("ProductVersion", "10.0.15")
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
@@ -2124,6 +2124,331 @@ namespace Platform.Api.Migrations.Postgres
                     b.HasIndex("Product", "TargetEnv");
 
                     b.ToTable("rollback_requests", (string)null);
+                });
+
+            modelBuilder.Entity("Platform.Api.Features.ServiceInventory.Models.InventoryCostMonth", b =>
+                {
+                    b.Property<Guid>("SnapshotId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Source")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<string>("Currency")
+                        .HasMaxLength(3)
+                        .HasColumnType("character(3)")
+                        .IsFixedLength();
+
+                    b.Property<bool>("Complete")
+                        .HasColumnType("boolean");
+
+                    b.Property<decimal>("Direct")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("numeric(19,4)");
+
+                    b.Property<string>("Period")
+                        .IsRequired()
+                        .HasMaxLength(7)
+                        .HasColumnType("character varying(7)");
+
+                    b.Property<decimal>("Shared")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("numeric(19,4)");
+
+                    b.Property<decimal>("SharedUnsplit")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("numeric(19,4)");
+
+                    b.Property<decimal>("Total")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("numeric(19,4)");
+
+                    b.Property<decimal>("Unallocated")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("numeric(19,4)");
+
+                    b.Property<decimal?>("UnknownTag")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("numeric(19,4)");
+
+                    b.Property<decimal?>("Untagged")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("numeric(19,4)");
+
+                    b.HasKey("SnapshotId", "Source", "Currency");
+
+                    b.HasIndex("Period");
+
+                    b.ToTable("inventory_cost_month", (string)null);
+                });
+
+            modelBuilder.Entity("Platform.Api.Features.ServiceInventory.Models.InventoryCostService", b =>
+                {
+                    b.Property<Guid>("SnapshotId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("ServiceId")
+                        .HasMaxLength(63)
+                        .HasColumnType("character varying(63)");
+
+                    b.Property<string>("Currency")
+                        .HasMaxLength(3)
+                        .HasColumnType("character(3)")
+                        .IsFixedLength();
+
+                    b.Property<decimal>("Direct")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("numeric(19,4)");
+
+                    b.Property<string>("Period")
+                        .IsRequired()
+                        .HasMaxLength(7)
+                        .HasColumnType("character varying(7)");
+
+                    b.Property<string>("Product")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<decimal>("Shared")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("numeric(19,4)");
+
+                    b.Property<string>("Team")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<decimal>("Total")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("numeric(19,4)");
+
+                    b.HasKey("SnapshotId", "ServiceId", "Currency");
+
+                    b.HasIndex("SnapshotId", "Product");
+
+                    b.HasIndex("SnapshotId", "Team");
+
+                    b.ToTable("inventory_cost_service", (string)null);
+                });
+
+            modelBuilder.Entity("Platform.Api.Features.ServiceInventory.Models.InventoryCostUnallocated", b =>
+                {
+                    b.Property<Guid>("SnapshotId")
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("Ordinal")
+                        .HasColumnType("integer");
+
+                    b.Property<decimal>("Amount")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("numeric(19,4)");
+
+                    b.Property<string>("Currency")
+                        .IsRequired()
+                        .HasMaxLength(3)
+                        .HasColumnType("character(3)")
+                        .IsFixedLength();
+
+                    b.Property<string>("Period")
+                        .IsRequired()
+                        .HasMaxLength(7)
+                        .HasColumnType("character varying(7)");
+
+                    b.Property<string>("ResourceGroup")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasDefaultValue("");
+
+                    b.Property<string>("Scope")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.HasKey("SnapshotId", "Ordinal");
+
+                    b.HasIndex("SnapshotId", "Currency", "Amount");
+
+                    b.ToTable("inventory_cost_unallocated", (string)null);
+                });
+
+            modelBuilder.Entity("Platform.Api.Features.ServiceInventory.Models.InventoryFeed", b =>
+                {
+                    b.Property<string>("FeedKey")
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)");
+
+                    b.Property<bool>("Complete")
+                        .HasColumnType("boolean");
+
+                    b.Property<int>("ConsecutiveFailures")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid?>("CurrentSnapshotId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("FeedName")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<string>("FeedType")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<DateTimeOffset?>("LastAttemptAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("LastChangedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("LastError")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
+
+                    b.Property<DateTimeOffset?>("LastErrorAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("LastSourceVersion")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<DateTimeOffset?>("LastSuccessAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Period")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(7)
+                        .HasColumnType("character varying(7)")
+                        .HasDefaultValue("");
+
+                    b.Property<int>("ProjectionVersion")
+                        .HasColumnType("integer");
+
+                    b.HasKey("FeedKey");
+
+                    b.HasIndex("FeedName", "Period")
+                        .IsUnique();
+
+                    b.ToTable("inventory_feeds", (string)null);
+                });
+
+            modelBuilder.Entity("Platform.Api.Features.ServiceInventory.Models.InventoryService", b =>
+                {
+                    b.Property<Guid>("SnapshotId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("ServiceId")
+                        .HasMaxLength(63)
+                        .HasColumnType("character varying(63)");
+
+                    b.Property<string>("Lifecycle")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<string>("Product")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<string>("Team")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.HasKey("SnapshotId", "ServiceId");
+
+                    b.HasIndex("SnapshotId", "Product");
+
+                    b.HasIndex("SnapshotId", "Team");
+
+                    b.ToTable("inventory_services", (string)null);
+                });
+
+            modelBuilder.Entity("Platform.Api.Features.ServiceInventory.Models.InventorySnapshot", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<bool?>("Complete")
+                        .HasColumnType("boolean");
+
+                    b.Property<byte[]>("ContentGzip")
+                        .IsRequired()
+                        .HasColumnType("bytea");
+
+                    b.Property<int>("ContentLength")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("ContentSha256")
+                        .IsRequired()
+                        .HasMaxLength(71)
+                        .HasColumnType("character varying(71)");
+
+                    b.Property<int?>("DocumentVersion")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("FeedName")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<string>("FeedType")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<DateTimeOffset>("FetchedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("GeneratedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Period")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(7)
+                        .HasColumnType("character varying(7)")
+                        .HasDefaultValue("");
+
+                    b.Property<int>("SchemaVersion")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("SourceKind")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<string>("SourceLocation")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<string>("SourceVersion")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("FeedName", "Period", "ContentSha256")
+                        .IsUnique();
+
+                    b.HasIndex("FeedName", "Period", "FetchedAt");
+
+                    b.ToTable("inventory_snapshots", (string)null);
                 });
 
             modelBuilder.Entity("Platform.Api.Features.Users.Models.UserPreference", b =>

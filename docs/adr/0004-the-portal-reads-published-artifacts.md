@@ -52,9 +52,11 @@ of place is one class.
 
 ## Consequences
 
-- Outbound HTTP from the portal to configured hosts only: HTTPS, an allowlist, no redirect off it
-  (except the registry's blob redirect, which carries no credentials and is checked against the
-  content digest), a size limit, a timeout, JSON only. Credentials come from the existing secret
+- Outbound HTTP from the portal to configured hosts only: HTTPS, an allowlist of hosts (a host means
+  port 443; another port is listed as `host:port`), no redirect off it, a size limit, a timeout, JSON
+  only. The one exception is the registry's blob redirect: it carries no credentials, its content is
+  checked against the digest in the manifest, and it may only lead to a public address — storage on
+  a private address is reached by listing its host. Credentials come from the existing secret
   configuration, are sent only to the host they belong to, are redacted from logs and stored errors,
   and never reach the browser.
 - The data is as fresh as the last successful fetch. Pages show its age; a feed that stops refreshing

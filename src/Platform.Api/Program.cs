@@ -1,3 +1,4 @@
+using Platform.Api.Features.ServiceInventory;
 using System.Text;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -334,6 +335,9 @@ var syncFromDisk = builder.Configuration.GetValue("Catalog:SyncFromDisk", builde
 if (syncFromDisk)
     builder.Services.AddHostedService<CatalogSyncService>();
 builder.Services.AddHostedService<DeploymentEnrichmentService>();
+// Service inventory (ADR-0004): reads published catalog, status and cost artifacts. Flag-gated, off
+// by default; does nothing until feeds are configured.
+builder.Services.AddServiceInventory(builder.Configuration);
 builder.Services.AddHostedService<ExecutorWorkerService>();
 // One-shot backfill of DeployEventWorkItem rows for existing deploy events.
 // Idempotent and self-disabling once complete (records a flag in PlatformSettings).
@@ -534,6 +538,8 @@ app.MapGroup("/api/releases").MapReleaseEndpoints().RequireAuthorization(Authori
 app.MapGroup("/api/rollbacks/admin").MapRollbackAdminEndpoints().RequireAuthorization(AuthorizationPolicies.CatalogAdmin);
 app.MapGroup("/api/work-items").MapWorkItemEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
 app.MapGroup("/api/release-notes").MapReleaseNoteEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
+// Read-only, for everyone signed in; feed state and rebuild are admin-only inside.
+app.MapGroup("/api/service-inventory").MapServiceInventoryEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);
 // Readable by anyone signed in or holding a key (CanApprove: either scheme), so an agent can read
 // what it is about to change; the writes inside are admin-only.
 app.MapGroup("/api/settings").MapAppSettingsEndpoints().RequireAuthorization(AuthorizationPolicies.CanApprove);

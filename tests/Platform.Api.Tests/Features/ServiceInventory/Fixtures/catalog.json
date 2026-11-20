@@ -1,0 +1,179 @@
+{
+  "catalog_version": 5,
+  "content_hash": "sha256:3b0c9a6f1e2d4c5b8a7f6e5d4c3b2a19f8e7d6c5b4a39281706f5e4d3c2b1a09",
+  "products": [
+    {
+      "business_owner": "TODO",
+      "id": "identity",
+      "lifecycle": "active",
+      "name": "Identity",
+      "technical_owner": "TODO"
+    },
+    {
+      "business_owner": "TODO",
+      "id": "payments",
+      "lifecycle": "active",
+      "name": "Payments",
+      "technical_owner": "TODO"
+    },
+    {
+      "business_owner": "TODO",
+      "id": "platform",
+      "lifecycle": "active",
+      "name": "Platform",
+      "technical_owner": "TODO"
+    },
+    {
+      "business_owner": "TODO",
+      "id": "storefront",
+      "lifecycle": "active",
+      "name": "Storefront",
+      "technical_owner": "TODO"
+    }
+  ],
+  "schemaVersion": 1,
+  "services": [
+    {
+      "consumers": {
+        "apis": [],
+        "events": []
+      },
+      "description": "Double-entry ledger and balance API used by several products.",
+      "environments": {
+        "dev": {
+          "aks": {
+            "cluster": "aks-dev-01",
+            "namespace": "payments-ledger"
+          }
+        },
+        "prod": {
+          "aks": {
+            "cluster": "aks-prod-01",
+            "namespace": "payments-ledger"
+          }
+        },
+        "stage": {
+          "aks": {
+            "cluster": "aks-stage-01",
+            "namespace": "payments-ledger"
+          }
+        },
+        "test": {
+          "aks": {
+            "cluster": "aks-test-01",
+            "namespace": "payments-ledger"
+          }
+        }
+      },
+      "id": "ledger-api",
+      "lifecycle": "production",
+      "links": {},
+      "product": "payments",
+      "repo": "https://dev.azure.com/example-org/Payments/_git/ledger-api",
+      "schemaVersion": 1,
+      "team": "platform-team",
+      "type": "backend",
+      "workloads": {
+        "api-int": {
+          "kind": "api"
+        },
+        "public-api": {
+          "kind": "api"
+        },
+        "sync": {
+          "kind": "worker"
+        }
+      }
+    },
+    {
+      "bindings": {
+        "postgres": [
+          {
+            "database": "order-router",
+            "owner": true,
+            "server": "shared-postgres",
+            "workloads": [
+              "router-api"
+            ]
+          }
+        ]
+      },
+      "consumers": {
+        "apis": [],
+        "events": []
+      },
+      "consumes": {
+        "external": [
+          "api.github.com"
+        ]
+      },
+      "customer_facing": false,
+      "description": "Routes incoming orders to the fulfilment service that can handle them.",
+      "environments": {
+        "dev": {
+          "aks": {
+            "cluster": "aks-shared-01",
+            "namespace": "storefront-dev"
+          }
+        },
+        "prod": {
+          "aks": {
+            "cluster": "aks-shared-01",
+            "namespace": "storefront-prod"
+          }
+        }
+      },
+      "exposure": "internal",
+      "id": "order-router",
+      "lifecycle": "planned",
+      "links": {},
+      "product": "storefront",
+      "repo": "example-org/order-router",
+      "schemaVersion": 1,
+      "team": "storefront-team",
+      "type": "backend",
+      "workloads": {
+        "router-api": {
+          "kind": "api"
+        }
+      }
+    }
+  ],
+  "shared": [
+    {
+      "description": "Shared PostgreSQL server for platform and product databases.",
+      "id": "shared-postgres",
+      "kind": "postgres-server",
+      "owner": "platform-team"
+    }
+  ],
+  "teams": [
+    {
+      "deputy": "TODO-deputy",
+      "entra_group": "TODO",
+      "github_team": "example-org/storefront-team",
+      "id": "storefront-team",
+      "lead": "TODO-lead",
+      "lifecycle": "active",
+      "products": [
+        "storefront"
+      ]
+    },
+    {
+      "deputy": "TODO-deputy",
+      "entra_group": "TODO",
+      "github_team": "example-org/platform-team",
+      "id": "platform-team",
+      "lead": "TODO-lead",
+      "lifecycle": "active"
+    },
+    {
+      "deputy": "TODO-deputy",
+      "entra_group": "TODO",
+      "github_team": "example-org/search-team",
+      "id": "search-team",
+      "lead": "TODO-lead",
+      "lifecycle": "active"
+    }
+  ]
+}

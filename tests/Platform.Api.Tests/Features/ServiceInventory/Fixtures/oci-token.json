@@ -1,0 +1,4 @@
+{
+  "access_token": "fixture-access-token-not-a-secret",
+  "expires_in": 3600
+}

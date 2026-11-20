@@ -31,6 +31,12 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- The service inventory's fictional fixtures, shared with the unit tests. -->
+    <None Include="..\Platform.Api.Tests\Features\ServiceInventory\Fixtures\*.json"
+          Link="ServiceInventoryFixtures\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\..\src\Platform.Api\Platform.Api.csproj" />
   </ItemGroup>
 
