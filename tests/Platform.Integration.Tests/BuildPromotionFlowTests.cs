@@ -361,8 +361,7 @@ public class BuildPromotionFlowTests : IClassFixture<BuildPromotionFlowTests.Bui
 
         Assert.NotNull(delivery);
         // Delay 0 ⇒ NextRetryAt is "now", not now + the default 10s undo window.
-        Assert.NotNull(delivery!.NextRetryAt);
-        Assert.True(delivery.NextRetryAt < before.AddSeconds(5),
+        Assert.True(delivery!.NextRetryAt < before.AddSeconds(5),
             $"expected immediate dispatch, got NextRetryAt={delivery.NextRetryAt:o} (before={before:o})");
     }
 

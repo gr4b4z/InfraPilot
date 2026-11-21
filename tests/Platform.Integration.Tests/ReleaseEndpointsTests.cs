@@ -122,7 +122,7 @@ public class ReleaseEndpointsTests : IClassFixture<ReleaseEndpointsTests.Release
         Assert.Equal(keys.IndexOf("production-deploys") - 1, keys.IndexOf("maintenance-on"));
         Assert.Equal(keys.IndexOf("production-migrations") + 1, keys.IndexOf("maintenance-off"));
         Assert.Equal(["maintenance-on", "maintenance-off"],
-            steps.Where(s => s.GetProperty("optional").GetBoolean()).Select(s => s.GetProperty("key").GetString()).ToArray());
+            steps.Where(s => s.GetProperty("optional").GetBoolean()).Select(s => s.GetProperty("key").GetString()!).ToArray());
 
         // Anyone signed in reads it; only admins and release managers change it. QA is no exception.
         var stepId = steps[0].GetProperty("id").GetGuid();
@@ -470,7 +470,7 @@ public class ReleaseEndpointsTests : IClassFixture<ReleaseEndpointsTests.Release
 
         var pq = services["svc-q"].GetProperty("promotion");
         Assert.Equal("approved", pq.GetProperty("qaReview").GetString());
-        Assert.Equal(["Release Approval"], pq.GetProperty("outstandingSteps").EnumerateArray().Select(x => x.GetString()).ToArray());
+        Assert.Equal(["Release Approval"], pq.GetProperty("outstandingSteps").EnumerateArray().Select(x => x.GetString()!).ToArray());
         Assert.Equal(2, pq.GetProperty("workItems").GetProperty("total").GetInt32());
         Assert.Equal(1, pq.GetProperty("workItems").GetProperty("approved").GetInt32());
         var pw = services["svc-w"].GetProperty("promotion");
