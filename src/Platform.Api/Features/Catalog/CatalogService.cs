@@ -82,6 +82,18 @@ public class CatalogService
                     string.Join(", ", ExecutorTemplate.RequestVariables.Select(v => $"{{{{request.{v}}}}}")));
         }
 
+        // The github-issue executor renders the same placeholders into its title, body, comment and form fields.
+        if (def.Executor is { } issue)
+        {
+            var issueTemplates = new[] { issue.Title, issue.Body, issue.Comment }
+                .Concat(issue.Fields.Select(f => f.Value))
+                .Where(t => !string.IsNullOrEmpty(t))
+                .Select(t => t!);
+            foreach (var unknown in ExecutorTemplate.UnknownRequestVariables(issueTemplates))
+                errors.Add($"executor: '{{{{{unknown}}}}}' isn't a request variable; use " +
+                    string.Join(", ", ExecutorTemplate.RequestVariables.Select(v => $"{{{{request.{v}}}}}")));
+        }
+
         return new CatalogValidationResult(errors.Count == 0, errors);
     }
 
