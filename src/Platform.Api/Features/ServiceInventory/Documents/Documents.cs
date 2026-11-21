@@ -36,7 +36,8 @@ public sealed record CatalogService
     [JsonPropertyName("lifecycle")] public string? Lifecycle { get; init; }
     [JsonPropertyName("type")] public string? Type { get; init; }
     [JsonPropertyName("repo")] public string? Repo { get; init; }
-    [JsonPropertyName("tier")] public string? Tier { get; init; }
+    /// <summary>The catalog publishes a number (1, 2 or 3); kept as text.</summary>
+    [JsonPropertyName("tier"), JsonConverter(typeof(NumberOrStringConverter))] public string? Tier { get; init; }
     [JsonPropertyName("exposure")] public string? Exposure { get; init; }
     [JsonPropertyName("customer_facing")] public bool? CustomerFacing { get; init; }
     [JsonPropertyName("replaced_by")] public string? ReplacedBy { get; init; }
@@ -88,8 +89,22 @@ public sealed record CatalogService
                     DatabaseBinding? binding;
                     try { binding = entry.Deserialize<DatabaseBinding>(StrictJson); }
                     catch (JsonException) { continue; }
-                    if (binding is not null && !string.IsNullOrEmpty(binding.Database))
-                        overrides.Add((environment.Name, binding with { Kind = kind }));
+                    if (binding is null || string.IsNullOrEmpty(binding.Database)) continue;
+                    binding = binding with { Kind = kind };
+                    // The entry is merged over the one declared above for the same database, as the
+                    // catalog does: what it leaves out (the server, the owner) is the base's.
+                    var database = binding.Database;
+                    if (list.FirstOrDefault(top => top.Kind == kind
+                            && string.Equals(top.Database, database, StringComparison.OrdinalIgnoreCase)) is { } declared)
+                    {
+                        binding = binding with
+                        {
+                            Server = binding.Server ?? declared.Server,
+                            Owner = entry.TryGetProperty("owner", out _) ? binding.Owner : declared.Owner,
+                            Workloads = entry.TryGetProperty("workloads", out _) ? binding.Workloads : declared.Workloads,
+                        };
+                    }
+                    overrides.Add((environment.Name, binding));
                 }
             }
         }
@@ -120,6 +135,21 @@ public sealed record CatalogService
     }
 
     private static readonly string[] DatabaseKinds = ["postgres", "mssql"];
+}
+
+/// <summary>Reads a JSON string or number as text; anything else does not match the format.</summary>
+public sealed class NumberOrStringConverter : JsonConverter<string?>
+{
+    public override string? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
+        reader.TokenType switch
+        {
+            JsonTokenType.String => reader.GetString(),
+            JsonTokenType.Number => System.Text.Encoding.UTF8.GetString(reader.ValueSpan),
+            _ => throw new JsonException(),
+        };
+
+    public override void Write(Utf8JsonWriter writer, string? value, JsonSerializerOptions options) =>
+        writer.WriteStringValue(value);
 }
 
 public sealed record CatalogEnvironment
