@@ -63,6 +63,40 @@ public class DocumentReaderTests
     }
 
     [Fact]
+    public void An_environment_entry_without_a_server_keeps_the_declared_server_and_owner()
+    {
+        // The shape of the catalog's own example: the environment entry changes something the
+        // portal does not read and restates neither the server nor the owner.
+        var node = JsonNode.Parse(Fixture.Bytes("catalog.json"))!;
+        var router = node["services"]!.AsArray().Single(s => s!["id"]!.GetValue<string>() == "order-router")!;
+        router["bindings"]!["environments"] = JsonNode.Parse("""
+            { "dev": { "postgres": [ { "database": "order-router", "sku": "S1" } ] } }
+            """);
+
+        var result = DocumentReader.Read("catalog", Encoding.UTF8.GetBytes(node.ToJsonString()));
+        Assert.True(result.Ok, result.Error);
+        var binding = Assert.Single(((CatalogDocument)result.Document!).Services.Single(s => s.Id == "order-router").DatabaseBindings());
+
+        Assert.Equal(("shared-postgres", true), (binding.Server, binding.Owner));
+        Assert.Null(binding.OnlyInEnvironments);
+        Assert.Empty(binding.NotInEnvironments);
+    }
+
+    [Theory]
+    [InlineData("1", "1")]
+    [InlineData("\"1\"", "1")]
+    public void A_tier_is_read_whether_published_as_a_number_or_as_text(string published, string expected)
+    {
+        var node = JsonNode.Parse(Fixture.Bytes("catalog.json"))!;
+        node["services"]!.AsArray()[0]!["tier"] = JsonNode.Parse(published);
+
+        var result = DocumentReader.Read("catalog", Encoding.UTF8.GetBytes(node.ToJsonString()));
+
+        Assert.True(result.Ok, result.Error);
+        Assert.Equal(expected, ((CatalogDocument)result.Document!).Services[0].Tier);
+    }
+
+    [Fact]
     public void An_unknown_field_is_ignored()
     {
         var node = JsonNode.Parse(Fixture.Bytes("cost-2026-11.json"))!;
