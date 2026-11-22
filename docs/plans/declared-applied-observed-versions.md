@@ -501,7 +501,7 @@ newest modification time.
 **An upload in progress.** While the pipeline uploads, the container no longer matches the last
 deploy event and the new event has not arrived. A difference is shown as **Rolling out** while the
 container's `lastModified` is younger than `Deployments:VersionState:StaticSiteGraceMinutes`
-(default 10) or the applied deploy event is. Unlike a workload, a storage container gives no signal
+(default 2 — decided) or the applied deploy event is. Unlike a workload, a storage container gives no signal
 that tells an upload from a manual change, so a file replaced by hand is also "Rolling out" for
 that period and Drift after it, with `since` at the first sight of the difference. That delay is
 the price of not flagging every deploy.
@@ -1142,9 +1142,8 @@ minutes, never in sync), the agent restarted (repaired by one report).
 4. **History.** Neither observed versions nor differences are kept beyond the present. "How long was
    this service drifting last month" needs a table of closed differences and a retention rule. Not
    planned until asked for.
-5. **Grace period and staleness defaults** (15 minutes for workloads, 10 for static sites, 5 for a
-   silent cluster) are proposals; all are settings and should be tuned on the test environment
-   before the first production cluster.
+5. **Grace period and staleness defaults** (15 minutes for workloads, 5 for a silent cluster) are proposals; both are settings and should be tuned on the test environment
+   before the first production cluster. The grace period for static sites is decided: 2 minutes.
 6. **The applied digest where pipelines do not send `artifacts`.** Two ways to fill it without
    changing every pipeline, neither decided: the portal reads image digests out of the build
    manifest (`ManifestJson`) if the BuildMetadata document turns out to carry them — its content

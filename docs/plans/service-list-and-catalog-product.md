@@ -626,15 +626,20 @@ in the same table (`Release.ExcludedServicesJson`, `WebhookSubscription.FilterSe
 }
 ```
 
-An **open rollback request** holds the move exactly as an Approved or Deploying promotion does. It
+An **open rollback request** holds the move from the moment it is raised (decided 2026-11-22). It
 is a `RollbackRequest` in `RollbackStatus.Pending`, `Approved` or `RollingBack` with a `RollbackItem`
 for the service that is not finished yet (`RollbackItemStatus.Pending` or `RollingBack`). A request
 carries one product for all its services and is not moved (see "What moves"), while the deploy event
 that completes the item would arrive under the new product and find nothing to complete; so the move
 waits until the item is rolled back, failed, skipped or superseded, or the request is rejected or
 cancelled. A request whose item for this service is already finished does not hold, even while its
-other services are still rolling back. `heldBy` lists every promotion and rollback request that
-holds, each with its `kind`, so the dialog can link to it. Keys are read from `Deployments:ApiKeys` and `Integrations:Flux:Clients` by name and scope
+other services are still rolling back. Unlike a promotion, a rollback request holds already while `Pending`: its product
+decides who approves it (the request carries one product and the policy snapshot resolved for it),
+so moving the service under a request that is waiting for approval would leave it approved by the
+old product's approvers for a service that is no longer theirs. The consequence is accepted: a
+forgotten Pending request blocks the move until someone rejects or cancels it, and the preview names
+it, with its age, so the admin knows what to close. `heldBy` lists every promotion and rollback
+request that holds, each with its `kind`, so the dialog can link to it. Keys are read from `Deployments:ApiKeys` and `Integrations:Flux:Clients` by name and scope
 only.
 
 ### Apply
@@ -1262,8 +1267,8 @@ agrees with `GET /api/service-list/export`.
 1. **The control scenario** is settled: Task 21 carries the canonical flow and variants (a)–(d),
    shared with `docs/plans/release-trains.md` (Task 27). Only the two stage-1 extras, S1-A and S1-D,
    are this plan's own proposal; confirm or drop them.
-2. *(Decided 2026-11-22: an open rollback request holds the move, like an Approved or Deploying
-   promotion — see "Preview" and "Apply".)*
+2. *(Decided 2026-11-22: a rollback request holds the move from the moment it is raised — Pending,
+   Approved or RollingBack — see "Preview" and "Apply".)*
 3. **Retiring a previous product as a valid sent product.** Under `enforce` the sent product is
    accepted only when it equals the stored product or is a recorded previous product of that service
    (see "Scope checks"). How long a previous product stays valid after a move — until an admin

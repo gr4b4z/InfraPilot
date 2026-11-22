@@ -263,7 +263,7 @@ New columns on `releases` (`Release.cs`):
 
 | Column | Type | Meaning |
 |---|---|---|
-| `TrainId` | guid, null, FK → `release_trains` `SET NULL` | The train it was created from |
+| `TrainId` | guid, null, FK → `release_trains` `SET NULL` | The train it was created from. `SET NULL` applies to this column only. A filter that names a train elsewhere — a webhook subscription's `FilterTrainsJson`, the `train` of a release-note template (stage 3) — holds the train **id**, is not touched by the delete, matches nothing afterwards and is flagged "train deleted"; a release of a deleted train carries no train id, so such a filter does not receive it either |
 | `TrainName` | string(200), null | Copied, so the release still says where it came from after the train is renamed or deleted |
 | `ScopeKind` | string(20), default `products` | `products` (today) or `services` |
 | `SelectorJson` | text, `"{}"` | What ships, for scope `services` (copied from the train, or the ad hoc list) |
@@ -805,7 +805,7 @@ Mapped in `Program.cs` next to `/api/releases` with `RequireAuthorization(Author
 | `GET /membership?product=` | signed in | `{ services: { "<service>": [{ id, name }] } }` — for the product page and the Services page |
 | `POST /` | admin, or release manager of one of `products` | 201 `Train`; 409 on a duplicate name |
 | `PUT /{id}` | admin, or release manager of the train's products before **and** after. While a freeze names the train, a change to `products`, the selector or the exclusions needs a release manager of **every** product of the old **and** the new set (`IsReleaseManagerOfAllAsync`), because a train freeze resolves membership at gate evaluation: otherwise a manager of one product could release another product's held promotions by removing it, or hold a third product's by adding it. `403` names the freeze | `Train` |
-| `DELETE /{id}` | admin | 204; 409 while a freeze names it. Releases keep `trainName` |
+| `DELETE /{id}` | admin | 204; 409 while a freeze names it. Releases keep `trainName`. Filters that name the train by id (stage 3) stay, match nothing and are flagged "train deleted"; the response lists them as `orphanedFilters` so the admin sees what to fix |
 
 ```jsonc
 // POST /api/release-trains
@@ -1453,14 +1453,16 @@ On a product's page you can filter its services by **Group**, **Train** and **Ty
 
 ## Open points
 
-1. **Release-note channels for the extension services.** Release notes are per product and carry no
-   service, so after the move a channel that listened to `mkp-extensions` either receives all of
-   `mkp`'s notes or none. Stage 3 (`docs/plans/release-notes-for-a-release.md`, "Filter changes")
-   gives the Extensions train its own notes: a release note of a Release carries its train, and a
-   subscription with the **Trains** filter (`FilterTrainsJson`) receives only that train's. It does
-   not narrow product notes, which carry neither a service nor a train and stay per product. Until
-   stage 3 ships: accept whole-product notes, or leave those channels silent? Per channel, in the
-   script's mapping file.
+1. *(Decided 2026-11-22.)* **Release-note channels for the extension services.** The extension
+   services move back into `mkp` in stage 2 (step 3), and until stage 3 ships their release notes
+   are **shared with the core services' notes**: there is no interim group filter, and no channel is
+   switched off. Release notes are per product and carry no service, so a channel that listened to
+   `mkp-extensions` listens to `mkp` after the move (the script's mapping file rewrites the product
+   filter). **Rollout note:** for that period the recipients of the extension notes also receive
+   core changes; tell them before the cutover. Stage 3
+   (`docs/plans/release-notes-for-a-release.md`, "Filter changes") ends it: a release note of a
+   Release carries its train, and a subscription with the **Trains** filter (`FilterTrainsJson`,
+   holding train ids) receives only that train's.
 2. **The control scenario.** The flow and variants (a)–(d) in Task 27 are the canonical ones and are
    settled. The extension-service check and S2-1..S2-4 are derived here; the owner should confirm
    them before Task 18.

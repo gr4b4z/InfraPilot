@@ -41,7 +41,9 @@ gates nothing), `notes/release-notes.md`, `notes/releases-api.md`, `notes/analyt
   schema change ships a Postgres and a SQL Server migration.
 - Stage-3 behaviour is behind stage 2's feature flag `features.releaseTrains` and
   `features.releaseNotes`, checked on the server for the **new** request shapes only. Team filters
-  additionally need `features.serviceInventory`.
+  additionally need `features.serviceInventory` and nothing else — decided 2026-11-22: not
+  `features.serviceList`. The stored service list they read is kept current whatever that flag says
+  (stage 1, "Feature flag and switches"), so the team of a service is there with the flag off.
 - Public repository: fixtures and examples use the placeholder names only (`mkp`, `mkp-extensions`,
   `mkp-extension-adobe`, `mkp-spotlight`, org `acmetrix`).
 - Names of stage-1 and stage-2 tables, columns and flags are the ones those plans introduce. Where
@@ -67,7 +69,7 @@ Numbered locally (1–12); the specification's decisions are cited as D-n.
 | 6 | Release lifecycle events | `release.started` and `release.completed`. Cancel, reopen and edits stay audit-only. |
 | 7 | Filter dimensions of release events | Products (any of the release's), environment (its production environment), train (a new subscription dimension). |
 | 8 | Who may generate a release note | Whoever may generate a product note today (any signed-in caller). It is a read of recorded facts. |
-| 9 | Team in analytics | The service's team now, from the stored service list. Offered only while the service inventory is enabled. |
+| 9 | Team in analytics | The service's team now, from the stored service list. Offered while `features.serviceInventory` is on; `features.serviceList` is not required. |
 | 10 | Train in analytics | The services in the train's scope now (D-14). |
 | 11 | Product-at-the-time | A parameter, `productBasis=current\|at-event`, default `current`. It changes which product column the filter and the product grouping read; it never splits a service into two series. |
 | 12 | The two change failure rates | The attempt-based figure of the frequency endpoint is renamed **deploy failure rate**, the name the delivery report already uses for the same formula. **Change failure rate** means only the incident-based DORA figure. |
@@ -193,12 +195,14 @@ A note is a snapshot. Generating again makes a new row; the release page links t
 with `release-notes.template.default` as the fallback. A release note resolves:
 
 ```
-release-notes.template.@release.{train}   ← this train's releases
+release-notes.template.@release.{trainId} ← this train's releases (the train's id, not its name)
 release-notes.template.@release           ← every release
 (built-in DefaultReleaseTemplate)         ← fallback
 ```
 
-`@` cannot occur in a product name (D-24), so the scope cannot collide with a product's.
+`@` cannot occur in a product name (D-24), so the scope cannot collide with a product's. The train
+segment is the train's id: a rename keeps the template; after the train is deleted the template row
+stays, is used by nothing, and is listed as **train deleted** in the settings editor until removed.
 Product templates are skipped on purpose: they are written for one product, and a release note that
 silently changed its look with the number of products would be hard to explain. The settings editor
 pre-fills an empty release scope with the built-in release template.
@@ -216,7 +220,7 @@ one block per product when there are several, with the per-service lines of toda
 | `GET /api/release-notes/preview/raw`, `/preview` | Accept `releaseId` instead of `product`, `environment`, `from`, `to`. Both shapes at once: `400`. |
 | `POST /api/release-notes/generate` | Body accepts `releaseId` (+ optional `renderedContent`). `product` and `environment` are required only without it. |
 | `GET /api/release-notes` | New filter `releaseId`; `product` also finds release notes covering it. |
-| `GET`/`PUT /api/release-notes/template` | New query/body field `scope=release` with optional `train`. |
+| `GET`/`PUT /api/release-notes/template` | New query/body field `scope=release` with optional `train` — the train **id**; an unknown id is `400` on `PUT`. `GET` of the list marks rows whose train no longer exists `trainDeleted: true`. |
 
 `releaseId` of a cancelled release: `400`. Unknown: `404`. With `features.releaseNotes` or
 `features.releaseTrains` off, a request carrying `releaseId` answers `400` `feature_disabled`, as stage 2 does for its request fields; requests without it are not checked, as today.
@@ -248,8 +252,12 @@ template (`NotificationTemplates`, "Release notes — {{data.product}} / {{data.
 rendering. A consumer that wants only one kind tells them apart by `release`. `release.version` is
 null for an ad hoc release without a line.
 
-This is what answers open point 1 of `docs/plans/release-trains.md` (release-note channels of the
-extension services): a channel whose subscription sets the **Trains** filter to the Extensions train
+This is what ends the interim of `docs/plans/release-trains.md` open point 1 (decided 2026-11-22).
+The extension services move back into `mkp` in stage 2; from then until this stage ships their
+release notes are shared with the core services' — a channel that listened to `mkp-extensions`
+listens to `mkp` and **also receives core changes**, with no interim group filter. That is a rollout
+note for stage 2's cutover and for this stage's release: tell those recipients before the cutover,
+and switch their subscriptions to the **Trains** filter when this stage ships. From then on a channel whose subscription sets the **Trains** filter to the Extensions train
 receives that train's release notes and not the Core train's. Product notes carry no train and no
 service, so this stage does not route them per service or per train; such a channel still receives
 its product's product notes.
@@ -270,7 +278,8 @@ Payload: `id`, `version`, `title`, `train` (id and name, or null), `products`, `
 `shipped` (`product`, `service`, `version`), `notShipped` (`product`, `service`) and their counts. The
 change sets are not in the payload; a consumer that wants them reads the release note.
 
-Filters: products (any of), environment (production), train. No service: a subscription's service
+Filters: products (any of), environment (production), train (by id; an event without a train id
+does not pass a subscription that names trains). No service: a subscription's service
 filter does not apply (the existing rule for a dimension the event does not carry).
 
 `ReleaseService` already publishes the realtime `release` entity change itself (`PublishAsync`);
@@ -281,8 +290,21 @@ refresh twice.
 
 - `WebhookEventFilters` gains `Products` (a set; matches when the subscription's product filter is
   empty or names any of them) and `Train`, both after `Service` so positional call sites compile.
-- `WebhookSubscription` gains `FilterTrainsJson` (`"[]"` = any), tested only when the event carries a
-  train — so no existing subscription changes what it receives. `WebhookSubscriptionFilters.Matches`
+- `WebhookSubscription` gains `FilterTrainsJson` (`"[]"` = any) — a list of train **ids**, never
+  names (decided 2026-11-22). It is tested only for event kinds that have a train dimension
+  (`release.started`, `release.completed`, the release note of a Release) — so no existing
+  subscription changes what it receives. For those kinds a non-empty filter matches only an event
+  whose train id is in it: an event without a train (an ad hoc release, a release whose train was
+  deleted) does **not** pass a subscription that names trains.
+- **Train filters hold the id everywhere**: `FilterTrainsJson`, the `?train=` parameters (releases,
+  analytics, templates) and the template key. Renaming a train changes nothing. When a train is
+  deleted the filter **stays**: it matches nothing, is never rewritten, and can never start matching
+  another train (ids are not reused; a new train with the old name is a different id). It is flagged
+  **train deleted** on the Webhooks screen and on Settings → Release Notes Template, and in
+  diagnostics (`DiagnosticsService`, which calls the same matcher: "this subscription names a deleted
+  train and receives no release events"), so an admin fixes it. This is consistent with stage 2's
+  `Release.TrainId` `SET NULL`: that column loses the id, the release keeps `TrainName` for display,
+  and its events carry `train: { id: null, name }` — which no train filter matches. `WebhookSubscriptionFilters.Matches`
   is the one place that changes; it is the stage-2 version (service patterns and
   `FilterExcludedServicesJson` narrow a mandatory product filter). Stage 2 removes the copy in
   `DiagnosticsService`, which calls this matcher from then on, so there is no second place to change.
@@ -306,8 +328,9 @@ block says so.
 `productBasis=at-event` makes the product filter and `groupBy=product` read the never-rewritten
 column `DeployEvent.ProductAtEvent` instead of `Product`. It applies to figures counted from deploy
 events. Stage 1 also puts `ProductAtEvent` on promotion candidates and incidents (not on builds);
-this plan still counts figures from promotion candidates (queue, approval and deploy latency) and
-incidents under the current product (see Open points); the `definition` names which basis each used.
+figures from promotion candidates (queue, approval and deploy latency) and incidents are counted
+by the **current product** only — decided 2026-11-22: only deploy events get both views. The
+`definition` names which basis each figure used.
 
 ### Queries that change
 
@@ -361,8 +384,8 @@ field is a separate change after the warning period.
 
 `get_deployment_frequency`: `train`, `team`, `productBasis`, `groupBy` with `team` and `train`;
 description says "deploy failure rate". `get_lead_time`, `get_promotion_queue`: `train`, `team`.
-`get_delivery_metrics`: `trains`, `teams`, `productBasis`. Train names resolve as in the stage-2
-release tools; a team that cannot be resolved is an `McpException` naming the known teams.
+`get_delivery_metrics`: `trains`, `teams`, `productBasis`. The REST parameters take train ids;
+the MCP tools also accept a name and resolve it to the id as the stage-2 release tools do; a team that cannot be resolved is an `McpException` naming the known teams.
 
 ## Screens
 
@@ -374,9 +397,12 @@ release tools; a team that cannot be resolved is an `McpException` naming the kn
   {product}" links in `LinksSection` stay. Shown when `features.releaseNotes` is on.
 - **Release Notes** `app/release-notes/ReleaseNotesPage.tsx`: a product's list also shows release
   notes that cover it, marked with the release's title and linking to the route above.
-- **Settings → Release Notes Template**: the scope picker gains **Releases**, with an optional train.
+- **Settings → Release Notes Template**: the scope picker gains **Releases**, with an optional train
+  (picked by name, stored by id); a template of a deleted train is listed with **train deleted**.
 - **Webhooks**: the two new events in the event list (`webhookTargets.ts`) with default message
-  templates; a **Trains** filter next to products, services and environments.
+  templates; a **Trains** filter next to products, services and environments (picked by name,
+  stored by id). A subscription that names a deleted train shows **train deleted** on that chip and
+  a warning that it receives no release events.
 - **Analytics (E-18)** `app/analytics/AnalyticsPage.tsx`, `app/delivery/DeliveryMetricsPage.tsx`:
   **Train** and **Team** filters, kept in the URL (`train`, `team`; `trains`, `teams` on the report);
   **Team** is absent while the inventory is off. The report gains a **By team** and a **By train**
@@ -403,7 +429,8 @@ Each task: write the failing tests, implement, run both test projects.
 
 - [ ] `release_notes.ReleaseId` (nullable, indexed); `release_note_products` filled from existing
       rows by an `INSERT … SELECT Id, Product` in the migration.
-- [ ] `webhook_subscriptions.FilterTrainsJson` with default `"[]"`.
+- [ ] `webhook_subscriptions.FilterTrainsJson` with default `"[]"`; it holds train ids and has no
+      foreign key, so deleting a train leaves it as it is.
 - [ ] The index on `deploy_events.ProductAtEvent` that stage 1 leaves to this stage (with Task 7).
 
 Acceptance: both migration sets apply to a database holding notes; every existing note has exactly
@@ -436,7 +463,9 @@ Acceptance: review focus 2.
       `400`; nothing shipped → `no_services`; `renderedContent` stored verbatim; note stored with
       `ReleaseId`, `Product = ""` and one product row per product; list by `product` finds it, list by
       `releaseId` finds it; a release note whose products are all hidden is not listed, one with a
-      visible product is; flag off → `404` for `releaseId` requests only; template chain train →
+      visible product is; flag off → `404` for `releaseId` requests only; the template key holds the train id (a
+      renamed train keeps its template; a deleted train's template is listed `trainDeleted`);
+      template chain train →
       release → built-in; a saved product template is not used; an existing custom template renders
       against the release context without error.
 - [ ] Regression tests: a product `/generate` after a release note for the same product still takes
@@ -454,7 +483,12 @@ gains the new fields); tests in `Features/Webhooks/WebhookFilterMatchingTests.cs
 
 - [ ] Tests: product filter `[mkp]` against `Products [mkp, mkp-extensions]` → one delivery; filter
       `[mkp, mkp-extensions]` → one delivery; filter `[acx]` → none; empty filter → one; train filter
-      against an event without a train → passes; against another train → blocked; a product note's
+      against an event kind without a train dimension (a deploy event) → passes; against a release
+      event of another train → blocked; against a release event with no train (ad hoc, or its train
+      deleted) → blocked; the train renamed → still delivered; the train deleted → no delivery, the
+      filter is unchanged, `GetFilterOptions` and the subscription read mark it `trainDeleted`, and
+      diagnostics say why nothing is delivered; a new train with the deleted one's name → not
+      matched; a product note's
       payload has every field it had, plus `products` and `release: null`.
 
 Acceptance: review focus 3.
@@ -495,7 +529,9 @@ to service names); tests in `tests/Platform.Integration.Tests/AnalyticsEndpoints
 `DeliveryMetricsEndpointsTests.cs`.
 
 - [ ] Tests: `team=` counts only that team's services, on frequency, lead time, queue and delivery;
-      `train=` likewise; inventory off + `team` → `400 team_unavailable`; `groupBy=team` puts
+      `train=` likewise; inventory off + `team` → `400 team_unavailable`; `features.serviceList` off
+      with the inventory on → the team filter works; promotion-queue and incident figures of a moved
+      service are under its current product with either `productBasis`; `groupBy=team` puts
       services without a team under an empty key; a moved service: `productBasis=at-event` books its
       earlier deploys under the old product, `current` under the new, `groupBy=service` gives one
       series under both; stale-service zero series appear once per service; frequency returns
@@ -629,7 +665,4 @@ passes unchanged; this stage adds no variant of its own.
   leaves a train. Keeping history is not planned.
 - Stage 2 settles that a service may be in the scope of several trains at once
   (`docs/plans/release-trains.md`, "Membership"), so the non-additive note on `groupBy=train` stays.
-- Stage 1 stores `ProductAtEvent` on promotion candidates and incidents too. Whether
-  `productBasis=at-event` should also apply to the figures counted from them is not decided; this
-  plan leaves them on the current product.
 - How long `changeFailureRate` stays on the frequency response before it is removed.

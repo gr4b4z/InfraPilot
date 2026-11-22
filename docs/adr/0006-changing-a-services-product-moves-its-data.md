@@ -33,7 +33,9 @@ of the event** in a column a move never rewrites. The plan is
   Approved or Rolling back, with the service's own item not finished
   (`src/Platform.Api/Features/Rollbacks/Models/RollbackRequest.cs`, `RollbackItem.cs`). A rollback
   request stays under its product (below), and the deploy event that completes its item must find
-  it there. The move waits until the rollback finishes or is rejected or cancelled.
+  it there. It holds from the moment it is raised, not only once approved, because the product
+  decides who approves the rollback. The move waits until the rollback finishes or is rejected or
+  cancelled; a forgotten Pending request therefore blocks the move, and the preview names it.
 - Today's remap moves deploy events and their work items, builds, promotion candidates and their
   work items, work-item sign-offs and comments, and deleted-service tombstones. The move must
   **additionally cover five kinds of service data it skips today**: retired versions, unfinished
