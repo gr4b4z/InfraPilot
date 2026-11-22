@@ -1146,17 +1146,24 @@ The pickers (E-6) get no entry of their own; the first entry covers the settings
 
 `tests/Platform.Integration.Tests/ControlScenarioTests.cs`, written **before** Task 2 against the
 current code and kept green through every step. It seeds the production policy shape for `mkp` and
-runs, through the public API only:
+runs, through the public API only, the **canonical control scenario** of this work. The flow and the
+four variants below are the same ones `docs/plans/release-trains.md` (Task 27) runs; the flow must
+pass unchanged after every step of every stage:
 
-1. a build of `mkp-spotlight` on `main` is registered → the build→dev candidate is auto-approved;
-2. the deploy to dev is reported → the dev→test candidate is auto-approved;
-3. a build from `refs/heads/release/5.4` → a build→staging candidate with steps **QA Review** and
-   **Release Approval**, work items tracked and not required;
-4. both steps approved, the deploy to staging reported → a staging→prod candidate that requires
-   every work item decided;
-5. work items signed off, **Mass approve** over the prod candidates of the product;
-6. the deploy to prod is reported → the promotion closes (`Deployed`);
-7. the release for line `5.4` of `mkp` shows the service shipped and is completed.
+1. a build from the main branch creates a promotion build→dev and then dev→test; both approve
+   automatically, no work-item tracking (here: `mkp-spotlight` on `main`; the dev→test candidate
+   opens when the deploy to dev is reported);
+2. a build from a release branch (`refs/heads/release/5.4`) creates a promotion build→staging with
+   steps **QA Review** and **Release Approval**; work items are tracked, not required;
+3. the Release page shows which services have a staging build and a signed QA gate;
+4. the Release gathers the staging→prod promotions of the services of its products minus
+   exclusions — the composition is unchanged and a new service appears by itself;
+5. staging→prod requires every work item decided; sign-off is counted per target environment;
+   **Mass approve** signs promotions in bulk;
+6. the approval webhook triggers the deploy and the deploy event closes the promotion (`Deployed`) —
+   the same receivers as today;
+7. completing the Release: the recorded state agrees with the live computed state (the release for
+   line `5.4` of `mkp`; until stage 2 writes a completion record, the live state is all there is).
 
 `ControlScenario_PassesUnchanged` asserts statuses, the webhook deliveries queued (`promotion.approved`
 among them) with the `staging` environment key, and response status codes
