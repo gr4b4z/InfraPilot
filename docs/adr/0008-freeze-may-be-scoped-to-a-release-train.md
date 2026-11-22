@@ -81,7 +81,11 @@ others are lifted.
   keep a product filter under the governance rules; how a train freeze that spans products reaches
   them is in the plan.
 - Settings → Freeze gets the train in its scope select and is reachable by release managers. A
-  release manager freezes what they are release manager of, by the rule that already decides who runs
-  a release (`ReleaseService.CanManageAsync`).
+  release manager may set or lift a product or service freeze for a product they are release manager
+  of, and a train freeze only when they are release manager of **every** product the train covers.
+  The rule that decides who runs a release (`ReleaseService.CanManageAsync`) is satisfied by any one
+  of the release's products; that is enough for a Release, which holds nothing, and not enough for a
+  freeze, which holds another product's promotions. The freeze check therefore asks per product.
+  Admins may always, and set and lift stay symmetric.
 - A service-level freeze follows its service when the service's product changes (ADR-0006).
 - `GLOSSARY.md`: the Promotion Freeze entry and its relationships name the train scope.

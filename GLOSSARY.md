@@ -83,9 +83,11 @@ _Avoid_: Domain, sub-product, tag, component group
 ### Releases
 
 **Release**:
-One run of shipping a version line (`major.minor`) to production: it groups the promotions of its
-services, shows their progress on a checklist and, once completed, records what shipped. It holds no
-promotion; only an Approval Gate or a Promotion Freeze does.
+One run of shipping to production: it groups the promotions of its services, shows their progress on
+a checklist and, once completed, records what shipped. Today a Release always ships a version line
+(`major.minor`) for its products; ADR-0007 adds releases created from a Release Train and ad hoc
+releases, for which the version line is optional (not built yet). It holds no promotion; only an
+Approval Gate or a Promotion Freeze does.
 _Avoid_: Release train (for one run), grouped promotion, deployment, rollout
 
 **Release Train**:
@@ -100,9 +102,10 @@ _Avoid_: Release (for the settings), release line, pipeline, schedule
 The portal's read-only copy of the services, teams, products and shared resources published by the
 service catalog, with their observed state and attributed cost. Rebuilt at any time from the published
 artifacts; never edited in the portal. A portal service belongs to the inventory entry whose `id` is its
-service name. ADR-0005 adds a stored service list to it, which will also hold what the catalog does not
-know yet — services labelled "not in catalog", and products and teams an admin added locally — marked
-as the portal's own.
+service name. ADR-0005 adds a stored service list next to that copy (not built yet). What comes from
+the catalog stays read-only there too. The list also holds the portal's own entries — services
+labelled "not in catalog", and products and teams an admin added locally — which an admin can edit,
+which are marked as the portal's own, and which are never part of the catalog copy.
 _Avoid_: Service catalog (the request catalog's former name), service registry, CMDB
 
 ## Relationships

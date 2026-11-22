@@ -29,8 +29,10 @@ of the two that has dates, progress and a record. The plan is `docs/plans/releas
   *services selected by list, service group or name pattern with `*`*. With the first form a new
   service of a product joins the next release without anyone adding it, as today.
 - A release **created from a train copies its settings**. Editing the train afterwards changes the
-  next release, not the open ones. A release keeps today's scope rule and today's three fields
-  (version line, products, date); choosing a train fills them in.
+  next release, not the open ones. The copy includes the scope: a release stores its own products and
+  exclusions, or its own service selection (list, group or pattern), so it never has to go back to
+  the train. For a product-scoped train that is today's shape — today's scope rule and today's three
+  fields (version line, products, date) — and choosing a train fills them in.
 - An **ad hoc release** has no train: hand-picked services and a time window, with the version line
   optional. It covers a one-off coordinated change that no cadence owns.
 - **Releases may overlap**, and a service may be in several open releases. A deploy is attributed to
