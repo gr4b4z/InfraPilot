@@ -119,8 +119,10 @@ of build metadata: the portal says "different", never "newer".
 2. **No history.** Each report replaces the cluster's rows. The age of a difference is kept in a
    second small table, one row per service × environment, also current only. Reasons: the questions
    this feature answers are about now; history of versions already exists as deploy events; a
-   minute-by-minute log of every workload is 1,440 reports a day per cluster for no reader. A trend
-   view would need its own table and retention rule (Open point 4).
+   minute-by-minute log of every workload is 1,440 reports a day per cluster for no reader. Decided
+   2026-11-22: the portal keeps the current state only. If a record is wanted later, an audit entry
+   per drift (written by `VersionStateEvaluator` when a difference begins and when it ends, with the
+   versions it already holds) can be added without changing any table planned here.
 3. **A row is written only when it changes.** A report that matches the stored rows updates one row
    — the cluster's last-report time — not one per workload.
 4. **`since` is the portal's**, stored when a difference first appears and cleared when it ends. It
@@ -446,7 +448,7 @@ an event without it is today's event.
 What the portal already holds does not give the image digest (verified in code): the build
 registry's `artifactDigest` is the digest of the build-metadata manifest artifact in the registry,
 and `ManifestJson` is stored verbatim and not interpreted. Flux notifications carry no digest
-either. So for an event without `artifacts` the applied digest is **not known** (Open point 6 lists
+either. So for an event without `artifacts` the applied digest is **not known** (Open point 4 lists
 the two ways to fill the gap without touching every pipeline).
 
 **Rule.** After the version comparison says the versions are equal:
@@ -664,12 +666,60 @@ comparison state: they explain it in the panel.
 | Notification (`HelmRelease` unless said) | Today | Contributes |
 |---|---|---|
 | `InstallSucceeded`, `UpgradeSucceeded`, `InstallFailed`, `UpgradeFailed`, `RollbackFailed`, `UninstallFailed`, `UninstallSucceeded` | deploy event | **applied** — unchanged |
-| `RollbackSucceeded` (Helm remediation put the previous revision back after a failed upgrade) | dropped | a signal: "Flux rolled the release back". Applied is already right (the failed upgrade applied nothing); the agent's observed version confirms it |
+| `RollbackSucceeded` (Flux put the previous release back after a failed upgrade) | dropped | **applied** — a deploy event of the version rolled back to, marked `isRollback` (decided 2026-11-22; see below) |
 | `DriftDetected` | dropped | **observed-side** signal: "Flux detected a change in the cluster at <time>" and, with correction on, that it restored it. Shown in the panel; it is about manifests, not versions, so it sets no Drift marker by itself |
 | `Progressing`, `DependencyNotReady`, `ArtifactFailed`, reconciliation failures; `Kustomization` `ReconciliationFailed` / `HealthCheckFailed` | dropped | explains **Rollout pending**: "Flux reports: dependency not ready since <time>" |
 | reconciliation succeeded (`HelmRelease` or `Kustomization`) | dropped | clears the signal above; "Flux last reconciled <time>" |
 | suspension | not sent as a notification, as far as the Flux documentation says (Open point 2) | **suspended** — explains a pending rollout that will not move by itself. Until verified, taken from the agent: with `fluxReleases: true` it also lists `helmreleases.helm.toolkit.fluxcd.io` (`get`/`list`) and sends `suspended` and the ready condition per release in the same report |
 | test results, anything else | dropped | still dropped |
+
+**A rollback Flux performs is a deploy event.** Without it the portal's history ends on the failed
+upgrade and says nothing about what Flux did next; with it, history shows that the environment went
+back, and applied names an event that describes what runs.
+
+- **Mapper.** `FluxEventMapper.StatusByReason` gains `RollbackSucceeded` → `succeeded`, and the
+  mapped event is forced to `isRollback: true`.
+- **Which version.** The version rolled back to is the one the environment ran before the failed
+  upgrade: the cell's newest `succeeded` event older than the notification's timestamp (not older
+  than a `removed`). It is taken from the portal's history, not from the notification: the
+  `release-version` annotation `FluxEventMapper` reads names what the repository declares — the
+  version that just failed — and what `revision` carries on a rollback is to be confirmed on a real
+  event in Task 8 (when it reliably names the restored version it is used and must agree). With no
+  succeeded event on record the portal cannot name the version: the notification is kept as a signal
+  and no deploy event is created.
+- **`previousVersion`** is derived by ingest as always — the newest event of the cell, which is the
+  failed upgrade. The event reads "rolled back from 1.4.0 to 1.3.2".
+- **References and metadata.** `FluxIngestService.IngestAsync` skips the candidate lookup for a
+  rollback (a rollback delivers no promotion) and goes to its rollback path. `FindRolledBackAsync`
+  counts only succeeded forward deploys, and the failed upgrade is not one, so it usually finds
+  nothing: the event is then stored with `isRollback: true`, no references, and
+  `metadata.rolledBackVersions` holding the failed version. `metadata.flux.reason` is
+  `RollbackSucceeded`.
+- **Idempotency.** The natural key ingest already uses — product, service, environment, version,
+  source, `deployedAt` — with `deployedAt` the notification's timestamp: a retried notification is a
+  replay (`200`, `replayed: true`).
+- **History.** It appears in the service's history and on the matrix like any rollback today: the
+  rollback marker, source `helm-deploy`, run "Flux <cluster>", the Flux message as its log.
+- **What it does to promotions, rollbacks and analytics** (existing rules, verified in code; none
+  changes):
+  - `PromotionIngestHook.MatchCompletionAsync` closes candidates of the *landed* version that are
+    not yet Deployed or Superseded. The promotion that first delivered that version is already
+    Deployed, so nothing closes. A second, still open candidate of the same version into the same
+    environment would be closed as "deployed outside this promotion" — correct, the version is live.
+  - The promotion of the version that **failed** matches nothing (other version) and stays
+    Approved or Deploying, "open for the next attempt" as today. `SupersedeOvertakenByDeployAsync`
+    supersedes only promotions the landing overtook with a newer version; a rollback lands an older
+    one, so it must leave that promotion alone — a test pins this. The cell then honestly shows
+    **Rollout pending**: the failed version is still declared, the older one is applied, and the
+    approved promotion is linked.
+  - `RollbackService.MatchCompletionAsync` completes an open rollback item whose target is the
+    restored version; `SupersedeOvertakenAsync` supersedes an approved rollback request to a
+    different version, as any succeeded deploy of another version does.
+  - Analytics: `DeployEventRows.Classify` books it as a rollback, not as a deployment; the failed
+    upgrade stays counted as a failed deploy.
+- **Drift.** Applied is the restored version either way (a failed upgrade applied nothing); with the
+  event, the moment of the rollback restarts the rollout grace, so the pods going back do not show
+  as Drift.
 
 What Flux actually emits for each row depends on the Flux version and on the `Alert`'s
 `eventSources` and severity; the mapper matches on `kind` and `reason`, takes anything it does not
@@ -778,7 +828,14 @@ and which are mapped, static sites, unmapped namespaces, workloads and sites, re
 
 A deliverable of this plan, kept and versioned with the portal.
 
-- **Where: this repository** — the same proposal the service catalog records on its side.
+- **Deployed by Flux from the pull-model release repository** (decided 2026-11-22). The agent is a
+  platform component: `ops-release` holds one `HelmRelease` of the chart per cluster, with the
+  cluster's values (name, namespace selector, static sites) and a reference to the key's `Secret`,
+  and Flux installs and upgrades it like any other component there. A new agent version is a
+  version bump in that repository. **Rollout caveat:** a cluster without Flux gets no agent this
+  way — it needs Flux first, or another route (the same chart installed by that cluster's own
+  pipeline); until then its environments are "not compared".
+- **Where the code lives: this repository** (decided; the service catalog records the same).
   `src/Platform.ClusterReporter` (a .NET console project, added to `InfraPilot.slnx`),
   tests in `tests/Platform.ClusterReporter.Tests`, the chart in `infra/cluster-reporter/chart`, its
   own `Dockerfile` beside the project. The repository has no `agents/` directory; projects live
@@ -978,12 +1035,20 @@ unmapped namespaces and unlabelled workloads; remove a cluster.
 
 **Files:** new `Features/Integrations/Flux/FluxSignalMapper.cs`, `FluxReleaseSignal.cs` (entity,
 migration `AddFluxReleaseSignals` in both sets), `FluxEndpoints.cs` (the `Ignored` branch asks the
-signal mapper), `FluxEventMapper.cs` (unchanged rules; `Ignored` carries kind and reason).
+signal mapper), `FluxEventMapper.cs` (`RollbackSucceeded`; `Ignored` carries kind and reason),
+`FluxIngestService.cs` (the rollback path: version from history, no candidate lookup).
 
 **Tests** (`FluxSignalMapperTests`, `FluxIntegrationTests.cs`): each row of the Flux table; an
 install outcome still becomes a deploy event and no signal; an unknown reason is dropped; a signal
 is `202` and creates no deploy event; an unchanged signal writes nothing; a succeeded reconciliation
-clears a failure; product scope of the client applies as for install events.
+clears a failure; product scope of the client applies as for install events. Rollback: a
+`RollbackSucceeded` after a failed upgrade stores a succeeded deploy event of the previously applied
+version with `isRollback: true`, `previousVersion` the failed version and
+`metadata.rolledBackVersions`; the same notification again is a replay; with no succeeded event on
+record no deploy event is created and the signal is kept; the Approved promotion of the failed
+version stays Approved and is not superseded; the Deployed promotion of the restored version is
+untouched; an open rollback item targeting the restored version is completed; analytics count it as
+a rollback; the comparer shows no Drift and shows Rollout pending for the failed version.
 
 ### Task 9: The agent — project and tests
 
@@ -997,8 +1062,9 @@ as the reference for pipelines),
 
 **Files:** new `infra/cluster-reporter/chart` (`CronJob`, `ServiceAccount`, `ClusterRole`, binding,
 values and schema), `.github/workflows/ci.yml` (build, test, `helm template`),
-`.github/workflows/release-image.yml` (the agent's image). **Accept:** installed on the test
-cluster with a scoped key, the cluster appears on **Settings → Environments** within a minute; the
+`.github/workflows/release-image.yml` (the agent's image). The `HelmRelease` for each cluster is added in `ops-release`
+(outside this repository; listed in the guide). **Accept:** installed on the test
+cluster through Flux with a scoped key, the cluster appears on **Settings → Environments** within a minute; the
 rendered `ClusterRole` holds no verb but `get` and `list` and no `secrets`; a configured storage
 container appears as a static site.
 
@@ -1051,8 +1117,10 @@ container appears as a static site.
 - `docs/plans/service-list-and-catalog-product.md` E-3: the key view shows `AllowedClusters`.
 
 With step 2: `notes/service-inventory-api.md` (the `versions.declared` list is read from the status
-feed). With step 3: `notes/integrations/flux.md` (the signals, the `Alert` change, what is still
-dropped).
+feed). With step 3: `notes/integrations/flux.md` — the Mapping table's `status` row gains
+`RollbackSucceeded` → `succeeded` with `isRollback: true`; a "Rollbacks performed by Flux" section
+(which version, `previousVersion`, what happens to promotions); the signals; the `Alert` change;
+what is still dropped.
 
 ### Task 14: Rollout pending (step 2)
 
@@ -1136,19 +1204,13 @@ minutes, never in sync), the agent restarted (repaired by one report).
    be sent as a notification at all. Task 8 starts by recording what a real cluster sends. If
    suspension is not sent, it comes from the agent (`fluxReleases: true`), which costs `get`/`list`
    on `helmreleases` — to be accepted by the clusters' owners.
-3. **`RollbackSucceeded` as a deploy event.** Kept as a signal here. Turning it into a deploy event
-   (the release is back on the previous version) would change deploy history and analytics for
-   pull-model services; not decided.
-4. **History.** Neither observed versions nor differences are kept beyond the present. "How long was
-   this service drifting last month" needs a table of closed differences and a retention rule. Not
-   planned until asked for.
-5. **Grace period and staleness defaults** (15 minutes for workloads, 5 for a silent cluster) are proposals; both are settings and should be tuned on the test environment
+3. **Grace period and staleness defaults** (15 minutes for workloads, 5 for a silent cluster) are proposals; both are settings and should be tuned on the test environment
    before the first production cluster. The grace period for static sites is decided: 2 minutes.
-6. **The applied digest where pipelines do not send `artifacts`.** Two ways to fill it without
+4. **The applied digest where pipelines do not send `artifacts`.** Two ways to fill it without
    changing every pipeline, neither decided: the portal reads image digests out of the build
    manifest (`ManifestJson`) if the BuildMetadata document turns out to carry them — its content
    was not verified for this plan; or, for the pull model, the Flux notification is extended with a
    digest annotation. Until then such services are compared by version only.
-7. **Which release repository is the pull-model one.** The rule for a component in both
+5. **Which release repository is the pull-model one.** The rule for a component in both
    repositories needs `Deployments:VersionState:PullModelSources`. If the catalog later publishes
    the deployment model per source, the setting goes away.

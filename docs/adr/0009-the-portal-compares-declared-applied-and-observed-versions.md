@@ -109,7 +109,13 @@ What changes:
   place are kept and listed, not dropped.
 - The portal ships and versions the agent: a job with read-only access to workloads, pods (for the
   running image digest) and namespaces, and a blob data reader role on the storage accounts of the
-  static sites; its manifest and its tests live in this repository.
+  static sites; its manifest and its tests live in this repository. It is deployed to the clusters as a platform
+  component by the pull-model release repository with Flux; a cluster without Flux needs Flux first
+  or another route.
+- A rollback that Flux performs and reports as succeeded is recorded as a deploy event of the
+  version rolled back to, marked as a rollback, so the applied version names what runs.
+- No history of differences is kept. An audit entry per drift can be added later without changing
+  the stored data.
 - Deploy events gain an optional list of what was deployed by content: image digests and static-site
   fingerprints. The build registry's `artifactDigest` is the digest of the build manifest artifact,
   not of an image, so it cannot stand in for it.

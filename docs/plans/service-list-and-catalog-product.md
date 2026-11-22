@@ -210,8 +210,8 @@ erDiagram
         datetime Since
     }
     product_list {
-        string Id PK
-        string Name
+        string Id PK "the short prefix; the one name used everywhere"
+        string Name "display name: catalog `name`, or set by an admin on a local row; '' when none"
         string Source "catalog | local | reported"
         string Lifecycle
         string BusinessOwner
@@ -421,6 +421,37 @@ The brief counts six sources; these are the six families, with every caller foun
 
 A filter picker keeps the rule the pages have today: the current selection stays listed even when
 the list no longer has it.
+
+## Product id and display name
+
+Decided 2026-11-22. A product's **id** is its short prefix (`mkp`) and is the one name used
+everywhere a system needs it: deploy, build and promotion requests, URLs, filters, API parameters,
+key scopes, webhook filters, tags. The portal shows a **display name** next to it.
+
+- **Storage.** `product_list.Name` is the display name (`nvarchar(200)`, `""` when none).
+- **Catalog products**: `ServiceListCatalogSync.ApplyAsync` copies the catalog product's `name`
+  (`CatalogProduct.Name`) on every refresh. Read-only in the portal: `PUT /api/products/{id}` on a
+  catalog entry stays `409 not_local`.
+- **Local products**: an admin sets and edits it (`POST`/`PUT /api/products`, body `{ id, name }`;
+  `name` optional, trimmed, at most 200 characters). When the catalog publishes an entry with the
+  same id, its name replaces the local one, like every other field.
+- **Reported products** (known only from pipeline reports) have none.
+- **API returns both**, always as two fields: `id` and `name` on `/api/products`; where a response
+  names a service's product (`GET /api/services`, the service detail, the export) it carries
+  `product` (the id, unchanged) and adds `productName`. No existing field changes meaning, and no
+  parameter accepts a display name.
+- **Screens show one form everywhere**: "Display name (`id`)" — `Marketplace (mkp)` — and the id
+  alone when there is no display name. One helper, `productLabel(product)` in `lib/useProductList.ts`,
+  is used by `ProductPicker` (which also searches both), the product page header (E-4), the service
+  header (E-5), Settings → Services and its **Products** tab (E-1, E-2), the **Services** page
+  (E-21: the product column, the product filter and the group-by-product headings) and the product
+  cards of the deployments overview. Filters keep the id in the URL (`?product=mkp`); sorting by
+  product sorts by display name, then id.
+- **Tests**: `CatalogSync_CopiesTheProductName_AndOverwritesAnEdit`;
+  `LocalProduct_NameIsEditable`; `CatalogProduct_NameIsNotEditable` (`409 not_local`);
+  `CatalogEntry_ReplacesALocalProductsName`; `ReportedProduct_HasNoName`;
+  `Services_CarryProductAndProductName`; `ProductFilter_TakesTheId_NotTheName`. Web, in the dev
+  server: the label in every place listed above, with and without a display name.
 
 ## Resolving the product of an incoming write (L-3, L-9)
 
@@ -722,7 +753,7 @@ of them answer `404` while `features.serviceList` is off (the endpoint filter
 | `GET /api/services/{name}` (P-1) | signed in | the same item plus `previousProducts`, `overrides`, mismatches of the service. `404` when unknown. |
 | `GET /api/services/{name}/move?product=` (P-1) | admin | the preview above. `product` defaults to `pendingProduct`. |
 | `POST /api/services/{name}/move` (P-1) | admin | `{ product, reason? }` → the plan with `applied: true`; `409 move_held`; `404` unknown service; `400` unknown target product |
-| `GET /api/products` (P-2) | signed in | `[{ id, name, source, lifecycle, businessOwner, technicalOwner, groups, catalogMode, services, catalogVersion }]` |
+| `GET /api/products` (P-2) | signed in | `name` is the display name (see "Product id and display name"). `[{ id, name, source, lifecycle, businessOwner, technicalOwner, groups, catalogMode, services, catalogVersion }]` |
 | `GET /api/products/{id}` (P-2) | signed in | one entry |
 | `POST /api/products`, `PUT /api/products/{id}`, `DELETE /api/products/{id}` (P-2) | admin | local entries only: `{ id, name }`. `400` when the id is not in normal form; `409` when the id exists; `PUT`/`DELETE` on a catalog or reported entry → `409 not_local`; `DELETE` while services use it → `409` |
 | `PUT /api/products/{id}/catalog-mode` | admin | `{ mode }` → the entry. `409 not_fully_in_catalog` with the services when `enforce` is asked for a product that has services not in the catalog. Leaving `enforce`: see Task 18. |
@@ -754,9 +785,9 @@ Changed, backward compatible:
 | E-1 | **Settings → Services** (`/settings/services`; `/settings/service-products` redirects). Tabs **Services** (name, product, group, team, type, state: not in catalog / differs from catalog / to be moved / under several products / removed; filters), **To be moved** (the move dialog with the preview: promotions, policies, webhook subscriptions, keys), **Mismatches**, and the existing overrides as **Product overrides**. | new `app/settings/ServicesSettings.tsx`, `app/settings/ServiceMoveDialog.tsx`; `ServiceProductsSettings.tsx` becomes the overrides panel; `SettingsPage.tsx` (nav label **Services**), `App.tsx`, `lib/api.ts`, `lib/types.ts` |
 | E-2 | Same page, tabs **Products** and **Teams**: source (catalog / local / reported), owners, catalog mode per product; add, rename and delete local entries only. | new `app/settings/ProductTeamDictionaries.tsx` |
 | E-3 | **Settings → API Keys** (`/settings/api-keys`): read-only table of configured API keys and Flux clients with roles, scopes and products; a product the list does not know is flagged. | new `app/settings/ApiKeysSettings.tsx`; `SettingsPage.tsx`, `App.tsx` |
-| E-4 | Product page header: the product's name and owners from the list; "local" or "not in catalog" beside the name. | `app/deployments/ProductDeploymentsPage.tsx` |
+| E-4 | Product page header: "Display name (`id`)" and the owners from the list; "local" or "not in catalog" beside the name. | `app/deployments/ProductDeploymentsPage.tsx` |
 | E-5 | Service page header: product, group, team. Banner when the service is not in the catalog or the catalog names another product. Old URL redirects. One **Remove from portal** action, with the list of removed services and **Restore** on Settings → Services. | `app/deployments/ServiceDetailPage.tsx`, `DeploymentHistoryPage.tsx`; new `components/deployments/RemoveServiceDialog.tsx`; the row action leaves `ProductDeploymentsPage.tsx`; the "Removed services" block leaves `MaintenanceSettings.tsx` (a link stays) |
-| E-6 | One product picker and one service picker. | new `components/ui/ProductPicker.tsx`, `components/ui/ServicePicker.tsx` (on `ComboBox`), `lib/useProductList.ts`; used in `PromotionSettings`, `FreezeSettings`, `RollbackSettings`, `ReleaseNoteTemplateSettings`, `ServiceProductsSettings`, `ReleaseForm`, `IncidentsPage`, `MigrationsPage`, `AnalyticsPage`, `DeliveryMetricsPage`, `ArtifactsPage`, `PromotionsPage`, `PromotionsAuditPage`, `RollbacksPage`, `webhooks/webhookFilters.ts` |
+| E-6 | One product picker and one service picker. The product picker shows "Display name (`id`)", searches both and returns the id. | new `components/ui/ProductPicker.tsx`, `components/ui/ServicePicker.tsx` (on `ComboBox`), `lib/useProductList.ts`; used in `PromotionSettings`, `FreezeSettings`, `RollbackSettings`, `ReleaseNoteTemplateSettings`, `ServiceProductsSettings`, `ReleaseForm`, `IncidentsPage`, `MigrationsPage`, `AnalyticsPage`, `DeliveryMetricsPage`, `ArtifactsPage`, `PromotionsPage`, `PromotionsAuditPage`, `RollbacksPage`, `webhooks/webhookFilters.ts` |
 | E-7 | Promotion page: which policy the promotion uses (the service's own or the product's) and, after a move, where the service came from and whether the policy changed. Group and pattern levels are added in stage 2, which fills `policySource` from the snapshot's `MatchedBy` (`docs/plans/release-trains.md`). | `app/promotions/PromotionDetailPage.tsx` |
 | E-21 | **Services** (`/services`), for every signed-in user, read-only. One row per service: name, product, group, team, type, lifecycle, and the version on each environment; the labels "not in catalog" and "local" as on E-1. Filters: product, group, team, environment, text; grouping by product or by team. A row opens the service page. No move, no mismatch tab, no edit: those stay on Settings → Services, to which admins get a **Manage** link. Settings → Services is the admin view of the same list, not a second list. | new `app/services/ServicesPage.tsx`; `App.tsx` (`FeatureRoute`), `components/shell/Sidebar.tsx`, `navTargets.ts`, `lib/api.ts`, `lib/types.ts` |
 
