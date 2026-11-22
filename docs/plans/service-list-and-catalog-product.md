@@ -89,11 +89,14 @@ Assumes the service inventory (`docs/plans/service-inventory.md`) is deployed an
    a product whose policy auto-approves may be approved by the refresh that follows the move; the
    preview must say so per candidate. → Task 13 tests.
 2. **The scope check.** Seven REST sites and `McpContext.MayActFor` become one helper. Before 1d it
-   must return exactly what each site returns today; in 1d it only widens (sent **or** catalog
-   product). Under enforce, a key scoped to product A that sends `product: A` for a service of
-   product B is accepted and the event is stored under B. That is today's rule for overrides
-   (comment in `DeploymentEndpoints`), but enforce makes it reachable for every service; each such
-   request is recorded as a mismatch. → Tasks 10, 18 tests; open point 3.
+   must return exactly what each site returns today. In 1d, under enforce, it decides against the
+   product the write is stored under: a key scoped to product A that sends `product: A` for a
+   service of product B must be **refused**, because the service name alone decides where the write
+   lands. The sent product is enough only when it equals the stored product or is a recorded
+   previous product of that service (an admin's move, the equivalent of today's override, see the
+   comment in `DeploymentEndpoints`). A product reaches enforce only when no recorded write still
+   relies on the sent product alone. Tests must cover the refused case for every write path (deploy
+   event, build, retire, promotion, migration run, Flux). → Tasks 10, 18 tests; open point 3.
 3. **Normalisation collisions.** Two stored names that normalise to the same name (`Foo.Bar`,
    `foo_bar`) must never be merged silently. The one-off fix refuses them; a write that would
    collide is refused only once normalisation is on, and is recorded as a mismatch from 1b. A name
@@ -463,9 +466,19 @@ They become one helper, `ProductScope.Allows(user, sentProduct, resolution)`:
 - Step 1a: the helper replaces the inline checks with the comparison each site makes today
   (a parameter says which), so behaviour is identical.
 - Step 1b: it also records `scope_sent_only` and, for requests it refuses, `scope_catalog_only`.
-- Step 1d: accepted when the scope covers the **sent** product **or** the product the service is
-  stored under (the catalog's, once moved). Names are compared after `CatalogName.Normalize` on both
-  sides, so a key configured as `MKP` keeps working after the names are fixed.
+- Step 1d: authorisation is decided against the product the write is **stored under**. The sent
+  product is enough only in two narrow cases: it equals the stored product, or it is a recorded
+  **previous product of that service** (an admin executed the move, so the redirect is explicit and
+  per service, as an override is today). Any other sent product is refused, however the caller's
+  scope reads. `scope_sent_only` is telemetry: it is never a reason to accept. Without this rule a
+  key scoped to product A could send `product: A` with the name of a service of product B and write
+  deploy events, builds, retirements and promotions for B, because under `enforce` the service name
+  alone decides where a write lands.
+- A product is switched to `enforce` only when no `scope_sent_only` record exists for its services
+  in the look-back window; `PUT /api/products/{id}/catalog-mode` refuses with the list otherwise.
+  The `warn` mode is the warning period, so nothing that passes today is refused without one.
+- Names are compared after `CatalogName.Normalize` on both sides, so a key configured as `MKP`
+  keeps working after the names are fixed.
 
 ### Names (D-24)
 
@@ -1162,9 +1175,11 @@ agrees with `GET /api/service-list/export`.
    promotions. A rollback request that is `Approved` or `RollingBack` stays under the old product
    (it spans several services) while the deploy that completes it will arrive under the new one.
    The plan lists such requests in the preview and does not hold. Should they hold the move too?
-3. **The end of the scope transition.** "Sent or catalog product" is specified for the transition.
-   Whether the sent-product branch is ever retired (closing the path in Review focus 2), and with
-   what warning period, is not decided. The `scope_sent_only` records are the data for it.
+3. **Retiring a previous product as a valid sent product.** Under `enforce` the sent product is
+   accepted only when it equals the stored product or is a recorded previous product of that service
+   (see "Scope checks"). How long a previous product stays valid after a move — until an admin
+   removes it, or for a fixed window — is not decided. The `scope_sent_only` records are the data
+   for it.
 4. **A team for a service that is not in the catalog.** Local teams exist (L-4), but the brief does
    not say whether an admin may assign one to a not-in-catalog service. The plan stores no such
    assignment: a local team can be created and is offered wherever teams are picked, and a service's

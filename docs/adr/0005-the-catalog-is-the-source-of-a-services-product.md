@@ -86,8 +86,14 @@ resort, used only when no product is known from anywhere.
 
 While a product moves through the modes, an API key or Flux client limited to certain products
 (`AllowedProducts` in `src/Platform.Api/Infrastructure/Auth/ApiKeyAuthHandler.cs` and
-`src/Platform.Api/Features/Integrations/Flux/FluxIntegrationOptions.cs`) is accepted when its scope
-covers **the sent product or the catalog's product**. Mismatches are recorded, not refused.
+`src/Platform.Api/Features/Integrations/Flux/FluxIntegrationOptions.cs`) is checked against the
+product the write is **stored under**. In `report` and `warn` that is the product the caller sent,
+as today, and a difference from the catalog is recorded, not refused. Under `enforce` the service
+name decides where a write lands, so the key must cover that product; the sent product is enough
+only when it equals the stored one or is a previous product of that service after an admin's move.
+A product goes to `enforce` only once no recorded write still relies on the sent product alone, so
+`warn` is the warning period. Otherwise a key limited to one product could write to another
+product's service by naming it.
 
 ## Local products and teams
 
