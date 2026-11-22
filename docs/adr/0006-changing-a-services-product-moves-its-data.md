@@ -43,8 +43,8 @@ of the event** in a column a move never rewrites. The plan is
 ## The product at the time
 
 Each deploy event keeps the product it was stored under when it happened, in its own column
-(`src/Platform.Api/Features/Deployments/Models/DeployEvent.cs`; promotion candidates and builds may
-get the same). The move rewrites `Product` and never this column. Nothing in the delivery flow reads
+(`src/Platform.Api/Features/Deployments/Models/DeployEvent.cs`; the plan gives promotion candidates
+and incidents the same column, `ProductAtEvent`, and leaves builds without it). The move rewrites `Product` and never this column. Nothing in the delivery flow reads
 it; it exists for reporting.
 
 This is how the decision satisfies the rule the catalog and the cost pipeline share, **a transfer
@@ -59,7 +59,7 @@ by the product at the time (`docs/plans/release-notes-for-a-release.md`, stage 3
   place to implement it:
   - Filters on product equality sit in about 178 places across about 30 files, with no shared read
     path. Each would have to learn "this product, or wherever the service used to be". The single
-    write choke point, `ServiceProductOverrideService.ResolveProductAsync` (seven callers), is what
+    write choke point, `ServiceProductOverrideService.ResolveProductAsync` (nine call sites in seven files), is what
     makes the move cheap and this alternative expensive.
   - Leaving rows behind breaks the delivery flow, not only reports. A Pending or Approved candidate
     under the old product never completes, because its deploy event arrives under the new one.

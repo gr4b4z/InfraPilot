@@ -25,8 +25,9 @@ of the two that has dates, progress and a record. The plan is `docs/plans/releas
 
 ## Train and Release
 
-- A train's **scope** is either *the services of the listed products minus standing exclusions*, or
-  *services selected by list, service group or name pattern with `*`*. With the first form a new
+- A train always names its products. Its **scope** is either *the services of the listed products
+  minus standing exclusions*, or *services of those products selected by list, service group or name
+  pattern with `*`*; standing exclusions take the same three forms. With the first form a new
   service of a product joins the next release without anyone adding it, as today.
 - A release **created from a train copies its settings**. Editing the train afterwards changes the
   next release, not the open ones. The copy includes the scope: a release stores its own products and
@@ -43,7 +44,8 @@ of the two that has dates, progress and a record. The plan is `docs/plans/releas
 - **Completing** a release records what shipped: the version of each service, the services that did
   not ship (partial completion is allowed), and the union of its promotions' change sets. The live
   computed state stays next to the record, so a late deploy report still shows up; the record is what
-  release notes and analytics read (`docs/plans/release-notes-for-a-release.md`, stage 3).
+  release notes read (`docs/plans/release-notes-for-a-release.md`, stage 3). A release completed
+  before the record existed gets one written on request, from the state at its completion.
 
 ## A Release gates nothing
 
@@ -57,7 +59,10 @@ exactly two things, the Approval Gate and a Promotion Freeze.
 One approves the promotion of **one version of one service**. An Approval Policy is set for a product
 or for **selected services of a product**: an exact name, a service group, or a name pattern with
 `*`. Resolution order is exact name, group, pattern, product; two rules of the same level that match
-the same service are refused when saved, so there is never a tie to break.
+the same service are refused when saved, so a saved set of rules has no tie to break. The one tie
+saving cannot see is a service registered later whose name two stored patterns match: the older
+policy applies, the match is flagged as ambiguous until one rule is changed, and the promotion is
+not rejected.
 
 **A train never selects approvers.** A service's approvers are the same whichever release it ships
 in, and whether it ships in one at all. Release managers keep being read from the production gate of

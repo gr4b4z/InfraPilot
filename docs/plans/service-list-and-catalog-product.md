@@ -117,8 +117,10 @@ Assumes the service inventory (`docs/plans/service-inventory.md`) is deployed an
    - The scope checks are not uniform today. REST compares the **sent** product
      (`DeploymentEndpoints` twice, `BuildEndpoints`, `PromotionEndpoints`, `FluxEndpoints`,
      `MigrationEndpoints`, `RetiredVersionService` when retiring). `RetiredVersionService.RestoreAsync`
-     and the MCP `create_promotion` tool compare the **resolved** product. "Sent or catalog product"
-     covers both, so nothing accepted today is refused.
+     and the MCP `create_promotion` tool compare the **resolved** product. The brief's "sent or
+     catalog product" is unsafe under enforce (a key scoped to A could write to a service of B by
+     naming it), so the plan narrows it: see "Scope checks". In report and warn nothing accepted
+     today is refused.
    - The brief says "pending migration runs" move. A failed or running data migration is updated by
      its retry under the same key (`MigrationService.ReportAsync`), so the plan moves runs in
      `pending`, `running` and `failed`. Finished runs stay; the Migrations page filtered by the new
@@ -1008,11 +1010,14 @@ pipelines are updated; until then they keep working and are warned.
 
 #### Task 18: Warn and enforce (TDD)
 
-**Files:** `ServiceProductOverrideService.cs` (step 3), `ProductScope.cs` (sent **or** stored
-product), the five ingest endpoints (`warnings[]`), `ProductEndpoints.cs` (mode `enforce`, its
+**Files:** `ServiceProductOverrideService.cs` (step 3), `ProductScope.cs` (the stored
+product; the sent product only when it equals the stored one or is a recorded previous product of
+that service), the five ingest endpoints (`warnings[]`), `ProductEndpoints.cs` (mode `enforce`, its
 precondition, leaving it), `ServiceListCatalogSync` (pending moves under enforce).
 
-Switching a product **to enforce** is refused while it has services that are not in the catalog.
+Switching a product **to enforce** is refused while it has services that are not in the catalog, and
+while `product_mismatches` holds a `scope_sent_only` record for one of its services in the look-back
+window: under enforce those callers would be refused, and warn is their warning period.
 Switching **away from enforce** shows, from `product_mismatches` of the last 30 days, the services
 whose callers still send another product, and writes a catch-all `ServiceProductOverride` for each
 (reason "kept after leaving enforce") so their events keep landing where the data is.
@@ -1024,12 +1029,17 @@ Tests (`CatalogModeTests`, `ProductScopeTests` extended):
 `Enforce_WithNoCatalogFeed_ResolvesFromTheStoredCopy`;
 `LeavingEnforce_PinsServicesWhosePipelinesStillSendTheOldProduct`;
 `CatalogProductChange_UnderEnforce_MarksTheServiceToBeMoved`;
-`Scope_CoveringTheSentProduct_IsAccepted`; `Scope_CoveringOnlyTheStoredProduct_IsAccepted`;
+`Scope_CoveringOnlyTheSentProduct_OfAnotherProductsService_IsRefused` (for each write path: deploy
+event, build, retire, promotion, migration run, Flux);
+`Scope_CoveringAPreviousProductOfTheService_IsAccepted`;
+`Scope_CoveringOnlyTheStoredProduct_IsAccepted`;
+`Enforce_IsRefused_WhileAScopeSentOnlyMismatchIsRecent`;
 `Scope_CoveringNeither_IsRefusedAsToday`; `FluxClientScopedToTheOldProduct_KeepsWorking`;
 `ReportMode_ResponseHasNoWarnings`.
 
-Acceptance: a product goes report → warn → enforce and back without a refused request and without
-a service ending up under two products.
+Acceptance: a product goes report → warn → enforce and back without a refused request that passes
+today and without a service ending up under two products; under enforce a key that covers only the
+sent product cannot write to another product's service.
 
 ### Across the steps
 

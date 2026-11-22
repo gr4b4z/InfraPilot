@@ -678,8 +678,8 @@ by their selector on product `mkp`), restore the subscriptions from the mapping 
 records and trains are left.
 
 Outside the portal, not done by the script: pipelines keep sending the old product until they are
-changed (`product` stays required, D-4; stage 1 accepts a key that covers the sent or the catalog
-product); release-repository annotations, namespaces and Flux key scopes keep the old product name.
+changed (`product` stays required, D-4; under enforce stage 1 authorises a key against the product the write is
+stored under, and the sent product only when it is a recorded previous product of that service); release-repository annotations, namespaces and Flux key scopes keep the old product name.
 
 ## Design: train freeze (L-17) and group changes (L-18)
 
