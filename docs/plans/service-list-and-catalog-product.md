@@ -496,7 +496,7 @@ call `CatalogName.Normalize` directly:
 | `POST /api/builds/retired`, `/retired/restore` | `RetiredVersionService` |
 | `POST /api/promotions`, MCP `create_promotion` | `PromotionService.CreateExternalCandidateAsync` |
 | `POST /api/migrations/runs` | `MigrationService.ReportAsync` |
-| `POST`/`PUT /api/incidents` | `IncidentService` (`Normalize`) |
+| `POST`/`PUT /api/incidents` | `IncidentService.CleanAsync` |
 | Promotion policies, freezes | `PromotionAdminEndpoints`, `PromotionFreezeService.FreezeAsync` |
 | Rollback policies | `RollbackAdminEndpoints` |
 | Releases: products, excluded services | `ReleaseService` (`SetExcludedServicesAsync` and create/update) |
@@ -847,9 +847,10 @@ Tests (`ProductAtEventTests`): `Ingest_StampsTheStoredProduct`;
 `McpContext.IndexAsync` read the list when the flag is on. Web — the files listed under E-6.
 
 Tests: `PromotionFreezeTests` and `WebhookIntegrationTests` gain a case each that a service known
-only to the list is offered; `McpServerTests.FindServices_ReadsTheServiceList`; web
-`ProductPicker.test.tsx` (lists catalog, local and reported products; keeps a selected value that
-is no longer listed; falls back when the flag is off).
+only to the list is offered; `McpServerTests.FindServices_ReadsTheServiceList`. The web app has no
+test suite; the pickers are checked by `npx tsc -b` and by hand: catalog, local and reported
+products are listed, a selected value that is no longer listed stays, and the old source is used
+when the flag is off.
 
 Acceptance: every row of the L-2 table reads its "After" source; `RollbackSettings` no longer has a
 free-text product; with the flag off each page behaves as before.
@@ -861,8 +862,8 @@ reading `Deployments:ApiKeys` and `FluxIntegrationOptions`); `PromotionEndpoints
 `policySource`, from `PromotionCandidate.PolicyId` and that policy's `Service`).
 
 Tests: `SettingsApiAccessTests.ApiKeys_ListScopesAndNeverSecrets`,
-`ApiKeys_NeedAdmin`; `PromotionIntegrationTests.Detail_SaysWhichPolicyApplies`; web tests for the
-service header banner and the settings page tabs.
+`ApiKeys_NeedAdmin`; `PromotionIntegrationTests.Detail_SaysWhichPolicyApplies`. Web: `npx tsc -b`, and
+the service header banner and each settings tab opened in the dev server.
 
 Rollout note: add the environment alias `stage` → `staging` in **Settings → Environments** so the
 catalog's key reads as the portal's (ADR 0005). No code.
@@ -959,7 +960,8 @@ line of E-7), `lib/api.ts`.
 
 The tab lists services with a pending product (none until a product is in enforce mode) and lets an
 admin move any service by hand to a product from the list, which replaces "save an override, then
-remap" for the common case. Web tests for the dialog's held state and the preview sections.
+remap" for the common case. Checked in the dev server: the dialog's held state and every preview section, against the
+seeded data of `ServiceMoveEndpointTests`.
 
 ### Step 1d — catalog in warn, then enforce; names
 
@@ -1127,8 +1129,8 @@ runs, through the public API only:
 6. the deploy to prod is reported → the promotion closes (`Deployed`);
 7. the release for line `5.4` of `mkp` shows the service shipped and is completed.
 
-`ControlScenario_PassesUnchanged` asserts statuses, the webhook events dispatched
-(`promotion.approved`, `deployment.*`) with the `staging` environment key, and response status codes
+`ControlScenario_PassesUnchanged` asserts statuses, the webhook deliveries queued (`promotion.approved`
+among them) with the `staging` environment key, and response status codes
 and bodies (allowing added fields only). It runs once per configuration: flag off; flag on with
 every product in report; warn; enforce with the scenario's services in a seeded catalog snapshot.
 
