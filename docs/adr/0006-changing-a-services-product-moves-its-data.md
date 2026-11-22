@@ -29,6 +29,11 @@ of the event** in a column a move never rewrites. The plan is
   move, and their policy snapshots (`src/Platform.Api/Features/Promotions/Models/ResolvedPolicySnapshot.cs`)
   are refreshed from the new product's policies afterwards. Today's remap has no such hold; it only
   counts open promotions in the preview.
+- The move is also **held while a rollback request that names the service is open**: Pending,
+  Approved or Rolling back, with the service's own item not finished
+  (`src/Platform.Api/Features/Rollbacks/Models/RollbackRequest.cs`, `RollbackItem.cs`). A rollback
+  request stays under its product (below), and the deploy event that completes its item must find
+  it there. The move waits until the rollback finishes or is rejected or cancelled.
 - Today's remap moves deploy events and their work items, builds, promotion candidates and their
   work items, work-item sign-offs and comments, and deleted-service tombstones. The move must
   **additionally cover five kinds of service data it skips today**: retired versions, unfinished
@@ -83,7 +88,8 @@ by the product at the time (`docs/plans/release-notes-for-a-release.md`, stage 3
   says where a candidate's policy came from and whether it changed after a move.
 - Webhook subscriptions and API keys filtered to the old product stop matching the service. The
   preview lists them; the portal does not rewrite them.
-- A service with a promotion stuck in Approved or Deploying cannot be moved until that promotion
-  completes or is cancelled. The page says which promotion holds the move.
+- A service with a promotion stuck in Approved or Deploying, or with an open rollback request, cannot
+  be moved until that promotion completes or is cancelled, or the rollback finishes or is rejected.
+  The preview says which promotion or rollback request holds the move.
 - One more column on deploy events, filled on every write. How rows stored before the column existed
   are filled is in the plan.

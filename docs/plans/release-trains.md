@@ -777,8 +777,10 @@ refresh (stage 1) brings a different group for a service:
    whose gate would change, trains joined and left, freezes that would start or stop holding — and
    executes it. Executing deletes the row, calls `RefreshPolicySnapshotsForServiceAsync`, re-evaluates
    the service's Pending candidates, and audits `service.group-change.executed` with the preview as
-   the payload. Unlike a product move it is **not** held by an Approved or Deploying promotion: those
-   keep their snapshot.
+   the payload. Unlike a product move it is **not** held by an Approved or Deploying promotion, nor
+   by an open rollback request (which holds a product move since ADR 0006's amendment): promotions
+   keep their snapshot, and a group change moves no data, so a rollback's deploy event still finds
+   its request.
 5. A later refresh that returns the old group deletes the pending row.
 
 The administrator executes the catalog's decision; there is no "reject". A change that should not
@@ -936,7 +938,7 @@ the controls below render and the pages look as they do today.
 | **E-11** Releases list | `app/releases/ReleasesPage.tsx` | **Train** and **Product** filters, kept in the URL; a train column. |
 | **E-12** Mass approve, Work items queue | `components/promotions/MassApproveDialog.tsx`, `app/promotions/PromotionsPage.tsx`, `app/promotions/promotionFilterParams.ts`, `app/me/MyQueuePage.tsx`, `app/me/queueFilterParams.ts` | Mass approve gets a **Release** select *inside the dialog*, next to environment and gate, default **All releases**. It is never initialised from the page — the dialog's own rule (`MassApproveDialog.tsx:38-40`); `PromotionsPage.tsx:979-985` passes no release. The Promotions page and the queue get their own **Release** filter. |
 | **E-13** Settings → Promotions | `app/settings/PromotionSettings.tsx`, new `components/promotions/PolicyMatchFields.tsx` | "Applies to": **All services** \| **Selected services** \| **Service group** \| **Name pattern**. Under it "Matches these services" updates as you type (`POST …/policies/preview`), marking services a more specific rule takes. A conflict is shown before saving. The policy list groups by product and edge and prints each rule's level. |
-| **E-14** Freeze | `app/settings/FreezeSettings.tsx` → content moves to new `app/promotions/FreezePage.tsx` at `/promotions/freeze`; `App.tsx` (route outside `AdminRoute`, `/settings/freeze` redirects); `app/promotions/FreezeNotice.tsx`, `app/promotions/FreezeCues.tsx`, `app/deployments/FreezeCues.tsx`, `app/deployments/freezeWindows.ts`, `lib/freezeScope.ts` | Scope select: **Product** \| **Release train** \| **Service**, offering only what the caller may freeze (`GET …/freezes/scopes`). Settings keeps a **Freeze** entry that links to the page. The page gets no sidebar item of its own, so the sidebar of `docs/plans/navigation.md` keeps its 17 items: it sits under **Promotions** (that item is active on `/promotions/freeze`) and is opened from a **Freeze** link on the Promotions page, shown to whoever `GET …/freezes/scopes` gives a scope, and from **Manage freezes** in the freeze banners, which today link to `/settings/freeze`. Banners and notices name the scope and list every freeze that holds. |
+| **E-14** Freeze | `app/settings/FreezeSettings.tsx` → content moves to new `app/promotions/FreezePage.tsx` at `/promotions/freeze`; `App.tsx` (route outside `AdminRoute`, `/settings/freeze` redirects); `app/promotions/FreezeNotice.tsx`, `app/promotions/FreezeCues.tsx`, `app/deployments/FreezeCues.tsx`, `app/deployments/freezeWindows.ts`, `lib/freezeScope.ts` | Scope select: **Product** \| **Release train** \| **Service**, offering only what the caller may freeze (`GET …/freezes/scopes`). Settings keeps a **Freeze** entry that links to the page. Decided (2026-11-22): the page gets no sidebar item of its own, so the sidebar of `docs/plans/navigation.md` keeps its 17 items: it sits under **Promotions** (that item is active on `/promotions/freeze`) and is opened from a **Freeze** button on the Promotions page, shown to whoever `GET …/freezes/scopes` gives a scope, and from **Manage freezes** in the freeze banners, which today link to `/settings/freeze`. Banners and notices name the scope and list every freeze that holds. |
 | **E-15** Product page | `app/deployments/ProductDeploymentsPage.tsx` | Filters **Group**, **Train**, **Type** above the service list, shown when the product has more than one value of each; kept in the URL. Group and type from stage 1's service list, train from `GET /api/release-trains/membership`. |
 | Webhooks (P-12) | `app/webhooks/WebhookFilterFields.tsx`, `app/webhooks/webhookFilters.ts`, `app/webhooks/WebhookListPage.tsx`, `app/webhooks/WebhookDetailPage.tsx`, `app/webhooks/NotificationCreateForm.tsx` | Services field accepts `*`; new **Except services** field; both disabled with a hint until a product is chosen. Under the fields: "Receives events of N services" with the list. A **Who receives…** box on the list page (product, service, event) backed by `GET /api/webhooks/matches`. Banner for subscriptions without a product filter. |
 | Settings → Services (stage 1, E-1) | `app/settings/ServicesSettings.tsx` | Section **Group changes to execute** with preview and **Execute**; a **Train** column. The train in the service page header (E-5, `app/deployments/ServiceDetailPage.tsx`), which stage 1 leaves to this plan, reads the same membership call. |
@@ -1413,7 +1415,8 @@ On a product's page you can filter its services by **Group**, **Train** and **Ty
 - [ ] **Canonical variants** (a)–(d):
   - (a) a new extension service matching a group or pattern lands on dev automatically (from
     step 2: group `extensions` or pattern `mkp-extension-*`; it also joins the Extensions train);
-  - (b) moving a service during a release is held while a promotion is Approved or Deploying, and
+  - (b) moving a service during a release is held while a promotion is Approved or Deploying or a
+    rollback request for the service is open, and
     afterwards work-item sign-offs follow the service (stage 1's move; the step 3 script relies on it);
   - (c) a freeze of the core train on prod stops step 5 for core but not step 1 and not extensions
     with their own train (from step 4);

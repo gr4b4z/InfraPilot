@@ -96,9 +96,9 @@ everyone (E-21, D-28), which makes 18 (1 + 8 + 4 + 3 + 2). Nothing else adds or 
   and team.
 - Stage 2 (`docs/plans/release-trains.md`): a **Trains** tab on the Releases page, and the freeze
   page moves from `/settings/freeze` to `/promotions/freeze` so that release managers can open it
-  (ADR-0008; everything under `/settings` is admin-only). It gets no sidebar item: it sits under
-  **Promotions**, is opened from the Promotions page and the freeze banners, and Settings keeps a
-  **Freeze** entry that links to it. Stage 2 opens that one page to release managers; this plan
+  (ADR-0008; everything under `/settings` is admin-only). Decided: it gets no sidebar item. It sits
+  under **Promotions**, is opened by a **Freeze** button on the Promotions page and a **Manage
+  freezes** link in the freeze banners, and Settings keeps a **Freeze** entry that links to it. Stage 2 opens that one page to release managers; this plan
   changes who may open My Tasks only.
 - Stage 3 (`docs/plans/release-notes-for-a-release.md`): new filters and tables inside Analytics and
   Delivery metrics, which are the two tabs of the merged **Analytics** item here; no new item.

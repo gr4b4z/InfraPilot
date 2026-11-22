@@ -109,6 +109,44 @@ labelled "not in catalog", and products and teams an admin added locally — whi
 which are marked as the portal's own, and which are never part of the catalog copy.
 _Avoid_: Service catalog (the request catalog's former name), service registry, CMDB
 
+### Versions in an environment
+
+**Declared version**:
+The version a release repository says an environment should run for a Service. Published by the
+service catalog in its status file for every component in the release repositories; the portal reads
+it and never changes it. Decided in ADR-0009; not built yet.
+_Avoid_: Desired version, target version, planned version
+
+**Applied version**:
+The version last installed successfully in an environment: the newest succeeded deploy event the
+portal holds for that Service and Environment, in both deployment models. Not the newest event — a
+failed or running deploy applied nothing. Decided in ADR-0009; not built yet.
+_Avoid_: Current version, deployed version (for a failed deploy), installed version
+
+**Observed version**:
+The version of a Service's workloads actually running in a cluster, as the Cluster Agent last
+reported it. Live state: it is replaced by every report and not kept as history. Decided in
+ADR-0009; not built yet.
+_Avoid_: Running version, actual version, live version
+
+**Rollout pending**:
+The Declared version differs from the Applied version: a change is declared and not installed yet.
+The portal compares and records since when. Never called "pending", which means a Promotion
+Candidate awaiting approval. Decided in ADR-0009; not built yet.
+_Avoid_: Pending, out of date, behind
+
+**Drift**:
+The Applied version differs from the Observed version, outside a rollout: what runs is not what was
+last installed. Workloads that are in the middle of a rollout are "rolling out", not Drift. Decided
+in ADR-0009; not built yet.
+_Avoid_: Mismatch, out of sync, deviation
+
+**Cluster Agent**:
+A small job in a cluster that lists the workloads of the service namespaces with their versions and
+posts the whole list to the portal every minute. Read-only in the cluster; it reads no secrets and
+deploys nothing. Decided in ADR-0009; not built yet.
+_Avoid_: Scanner, collector, operator, deployer
+
 ## Relationships
 
 - A **Promotion Freeze** applies to exactly one product — the whole product, or exactly one of its
@@ -128,5 +166,9 @@ _Avoid_: Service catalog (the request catalog's former name), service registry, 
   deploy event keeps the product it had at the time (ADR-0006).
 - A **Release** is created from a **Release Train** or ad hoc. Releases may overlap; a deploy belongs
   to a **Release** by its version line.
+- The portal compares the **Declared**, **Applied** and **Observed version** of a **Service** in an
+  **Environment**; nobody else does. **Rollout pending** and **Drift** are shown and hold nothing:
+  no **Approval Gate**, **Promotion Freeze** or **Release** reads them (ADR-0009). A version that
+  could not be read is unknown, never in sync.
 - An **Approval Policy** is for one **Product** or selected **Services** of it. A **Release Train**
   and a **Release** never decide who approves a **Promotion Candidate**.

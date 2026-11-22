@@ -81,7 +81,7 @@ Assumes the service inventory (`docs/plans/service-inventory.md`) is deployed an
 | D-3 | A service the catalog does not know keeps the sent product and gets the portal-only label "not in catalog". `default` only when no product is known anywhere. | `service_list.Source = reported` |
 | D-4 | `product` stays required in requests. | Global constraints |
 | D-5 | A product change moves the service's data; every event keeps the product at the time. | `ProductAtEvent`, Tasks 6, 12 |
-| D-6 | An admin executes the move after a preview; held while a promotion of the service is Approved or Deploying. | Task 13 |
+| D-6 | An admin executes the move after a preview; held while a promotion of the service is Approved or Deploying, or while an open rollback request names the service. | Task 13 |
 | D-7 | Identity is the service name; (product, service) stays the address. | `service_list` is keyed by name |
 | D-28 | Everyone signed in gets a read-only **Services** page: which services exist, in which product, group and team, and where each is deployed. | E-21, P-16, Task 8a |
 | D-24 | Names are normalised on write, warned about, refused only on collision; 14 existing names fixed once. | Tasks 16, 17 |
@@ -607,14 +607,14 @@ in the same table (`Release.ExcludedServicesJson`, `WebhookSubscription.FilterSe
   "targetProduct": "mkp",
   "fromProducts": ["mkp-extensions"],
   "counts": { "deployments": 412, "builds": 97, "promotions": 58, "retiredVersions": 12, "…": 0 },
-  "heldBy": [ { "promotionId": "…", "status": "Approved", "version": "5.4.1", "targetEnv": "prod" } ],
+  "heldBy": [ { "kind": "promotion", "promotionId": "…", "status": "Approved", "version": "5.4.1", "targetEnv": "prod" },
+              { "kind": "rollback", "rollbackRequestId": "…", "status": "Pending", "itemStatus": "Pending", "toVersion": "5.3.9", "targetEnv": "prod" } ],
   "openPromotions": [
     { "promotionId": "…", "version": "5.4.2", "sourceEnv": "test", "targetEnv": "staging",
       "policyBefore": "service policy of mkp-extensions", "policyAfter": "product policy of mkp",
       "policyChanges": true, "heldByFreezeBefore": true, "heldByFreezeAfter": false,
       "wouldAutoApprove": false, "noPolicyInTarget": false }
   ],
-  "openRollbackRequests": [ { "id": "…", "product": "mkp-extensions", "status": "Pending" } ],
   "freezes": { "moving": [ { "targetEnv": "prod", "coveredInTarget": true } ],
                "productFreezesOnTarget": [ { "targetEnv": "prod", "reason": "…" } ] },
   "policiesLeftBehind": [ { "sourceEnv": "staging", "targetEnv": "prod" } ],
@@ -626,19 +626,28 @@ in the same table (`Release.ExcludedServicesJson`, `WebhookSubscription.FilterSe
 }
 ```
 
-Open rollback requests are those in `Pending`, `Approved` or `RollingBack` whose items name the
-service. Keys are read from `Deployments:ApiKeys` and `Integrations:Flux:Clients` by name and scope
+An **open rollback request** holds the move exactly as an Approved or Deploying promotion does. It
+is a `RollbackRequest` in `RollbackStatus.Pending`, `Approved` or `RollingBack` with a `RollbackItem`
+for the service that is not finished yet (`RollbackItemStatus.Pending` or `RollingBack`). A request
+carries one product for all its services and is not moved (see "What moves"), while the deploy event
+that completes the item would arrive under the new product and find nothing to complete; so the move
+waits until the item is rolled back, failed, skipped or superseded, or the request is rejected or
+cancelled. A request whose item for this service is already finished does not hold, even while its
+other services are still rolling back. `heldBy` lists every promotion and rollback request that
+holds, each with its `kind`, so the dialog can link to it. Keys are read from `Deployments:ApiKeys` and `Integrations:Flux:Clients` by name and scope
 only.
 
 ### Apply
 
-1. Refuse with `409` and code `move_held` (listing the promotions) when any candidate of the service
-   is `Approved` or `Deploying`.
+1. Refuse with `409` and code `move_held` (listing what holds it, as `heldBy` in the preview) when
+   any candidate of the service is `Approved` or `Deploying`, or an open rollback request names the
+   service.
 2. In the execution-strategy transaction the remap already uses: move every source product as
    above; insert a `previous` address per source; set `service_list.Product`, clear
    `PendingProduct`; delete the service's overrides (catalog move only).
-3. Before commit, re-check: if any moved candidate is now `Approved` or `Deploying`, roll back and
-   answer `move_held`. An approval that raced the move wins.
+3. Before commit, re-check: if any moved candidate is now `Approved` or `Deploying`, or a rollback
+   request for the service was created meanwhile, roll back and answer `move_held`. An approval or a
+   rollback request that raced the move wins.
 4. After commit, for each `(SourceEnv, TargetEnv)` pair of the moved Pending candidates call
    `PromotionService.RefreshPolicySnapshotsAsync(target, service, sourceEnv, targetEnv)`. Its own
    rails apply: Approved, Deploying and finished candidates are never touched, and a candidate with
@@ -754,9 +763,10 @@ P-16 is therefore not a new endpoint: it is the guarantee that `GET /api/service
 move preview stay on their own admin routes or are left out for non-admins), with a test. A service
 with no deploy event yet (known from the catalog only) is listed with empty environment cells, which
 is the point of the page: it shows what exists, not only what has shipped. The three versions per
-environment (declared, applied, observed) are added to these cells by
-`docs/plans/declared-applied-observed-versions.md`; until then a cell shows the version last
-reported, as the matrix does.
+environment (declared, applied, observed) and the **Rollout pending** and **Drift** markers are added
+to these cells by `docs/plans/declared-applied-observed-versions.md` (ADR 0009: the portal compares;
+observed versions come from a cluster agent, declared versions from the catalog's status file);
+until then a cell shows the version last reported, as the matrix does.
 
 ## Feature flag and switches
 
@@ -971,7 +981,12 @@ Tests (`ServiceMoveTests`, integration `ServiceMoveEndpointTests`):
 `Apply_IsRefused_WhileAPromotionIsApproved`; `Apply_IsRefused_WhileAPromotionIsDeploying`;
 `ApprovalDuringTheMove_RollsTheMoveBack`; `PendingPromotion_Moves_AndTakesTheNewProductsPolicy`;
 `PendingPromotion_WithNoPolicyInTheTarget_KeepsItsGate`;
-`Preview_SaysWhichPromotionWouldAutoApprove`; `Preview_ListsOpenRollbackRequestsAndFreezes`;
+`Apply_IsRefused_WhileARollbackRequestIsPending`; `Apply_IsRefused_WhileARollbackRequestIsApproved`;
+`Apply_IsRefused_WhileARollbackItemIsRollingBack`;
+`RollbackRequest_WhoseItemForTheServiceIsFinished_DoesNotHold`;
+`RejectedOrCancelledRollbackRequest_DoesNotHold`; `RollbackRequestDuringTheMove_RollsTheMoveBack`;
+`Preview_SaysWhichPromotionWouldAutoApprove`; `Preview_HeldBy_ListsPromotionsAndRollbackRequests`;
+`Preview_ListsFreezes`;
 `Preview_ListsSubscriptionsAndKeysThatNameTheOldProduct`;
 `Move_RecordsThePreviousAddress_AndClearsPending`; `OverrideRemapAlias_GivesTheSameResult`;
 `SignedOffWorkItems_StillCountAfterTheMove`; `SecondApply_IsANoOp`.
@@ -1220,7 +1235,7 @@ The four canonical variants, with what stage 1 can run of each:
 | Variant | What differs | Must hold | In stage 1 |
 |---|---|---|---|
 | (a) | a new extension service matching a group or pattern | it lands on dev automatically | a new service of the product lands on dev under the product's policy; matching by group or pattern needs stage 2's policies for selected services and is run there |
-| (b) | a service is moved during a release | the move is held while a promotion is Approved or Deploying, and afterwards work-item sign-offs follow the service | from 1c: the service is moved while its build→staging candidate is Pending (flow step 2) and a move is attempted between Mass approve and the deploy event (steps 5 and 6) — the Pending candidate continues under the new product with its sign-offs counted; the attempt while Approved is refused (`move_held`) and the deploy closes the promotion |
+| (b) | a service is moved during a release | the move is held while a promotion is Approved or Deploying or a rollback request for the service is open, and afterwards work-item sign-offs follow the service | from 1c: the service is moved while its build→staging candidate is Pending (flow step 2) and a move is attempted between Mass approve and the deploy event (steps 5 and 6) — the Pending candidate continues under the new product with its sign-offs counted; the attempt while Approved is refused (`move_held`) and the deploy closes the promotion |
 | (c) | a freeze of the core train on prod | it stops step 5 for core but not step 1, and not extensions with their own train | trains and the train freeze are stage 2; stage 1 checks the first half with today's product freeze of `mkp` into prod (step 5 held, step 1 not) |
 | (d) | a pipeline sending the old product | the request is accepted, data is filed under the catalog product, the mismatch is on the admin's list | the pipeline sends `mkp-extensions`, the catalog says `mkp`, the key is scoped to `mkp-extensions`. Report and warn: stored and approved under `mkp-extensions` exactly as today, with a `product_differs` row on the **Mismatches** tab. Enforce after the move: stored under `mkp`, approved by `mkp`'s policy, same key accepted (the sent product is a previous product of the service) |
 
@@ -1247,10 +1262,8 @@ agrees with `GET /api/service-list/export`.
 1. **The control scenario** is settled: Task 21 carries the canonical flow and variants (a)–(d),
    shared with `docs/plans/release-trains.md` (Task 27). Only the two stage-1 extras, S1-A and S1-D,
    are this plan's own proposal; confirm or drop them.
-2. **Open rollback requests and the move.** The brief holds a move only for Approved or Deploying
-   promotions. A rollback request that is `Approved` or `RollingBack` stays under the old product
-   (it spans several services) while the deploy that completes it will arrive under the new one.
-   The plan lists such requests in the preview and does not hold. Should they hold the move too?
+2. *(Decided 2026-11-22: an open rollback request holds the move, like an Approved or Deploying
+   promotion — see "Preview" and "Apply".)*
 3. **Retiring a previous product as a valid sent product.** Under `enforce` the sent product is
    accepted only when it equals the stored product or is a recorded previous product of that service
    (see "Scope checks"). How long a previous product stays valid after a move — until an admin
