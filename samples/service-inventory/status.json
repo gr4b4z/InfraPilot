@@ -1,0 +1,4789 @@
+{
+  "schemaVersion": 1,
+  "catalog_version": 12,
+  "generated_at": "2026-11-22T06:15:00Z",
+  "services": [
+    {
+      "id": "mpt-billing",
+      "stale": false,
+      "unverified": false,
+      "warnings": [],
+      "onboarding": {
+        "registered_at": "2026-03-14T09:12:00Z",
+        "repo": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z",
+          "checks": {
+            "exists": true,
+            "component_file": true,
+            "codeowners": true,
+            "branch_protection": true
+          }
+        },
+        "component_file": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "namespace": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "identity": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "contract": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "resources": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "dev_deploy": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        }
+      },
+      "freshness": {
+        "repo": "2026-11-22T06:15:00Z",
+        "azure": "2026-11-22T06:15:00Z"
+      }
+    },
+    {
+      "id": "mpt-procurement",
+      "stale": false,
+      "unverified": false,
+      "warnings": [],
+      "onboarding": {
+        "registered_at": "2026-03-14T09:12:00Z",
+        "repo": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z",
+          "checks": {
+            "exists": true,
+            "component_file": true,
+            "codeowners": true,
+            "branch_protection": true
+          }
+        },
+        "component_file": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "namespace": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "identity": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "contract": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "resources": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "dev_deploy": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        }
+      },
+      "freshness": {
+        "repo": "2026-11-22T06:15:00Z",
+        "azure": "2026-11-22T06:15:00Z"
+      }
+    },
+    {
+      "id": "mpt-notifications",
+      "stale": false,
+      "unverified": false,
+      "warnings": [],
+      "onboarding": {
+        "registered_at": "2026-03-14T09:12:00Z",
+        "repo": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z",
+          "checks": {
+            "exists": true,
+            "component_file": true,
+            "codeowners": true,
+            "branch_protection": true
+          }
+        },
+        "component_file": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "namespace": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "identity": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "contract": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "resources": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "dev_deploy": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        }
+      },
+      "freshness": {
+        "repo": "2026-11-22T06:15:00Z",
+        "azure": "2026-11-22T06:15:00Z"
+      }
+    },
+    {
+      "id": "mpt-audit",
+      "stale": false,
+      "unverified": false,
+      "warnings": [],
+      "onboarding": {
+        "registered_at": "2026-03-14T09:12:00Z",
+        "repo": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z",
+          "checks": {
+            "exists": true,
+            "component_file": true,
+            "codeowners": true,
+            "branch_protection": true
+          }
+        },
+        "component_file": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "namespace": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "identity": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "contract": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "resources": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "dev_deploy": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        }
+      },
+      "freshness": {
+        "repo": "2026-11-22T06:15:00Z",
+        "azure": "2026-11-22T06:15:00Z"
+      }
+    },
+    {
+      "id": "mpt-currency",
+      "stale": false,
+      "unverified": false,
+      "warnings": [],
+      "onboarding": {
+        "registered_at": "2026-03-14T09:12:00Z",
+        "repo": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z",
+          "checks": {
+            "exists": true,
+            "component_file": true,
+            "codeowners": true,
+            "branch_protection": true
+          }
+        },
+        "component_file": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "namespace": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "identity": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "contract": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "resources": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "dev_deploy": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        }
+      },
+      "freshness": {
+        "repo": "2026-11-22T06:15:00Z",
+        "azure": "2026-11-22T06:15:00Z"
+      }
+    },
+    {
+      "id": "mpt-tasks",
+      "stale": false,
+      "unverified": false,
+      "warnings": [],
+      "onboarding": {
+        "registered_at": "2026-03-14T09:12:00Z",
+        "repo": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z",
+          "checks": {
+            "exists": true,
+            "component_file": true,
+            "codeowners": true,
+            "branch_protection": true
+          }
+        },
+        "component_file": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "namespace": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "identity": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "contract": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "resources": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "dev_deploy": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        }
+      },
+      "freshness": {
+        "repo": "2026-11-22T06:15:00Z",
+        "azure": "2026-11-22T06:15:00Z"
+      }
+    },
+    {
+      "id": "mpt-helpdesk",
+      "stale": false,
+      "unverified": false,
+      "warnings": [],
+      "onboarding": {
+        "registered_at": "2026-03-14T09:12:00Z",
+        "repo": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z",
+          "checks": {
+            "exists": true,
+            "component_file": true,
+            "codeowners": true,
+            "branch_protection": true
+          }
+        },
+        "component_file": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "namespace": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "identity": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "contract": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "resources": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "dev_deploy": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        }
+      },
+      "freshness": {
+        "repo": "2026-11-22T06:15:00Z",
+        "azure": "2026-11-22T06:15:00Z"
+      }
+    },
+    {
+      "id": "mpt-public-catalog",
+      "stale": false,
+      "unverified": false,
+      "warnings": [],
+      "onboarding": {
+        "registered_at": "2026-03-14T09:12:00Z",
+        "repo": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z",
+          "checks": {
+            "exists": true,
+            "component_file": true,
+            "codeowners": true,
+            "branch_protection": true
+          }
+        },
+        "component_file": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "namespace": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "identity": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "contract": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "resources": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "dev_deploy": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        }
+      },
+      "freshness": {
+        "repo": "2026-11-22T06:15:00Z",
+        "azure": "2026-11-22T06:15:00Z"
+      }
+    },
+    {
+      "id": "mpt-spotlight",
+      "stale": false,
+      "unverified": false,
+      "warnings": [],
+      "onboarding": {
+        "registered_at": "2026-03-14T09:12:00Z",
+        "repo": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z",
+          "checks": {
+            "exists": true,
+            "component_file": true,
+            "codeowners": true,
+            "branch_protection": true
+          }
+        },
+        "component_file": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "namespace": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "identity": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "contract": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "resources": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "dev_deploy": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        }
+      },
+      "freshness": {
+        "repo": "2026-11-22T06:15:00Z",
+        "azure": "2026-11-22T06:15:00Z"
+      }
+    },
+    {
+      "id": "mpt-scheduler",
+      "stale": false,
+      "unverified": false,
+      "warnings": [],
+      "onboarding": {
+        "registered_at": "2026-03-14T09:12:00Z",
+        "repo": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z",
+          "checks": {
+            "exists": true,
+            "component_file": true,
+            "codeowners": true,
+            "branch_protection": true
+          }
+        },
+        "component_file": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "namespace": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "identity": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "contract": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "resources": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "dev_deploy": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        }
+      },
+      "freshness": {
+        "repo": "2026-11-22T06:15:00Z",
+        "azure": "2026-11-22T06:15:00Z"
+      }
+    },
+    {
+      "id": "mpt-export",
+      "stale": false,
+      "unverified": false,
+      "warnings": [],
+      "onboarding": {
+        "registered_at": "2026-03-14T09:12:00Z",
+        "repo": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z",
+          "checks": {
+            "exists": true,
+            "component_file": true,
+            "codeowners": true,
+            "branch_protection": true
+          }
+        },
+        "component_file": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "namespace": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "identity": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "contract": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "resources": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "dev_deploy": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        }
+      },
+      "freshness": {
+        "repo": "2026-11-22T06:15:00Z",
+        "azure": "2026-11-22T06:15:00Z"
+      }
+    },
+    {
+      "id": "swo-auth",
+      "stale": false,
+      "unverified": false,
+      "warnings": [],
+      "onboarding": {
+        "registered_at": "2026-03-14T09:12:00Z",
+        "repo": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z",
+          "checks": {
+            "exists": true,
+            "component_file": true,
+            "codeowners": true,
+            "branch_protection": true
+          }
+        },
+        "component_file": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "namespace": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "identity": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "contract": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "resources": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "dev_deploy": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        }
+      },
+      "freshness": {
+        "repo": "2026-11-22T06:15:00Z",
+        "azure": "2026-11-22T06:15:00Z"
+      }
+    },
+    {
+      "id": "swo-platform",
+      "stale": false,
+      "unverified": false,
+      "warnings": [],
+      "onboarding": {
+        "registered_at": "2026-03-14T09:12:00Z",
+        "repo": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z",
+          "checks": {
+            "exists": true,
+            "component_file": true,
+            "codeowners": true,
+            "branch_protection": true
+          }
+        },
+        "component_file": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "namespace": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "identity": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "contract": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "resources": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "dev_deploy": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        }
+      },
+      "freshness": {
+        "repo": "2026-11-22T06:15:00Z",
+        "azure": "2026-11-22T06:15:00Z"
+      }
+    },
+    {
+      "id": "mpt-nav-stats",
+      "stale": false,
+      "unverified": false,
+      "warnings": [
+        {
+          "code": "deprecated",
+          "message": "Deprecated: still deployed in 4 environments."
+        }
+      ],
+      "onboarding": {
+        "registered_at": "2026-03-14T09:12:00Z",
+        "repo": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z",
+          "checks": {
+            "exists": true,
+            "component_file": true,
+            "codeowners": true,
+            "branch_protection": true
+          }
+        },
+        "component_file": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "namespace": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "identity": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "contract": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "resources": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "dev_deploy": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        }
+      },
+      "freshness": {
+        "repo": "2026-11-22T06:15:00Z",
+        "azure": "2026-11-22T06:15:00Z"
+      }
+    },
+    {
+      "id": "mpt-ai-assistant",
+      "stale": false,
+      "unverified": true,
+      "warnings": [],
+      "onboarding": {
+        "registered_at": "2026-11-18T10:05:00Z",
+        "repo": {
+          "status": "done",
+          "at": "2026-11-18T10:05:00Z",
+          "checks": {
+            "exists": true,
+            "component_file": true,
+            "codeowners": true,
+            "branch_protection": false
+          }
+        },
+        "component_file": {
+          "status": "done",
+          "at": "2026-11-18T10:05:00Z"
+        },
+        "namespace": {
+          "status": "pending",
+          "detail": "namespace not created in dev yet"
+        },
+        "identity": {
+          "status": "pending",
+          "detail": "workload identity not federated yet"
+        },
+        "contract": {
+          "status": "pending",
+          "detail": "no API contract published"
+        },
+        "resources": {
+          "status": "pending",
+          "detail": "resources not provisioned"
+        },
+        "dev_deploy": {
+          "status": "pending",
+          "detail": "never deployed to dev"
+        }
+      },
+      "freshness": {
+        "repo": "2026-11-22T06:15:00Z",
+        "azure": "2026-11-22T06:15:00Z"
+      }
+    },
+    {
+      "id": "swo-web-shell",
+      "stale": false,
+      "unverified": false,
+      "warnings": [],
+      "onboarding": {
+        "registered_at": "2026-03-14T09:12:00Z",
+        "repo": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z",
+          "checks": {
+            "exists": true,
+            "component_file": true,
+            "codeowners": true,
+            "branch_protection": true
+          }
+        },
+        "component_file": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "namespace": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "identity": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "contract": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "resources": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "dev_deploy": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        }
+      },
+      "freshness": {
+        "repo": "2026-11-22T06:15:00Z",
+        "azure": "2026-11-22T06:15:00Z"
+      }
+    },
+    {
+      "id": "swo-web-billing",
+      "stale": false,
+      "unverified": false,
+      "warnings": [],
+      "onboarding": {
+        "registered_at": "2026-03-14T09:12:00Z",
+        "repo": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z",
+          "checks": {
+            "exists": true,
+            "component_file": true,
+            "codeowners": true,
+            "branch_protection": true
+          }
+        },
+        "component_file": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "namespace": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "identity": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "contract": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "resources": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "dev_deploy": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        }
+      },
+      "freshness": {
+        "repo": "2026-11-22T06:15:00Z",
+        "azure": "2026-11-22T06:15:00Z"
+      }
+    },
+    {
+      "id": "swo-web-commerce",
+      "stale": false,
+      "unverified": false,
+      "warnings": [],
+      "onboarding": {
+        "registered_at": "2026-03-14T09:12:00Z",
+        "repo": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z",
+          "checks": {
+            "exists": true,
+            "component_file": true,
+            "codeowners": true,
+            "branch_protection": true
+          }
+        },
+        "component_file": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "namespace": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "identity": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "contract": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "resources": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "dev_deploy": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        }
+      },
+      "freshness": {
+        "repo": "2026-11-22T06:15:00Z",
+        "azure": "2026-11-22T06:15:00Z"
+      }
+    },
+    {
+      "id": "swo-web-dashboard",
+      "stale": false,
+      "unverified": false,
+      "warnings": [],
+      "onboarding": {
+        "registered_at": "2026-03-14T09:12:00Z",
+        "repo": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z",
+          "checks": {
+            "exists": true,
+            "component_file": true,
+            "codeowners": true,
+            "branch_protection": true
+          }
+        },
+        "component_file": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "namespace": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "identity": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "contract": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "resources": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "dev_deploy": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        }
+      },
+      "freshness": {
+        "repo": "2026-11-22T06:15:00Z",
+        "azure": "2026-11-22T06:15:00Z"
+      }
+    },
+    {
+      "id": "mpt-web-procurement",
+      "stale": false,
+      "unverified": false,
+      "warnings": [],
+      "onboarding": {
+        "registered_at": "2026-03-14T09:12:00Z",
+        "repo": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z",
+          "checks": {
+            "exists": true,
+            "component_file": true,
+            "codeowners": true,
+            "branch_protection": true
+          }
+        },
+        "component_file": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "namespace": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "identity": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "contract": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "resources": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "dev_deploy": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        }
+      },
+      "freshness": {
+        "repo": "2026-11-22T06:15:00Z",
+        "azure": "2026-11-22T06:15:00Z"
+      }
+    },
+    {
+      "id": "mpt-extension-adobe",
+      "stale": false,
+      "unverified": false,
+      "warnings": [],
+      "onboarding": {
+        "registered_at": "2026-03-14T09:12:00Z",
+        "repo": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z",
+          "checks": {
+            "exists": true,
+            "component_file": true,
+            "codeowners": true,
+            "branch_protection": true
+          }
+        },
+        "component_file": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "namespace": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "identity": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "contract": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "resources": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "dev_deploy": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        }
+      },
+      "freshness": {
+        "repo": "2026-11-22T06:15:00Z",
+        "azure": "2026-11-22T06:15:00Z"
+      }
+    },
+    {
+      "id": "mpt-extension-aws-management",
+      "stale": false,
+      "unverified": false,
+      "warnings": [],
+      "onboarding": {
+        "registered_at": "2026-03-14T09:12:00Z",
+        "repo": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z",
+          "checks": {
+            "exists": true,
+            "component_file": true,
+            "codeowners": true,
+            "branch_protection": true
+          }
+        },
+        "component_file": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "namespace": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "identity": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "contract": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "resources": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "dev_deploy": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        }
+      },
+      "freshness": {
+        "repo": "2026-11-22T06:15:00Z",
+        "azure": "2026-11-22T06:15:00Z"
+      }
+    },
+    {
+      "id": "mpt-extension-installation",
+      "stale": false,
+      "unverified": false,
+      "warnings": [],
+      "onboarding": {
+        "registered_at": "2026-03-14T09:12:00Z",
+        "repo": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z",
+          "checks": {
+            "exists": true,
+            "component_file": true,
+            "codeowners": true,
+            "branch_protection": true
+          }
+        },
+        "component_file": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "namespace": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "identity": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "contract": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "resources": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "dev_deploy": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        }
+      },
+      "freshness": {
+        "repo": "2026-11-22T06:15:00Z",
+        "azure": "2026-11-22T06:15:00Z"
+      }
+    },
+    {
+      "id": "mpt-extension-operations",
+      "stale": false,
+      "unverified": false,
+      "warnings": [],
+      "onboarding": {
+        "registered_at": "2026-03-14T09:12:00Z",
+        "repo": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z",
+          "checks": {
+            "exists": true,
+            "component_file": true,
+            "codeowners": true,
+            "branch_protection": true
+          }
+        },
+        "component_file": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "namespace": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "identity": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "contract": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "resources": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "dev_deploy": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        }
+      },
+      "freshness": {
+        "repo": "2026-11-22T06:15:00Z",
+        "azure": "2026-11-22T06:15:00Z"
+      }
+    },
+    {
+      "id": "mpt-extension-producthub",
+      "stale": false,
+      "unverified": false,
+      "warnings": [],
+      "onboarding": {
+        "registered_at": "2026-03-14T09:12:00Z",
+        "repo": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z",
+          "checks": {
+            "exists": true,
+            "component_file": true,
+            "codeowners": true,
+            "branch_protection": true
+          }
+        },
+        "component_file": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "namespace": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "identity": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "contract": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "resources": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "dev_deploy": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        }
+      },
+      "freshness": {
+        "repo": "2026-11-22T06:15:00Z",
+        "azure": "2026-11-22T06:15:00Z"
+      }
+    },
+    {
+      "id": "mpt-extension-usage-reporting",
+      "stale": false,
+      "unverified": false,
+      "warnings": [],
+      "onboarding": {
+        "registered_at": "2026-03-14T09:12:00Z",
+        "repo": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z",
+          "checks": {
+            "exists": true,
+            "component_file": true,
+            "codeowners": true,
+            "branch_protection": true
+          }
+        },
+        "component_file": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "namespace": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "identity": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "contract": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "resources": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "dev_deploy": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        }
+      },
+      "freshness": {
+        "repo": "2026-11-22T06:15:00Z",
+        "azure": "2026-11-22T06:15:00Z"
+      }
+    },
+    {
+      "id": "swo-extension-mscsp",
+      "stale": false,
+      "unverified": false,
+      "warnings": [],
+      "onboarding": {
+        "registered_at": "2026-03-14T09:12:00Z",
+        "repo": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z",
+          "checks": {
+            "exists": true,
+            "component_file": true,
+            "codeowners": true,
+            "branch_protection": true
+          }
+        },
+        "component_file": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "namespace": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "identity": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "contract": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "resources": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "dev_deploy": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        }
+      },
+      "freshness": {
+        "repo": "2026-11-22T06:15:00Z",
+        "azure": "2026-11-22T06:15:00Z"
+      }
+    },
+    {
+      "id": "litellm",
+      "stale": false,
+      "unverified": false,
+      "warnings": [
+        {
+          "code": "branch_protection",
+          "message": "The default branch has no protection rule."
+        }
+      ],
+      "onboarding": {
+        "registered_at": "2026-03-14T09:12:00Z",
+        "repo": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z",
+          "checks": {
+            "exists": true,
+            "component_file": true,
+            "codeowners": true,
+            "branch_protection": false
+          }
+        },
+        "component_file": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "namespace": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "identity": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "contract": {
+          "status": "unknown",
+          "detail": "no API contract published"
+        },
+        "resources": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "dev_deploy": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        }
+      },
+      "freshness": {
+        "repo": "2026-11-22T06:15:00Z",
+        "azure": "2026-11-22T06:15:00Z"
+      }
+    },
+    {
+      "id": "prism-web-api",
+      "stale": false,
+      "unverified": false,
+      "warnings": [],
+      "onboarding": {
+        "registered_at": "2026-03-14T09:12:00Z",
+        "repo": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z",
+          "checks": {
+            "exists": true,
+            "component_file": true,
+            "codeowners": true,
+            "branch_protection": true
+          }
+        },
+        "component_file": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "namespace": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "identity": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "contract": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "resources": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "dev_deploy": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        }
+      },
+      "freshness": {
+        "repo": "2026-11-22T06:15:00Z",
+        "azure": "2026-11-22T06:15:00Z"
+      }
+    },
+    {
+      "id": "prism-web-portal",
+      "stale": false,
+      "unverified": false,
+      "warnings": [],
+      "onboarding": {
+        "registered_at": "2026-03-14T09:12:00Z",
+        "repo": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z",
+          "checks": {
+            "exists": true,
+            "component_file": true,
+            "codeowners": true,
+            "branch_protection": true
+          }
+        },
+        "component_file": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "namespace": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "identity": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "contract": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "resources": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "dev_deploy": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        }
+      },
+      "freshness": {
+        "repo": "2026-11-22T06:15:00Z",
+        "azure": "2026-11-22T06:15:00Z"
+      }
+    },
+    {
+      "id": "prism-minion-core",
+      "stale": false,
+      "unverified": false,
+      "warnings": [],
+      "onboarding": {
+        "registered_at": "2026-03-14T09:12:00Z",
+        "repo": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z",
+          "checks": {
+            "exists": true,
+            "component_file": true,
+            "codeowners": true,
+            "branch_protection": true
+          }
+        },
+        "component_file": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "namespace": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "identity": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "contract": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "resources": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "dev_deploy": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        }
+      },
+      "freshness": {
+        "repo": "2026-11-22T06:15:00Z",
+        "azure": "2026-11-22T06:15:00Z"
+      }
+    },
+    {
+      "id": "prism-minion-invoicing",
+      "stale": false,
+      "unverified": false,
+      "warnings": [],
+      "onboarding": {
+        "registered_at": "2026-03-14T09:12:00Z",
+        "repo": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z",
+          "checks": {
+            "exists": true,
+            "component_file": true,
+            "codeowners": true,
+            "branch_protection": true
+          }
+        },
+        "component_file": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "namespace": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "identity": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "contract": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "resources": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "dev_deploy": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        }
+      },
+      "freshness": {
+        "repo": "2026-11-22T06:15:00Z",
+        "azure": "2026-11-22T06:15:00Z"
+      }
+    },
+    {
+      "id": "prism-minion-partnercenter",
+      "stale": false,
+      "unverified": false,
+      "warnings": [],
+      "onboarding": {
+        "registered_at": "2026-03-14T09:12:00Z",
+        "repo": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z",
+          "checks": {
+            "exists": true,
+            "component_file": true,
+            "codeowners": true,
+            "branch_protection": true
+          }
+        },
+        "component_file": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "namespace": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "identity": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "contract": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "resources": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "dev_deploy": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        }
+      },
+      "freshness": {
+        "repo": "2026-11-22T06:15:00Z",
+        "azure": "2026-11-22T06:15:00Z"
+      }
+    },
+    {
+      "id": "prism-minion-azure",
+      "stale": false,
+      "unverified": false,
+      "warnings": [],
+      "onboarding": {
+        "registered_at": "2026-03-14T09:12:00Z",
+        "repo": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z",
+          "checks": {
+            "exists": true,
+            "component_file": true,
+            "codeowners": true,
+            "branch_protection": true
+          }
+        },
+        "component_file": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "namespace": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "identity": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "contract": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "resources": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "dev_deploy": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        }
+      },
+      "freshness": {
+        "repo": "2026-11-22T06:15:00Z",
+        "azure": "2026-11-22T06:15:00Z"
+      }
+    },
+    {
+      "id": "prism-minion-recon",
+      "stale": false,
+      "unverified": false,
+      "warnings": [],
+      "onboarding": {
+        "registered_at": "2026-03-14T09:12:00Z",
+        "repo": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z",
+          "checks": {
+            "exists": true,
+            "component_file": true,
+            "codeowners": true,
+            "branch_protection": true
+          }
+        },
+        "component_file": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "namespace": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "identity": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "contract": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "resources": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "dev_deploy": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        }
+      },
+      "freshness": {
+        "repo": "2026-11-22T06:15:00Z",
+        "azure": "2026-11-22T06:15:00Z"
+      }
+    },
+    {
+      "id": "prism-web-signalr",
+      "stale": false,
+      "unverified": false,
+      "warnings": [],
+      "onboarding": {
+        "registered_at": "2026-03-14T09:12:00Z",
+        "repo": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z",
+          "checks": {
+            "exists": true,
+            "component_file": true,
+            "codeowners": true,
+            "branch_protection": true
+          }
+        },
+        "component_file": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "namespace": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "identity": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "contract": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "resources": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "dev_deploy": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        }
+      },
+      "freshness": {
+        "repo": "2026-11-22T06:15:00Z",
+        "azure": "2026-11-22T06:15:00Z"
+      }
+    },
+    {
+      "id": "prism-identity-identityprovider",
+      "stale": false,
+      "unverified": false,
+      "warnings": [],
+      "onboarding": {
+        "registered_at": "2026-03-14T09:12:00Z",
+        "repo": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z",
+          "checks": {
+            "exists": true,
+            "component_file": true,
+            "codeowners": true,
+            "branch_protection": true
+          }
+        },
+        "component_file": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "namespace": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "identity": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "contract": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "resources": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "dev_deploy": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        }
+      },
+      "freshness": {
+        "repo": "2026-11-22T06:15:00Z",
+        "azure": "2026-11-22T06:15:00Z"
+      }
+    },
+    {
+      "id": "Insights.Application.Api",
+      "stale": false,
+      "unverified": false,
+      "warnings": [],
+      "onboarding": {
+        "registered_at": "2026-03-14T09:12:00Z",
+        "repo": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z",
+          "checks": {
+            "exists": true,
+            "component_file": true,
+            "codeowners": true,
+            "branch_protection": true
+          }
+        },
+        "component_file": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "namespace": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "identity": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "contract": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "resources": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "dev_deploy": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        }
+      },
+      "freshness": {
+        "repo": "2026-11-22T06:15:00Z",
+        "azure": "2026-11-22T06:15:00Z"
+      }
+    },
+    {
+      "id": "adobe-service",
+      "stale": false,
+      "unverified": false,
+      "warnings": [],
+      "onboarding": {
+        "registered_at": "2026-03-14T09:12:00Z",
+        "repo": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z",
+          "checks": {
+            "exists": true,
+            "component_file": true,
+            "codeowners": true,
+            "branch_protection": true
+          }
+        },
+        "component_file": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "namespace": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "identity": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "contract": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "resources": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "dev_deploy": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        }
+      },
+      "freshness": {
+        "repo": "2026-11-22T06:15:00Z",
+        "azure": "2026-11-22T06:15:00Z"
+      }
+    },
+    {
+      "id": "adobe-service-graphql",
+      "stale": false,
+      "unverified": false,
+      "warnings": [],
+      "onboarding": {
+        "registered_at": "2026-03-14T09:12:00Z",
+        "repo": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z",
+          "checks": {
+            "exists": true,
+            "component_file": true,
+            "codeowners": true,
+            "branch_protection": true
+          }
+        },
+        "component_file": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "namespace": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "identity": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "contract": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "resources": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "dev_deploy": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        }
+      },
+      "freshness": {
+        "repo": "2026-11-22T06:15:00Z",
+        "azure": "2026-11-22T06:15:00Z"
+      }
+    },
+    {
+      "id": "asset-api",
+      "stale": false,
+      "unverified": false,
+      "warnings": [],
+      "onboarding": {
+        "registered_at": "2026-03-14T09:12:00Z",
+        "repo": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z",
+          "checks": {
+            "exists": true,
+            "component_file": true,
+            "codeowners": true,
+            "branch_protection": true
+          }
+        },
+        "component_file": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "namespace": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "identity": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "contract": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "resources": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "dev_deploy": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        }
+      },
+      "freshness": {
+        "repo": "2026-11-22T06:15:00Z",
+        "azure": "2026-11-22T06:15:00Z"
+      }
+    },
+    {
+      "id": "agreement-api",
+      "stale": false,
+      "unverified": false,
+      "warnings": [],
+      "onboarding": {
+        "registered_at": "2026-03-14T09:12:00Z",
+        "repo": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z",
+          "checks": {
+            "exists": true,
+            "component_file": true,
+            "codeowners": true,
+            "branch_protection": true
+          }
+        },
+        "component_file": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "namespace": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "identity": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "contract": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "resources": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "dev_deploy": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        }
+      },
+      "freshness": {
+        "repo": "2026-11-22T06:15:00Z",
+        "azure": "2026-11-22T06:15:00Z"
+      }
+    },
+    {
+      "id": "aws-billing",
+      "stale": false,
+      "unverified": false,
+      "warnings": [
+        {
+          "code": "untagged_resources",
+          "message": "2 resources in its resource group have no service tag."
+        }
+      ],
+      "onboarding": {
+        "registered_at": "2026-03-14T09:12:00Z",
+        "repo": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z",
+          "checks": {
+            "exists": true,
+            "component_file": true,
+            "codeowners": true,
+            "branch_protection": true
+          }
+        },
+        "component_file": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "namespace": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "identity": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "contract": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "resources": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "dev_deploy": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        }
+      },
+      "freshness": {
+        "repo": "2026-11-22T06:15:00Z",
+        "azure": "2026-11-22T06:15:00Z"
+      }
+    },
+    {
+      "id": "aly-budgets-web-api",
+      "stale": false,
+      "unverified": false,
+      "warnings": [],
+      "onboarding": {
+        "registered_at": "2026-03-14T09:12:00Z",
+        "repo": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z",
+          "checks": {
+            "exists": true,
+            "component_file": true,
+            "codeowners": true,
+            "branch_protection": true
+          }
+        },
+        "component_file": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "namespace": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "identity": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "contract": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "resources": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "dev_deploy": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        }
+      },
+      "freshness": {
+        "repo": "2026-11-22T06:15:00Z",
+        "azure": "2026-11-22T06:15:00Z"
+      }
+    },
+    {
+      "id": "aly-cloud-utilization-web-api",
+      "stale": false,
+      "unverified": false,
+      "warnings": [],
+      "onboarding": {
+        "registered_at": "2026-03-14T09:12:00Z",
+        "repo": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z",
+          "checks": {
+            "exists": true,
+            "component_file": true,
+            "codeowners": true,
+            "branch_protection": true
+          }
+        },
+        "component_file": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "namespace": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "identity": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "contract": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "resources": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "dev_deploy": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        }
+      },
+      "freshness": {
+        "repo": "2026-11-22T06:15:00Z",
+        "azure": "2026-11-22T06:15:00Z"
+      }
+    },
+    {
+      "id": "aly-consumption-ea-web-api",
+      "stale": false,
+      "unverified": false,
+      "warnings": [],
+      "onboarding": {
+        "registered_at": "2026-03-14T09:12:00Z",
+        "repo": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z",
+          "checks": {
+            "exists": true,
+            "component_file": true,
+            "codeowners": true,
+            "branch_protection": true
+          }
+        },
+        "component_file": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "namespace": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "identity": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "contract": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "resources": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "dev_deploy": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        }
+      },
+      "freshness": {
+        "repo": "2026-11-22T06:15:00Z",
+        "azure": "2026-11-22T06:15:00Z"
+      }
+    },
+    {
+      "id": "aly-consumption-aws-web-api",
+      "stale": false,
+      "unverified": false,
+      "warnings": [],
+      "onboarding": {
+        "registered_at": "2026-03-14T09:12:00Z",
+        "repo": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z",
+          "checks": {
+            "exists": true,
+            "component_file": true,
+            "codeowners": true,
+            "branch_protection": true
+          }
+        },
+        "component_file": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "namespace": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "identity": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "contract": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "resources": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "dev_deploy": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        }
+      },
+      "freshness": {
+        "repo": "2026-11-22T06:15:00Z",
+        "azure": "2026-11-22T06:15:00Z"
+      }
+    },
+    {
+      "id": "aly-consumption-consolidation-web-api",
+      "stale": false,
+      "unverified": false,
+      "warnings": [],
+      "onboarding": {
+        "registered_at": "2026-03-14T09:12:00Z",
+        "repo": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z",
+          "checks": {
+            "exists": true,
+            "component_file": true,
+            "codeowners": true,
+            "branch_protection": true
+          }
+        },
+        "component_file": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "namespace": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "identity": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "contract": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "resources": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "dev_deploy": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        }
+      },
+      "freshness": {
+        "repo": "2026-11-22T06:15:00Z",
+        "azure": "2026-11-22T06:15:00Z"
+      }
+    },
+    {
+      "id": "aly-azure-consumption-csp-web-api",
+      "stale": false,
+      "unverified": false,
+      "warnings": [],
+      "onboarding": {
+        "registered_at": "2026-03-14T09:12:00Z",
+        "repo": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z",
+          "checks": {
+            "exists": true,
+            "component_file": true,
+            "codeowners": true,
+            "branch_protection": true
+          }
+        },
+        "component_file": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "namespace": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "identity": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "contract": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "resources": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "dev_deploy": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        }
+      },
+      "freshness": {
+        "repo": "2026-11-22T06:15:00Z",
+        "azure": "2026-11-22T06:15:00Z"
+      }
+    },
+    {
+      "id": "activation-manager-bo-web-api",
+      "stale": false,
+      "unverified": false,
+      "warnings": [],
+      "onboarding": {
+        "registered_at": "2026-03-14T09:12:00Z",
+        "repo": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z",
+          "checks": {
+            "exists": true,
+            "component_file": true,
+            "codeowners": true,
+            "branch_protection": true
+          }
+        },
+        "component_file": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "namespace": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "identity": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "contract": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "resources": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "dev_deploy": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        }
+      },
+      "freshness": {
+        "repo": "2026-11-22T06:15:00Z",
+        "azure": "2026-11-22T06:15:00Z"
+      }
+    },
+    {
+      "id": "nova-anvil",
+      "stale": false,
+      "unverified": false,
+      "warnings": [],
+      "onboarding": {
+        "registered_at": "2026-03-14T09:12:00Z",
+        "repo": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z",
+          "checks": {
+            "exists": true,
+            "component_file": true,
+            "codeowners": true,
+            "branch_protection": true
+          }
+        },
+        "component_file": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "namespace": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "identity": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "contract": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "resources": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "dev_deploy": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        }
+      },
+      "freshness": {
+        "repo": "2026-11-22T06:15:00Z",
+        "azure": "2026-11-22T06:15:00Z"
+      }
+    },
+    {
+      "id": "podinfo",
+      "stale": false,
+      "unverified": false,
+      "warnings": [],
+      "onboarding": {
+        "registered_at": "2026-03-14T09:12:00Z",
+        "repo": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z",
+          "checks": {
+            "exists": true,
+            "component_file": true,
+            "codeowners": true,
+            "branch_protection": true
+          }
+        },
+        "component_file": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "namespace": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "identity": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "contract": {
+          "status": "unknown",
+          "detail": "no API contract published"
+        },
+        "resources": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        },
+        "dev_deploy": {
+          "status": "done",
+          "at": "2026-03-14T09:12:00Z"
+        }
+      },
+      "freshness": {
+        "repo": "2026-11-22T06:15:00Z",
+        "azure": "2026-11-22T06:15:00Z"
+      }
+    }
+  ],
+  "azure": {
+    "observed_at": "2026-11-22T06:15:00Z",
+    "subscriptions": [
+      "3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01",
+      "8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02",
+      "c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03"
+    ],
+    "services": [
+      {
+        "id": "mpt-billing",
+        "resources": [
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-billing-prod-rg/providers/Microsoft.App/containerApps/mpt-billing-prod",
+            "type": "microsoft.app/containerapps",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-billing-prod-rg/providers/Microsoft.Insights/components/mpt-billing-prod-ai",
+            "type": "microsoft.insights/components",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-billing-prod-rg/providers/Microsoft.KeyVault/vaults/kv-mpt-billing-prod",
+            "type": "microsoft.keyvault/vaults",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-billing-prod-rg/providers/Microsoft.Cache/Redis/mpt-billing-prod-redis",
+            "type": "microsoft.cache/redis",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-billing-prod-rg/providers/Microsoft.Storage/storageAccounts/stmptbillingprod",
+            "type": "microsoft.storage/storageaccounts",
+            "env": "prod"
+          }
+        ]
+      },
+      {
+        "id": "mpt-procurement",
+        "resources": [
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-procurement-prod-rg/providers/Microsoft.App/containerApps/mpt-procurement-prod",
+            "type": "microsoft.app/containerapps",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-procurement-prod-rg/providers/Microsoft.Insights/components/mpt-procurement-prod-ai",
+            "type": "microsoft.insights/components",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-procurement-prod-rg/providers/Microsoft.KeyVault/vaults/kv-mpt-procuremen-prod",
+            "type": "microsoft.keyvault/vaults",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-procurement-prod-rg/providers/Microsoft.Cache/Redis/mpt-procurement-prod-redis",
+            "type": "microsoft.cache/redis",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-procurement-prod-rg/providers/Microsoft.Storage/storageAccounts/stmptprocurementprod",
+            "type": "microsoft.storage/storageaccounts",
+            "env": "prod"
+          }
+        ]
+      },
+      {
+        "id": "mpt-notifications",
+        "resources": [
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-notifications-prod-rg/providers/Microsoft.App/containerApps/mpt-notifications-prod",
+            "type": "microsoft.app/containerapps",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-notifications-prod-rg/providers/Microsoft.Insights/components/mpt-notifications-prod-ai",
+            "type": "microsoft.insights/components",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-notifications-prod-rg/providers/Microsoft.KeyVault/vaults/kv-mpt-notificati-prod",
+            "type": "microsoft.keyvault/vaults",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-notifications-prod-rg/providers/Microsoft.Cache/Redis/mpt-notifications-prod-redis",
+            "type": "microsoft.cache/redis",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-notifications-prod-rg/providers/Microsoft.Storage/storageAccounts/stmptnotificationsprod",
+            "type": "microsoft.storage/storageaccounts",
+            "env": "prod"
+          }
+        ]
+      },
+      {
+        "id": "mpt-audit",
+        "resources": [
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-audit-prod-rg/providers/Microsoft.App/containerApps/mpt-audit-prod",
+            "type": "microsoft.app/containerapps",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-audit-prod-rg/providers/Microsoft.Insights/components/mpt-audit-prod-ai",
+            "type": "microsoft.insights/components",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-audit-prod-rg/providers/Microsoft.KeyVault/vaults/kv-mpt-audit-prod",
+            "type": "microsoft.keyvault/vaults",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-audit-prod-rg/providers/Microsoft.Cache/Redis/mpt-audit-prod-redis",
+            "type": "microsoft.cache/redis",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-audit-prod-rg/providers/Microsoft.Storage/storageAccounts/stmptauditprod",
+            "type": "microsoft.storage/storageaccounts",
+            "env": "prod"
+          }
+        ]
+      },
+      {
+        "id": "mpt-currency",
+        "resources": [
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-currency-prod-rg/providers/Microsoft.App/containerApps/mpt-currency-prod",
+            "type": "microsoft.app/containerapps",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-currency-prod-rg/providers/Microsoft.Insights/components/mpt-currency-prod-ai",
+            "type": "microsoft.insights/components",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-currency-prod-rg/providers/Microsoft.KeyVault/vaults/kv-mpt-currency-prod",
+            "type": "microsoft.keyvault/vaults",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-currency-prod-rg/providers/Microsoft.Cache/Redis/mpt-currency-prod-redis",
+            "type": "microsoft.cache/redis",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-currency-prod-rg/providers/Microsoft.Storage/storageAccounts/stmptcurrencyprod",
+            "type": "microsoft.storage/storageaccounts",
+            "env": "prod"
+          }
+        ]
+      },
+      {
+        "id": "mpt-tasks",
+        "resources": [
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-tasks-prod-rg/providers/Microsoft.App/containerApps/mpt-tasks-prod",
+            "type": "microsoft.app/containerapps",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-tasks-prod-rg/providers/Microsoft.Insights/components/mpt-tasks-prod-ai",
+            "type": "microsoft.insights/components",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-tasks-prod-rg/providers/Microsoft.KeyVault/vaults/kv-mpt-tasks-prod",
+            "type": "microsoft.keyvault/vaults",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-tasks-prod-rg/providers/Microsoft.Cache/Redis/mpt-tasks-prod-redis",
+            "type": "microsoft.cache/redis",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-tasks-prod-rg/providers/Microsoft.Storage/storageAccounts/stmpttasksprod",
+            "type": "microsoft.storage/storageaccounts",
+            "env": "prod"
+          }
+        ]
+      },
+      {
+        "id": "mpt-helpdesk",
+        "resources": [
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-helpdesk-prod-rg/providers/Microsoft.App/containerApps/mpt-helpdesk-prod",
+            "type": "microsoft.app/containerapps",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-helpdesk-prod-rg/providers/Microsoft.Insights/components/mpt-helpdesk-prod-ai",
+            "type": "microsoft.insights/components",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-helpdesk-prod-rg/providers/Microsoft.KeyVault/vaults/kv-mpt-helpdesk-prod",
+            "type": "microsoft.keyvault/vaults",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-helpdesk-prod-rg/providers/Microsoft.Cache/Redis/mpt-helpdesk-prod-redis",
+            "type": "microsoft.cache/redis",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-helpdesk-prod-rg/providers/Microsoft.Storage/storageAccounts/stmpthelpdeskprod",
+            "type": "microsoft.storage/storageaccounts",
+            "env": "prod"
+          }
+        ]
+      },
+      {
+        "id": "mpt-public-catalog",
+        "resources": [
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-public-catalog-prod-rg/providers/Microsoft.App/containerApps/mpt-public-catalog-prod",
+            "type": "microsoft.app/containerapps",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-public-catalog-prod-rg/providers/Microsoft.Insights/components/mpt-public-catalog-prod-ai",
+            "type": "microsoft.insights/components",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-public-catalog-prod-rg/providers/Microsoft.KeyVault/vaults/kv-mpt-public-cat-prod",
+            "type": "microsoft.keyvault/vaults",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-public-catalog-prod-rg/providers/Microsoft.Cache/Redis/mpt-public-catalog-prod-redis",
+            "type": "microsoft.cache/redis",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-public-catalog-prod-rg/providers/Microsoft.Storage/storageAccounts/stmptpubliccatalogprod",
+            "type": "microsoft.storage/storageaccounts",
+            "env": "prod"
+          }
+        ]
+      },
+      {
+        "id": "mpt-spotlight",
+        "resources": [
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-spotlight-prod-rg/providers/Microsoft.App/containerApps/mpt-spotlight-prod",
+            "type": "microsoft.app/containerapps",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-spotlight-prod-rg/providers/Microsoft.Insights/components/mpt-spotlight-prod-ai",
+            "type": "microsoft.insights/components",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-spotlight-prod-rg/providers/Microsoft.KeyVault/vaults/kv-mpt-spotlight-prod",
+            "type": "microsoft.keyvault/vaults",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-spotlight-prod-rg/providers/Microsoft.Cache/Redis/mpt-spotlight-prod-redis",
+            "type": "microsoft.cache/redis",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-spotlight-prod-rg/providers/Microsoft.Storage/storageAccounts/stmptspotlightprod",
+            "type": "microsoft.storage/storageaccounts",
+            "env": "prod"
+          }
+        ]
+      },
+      {
+        "id": "mpt-scheduler",
+        "resources": [
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-scheduler-prod-rg/providers/Microsoft.App/containerApps/mpt-scheduler-prod",
+            "type": "microsoft.app/containerapps",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-scheduler-prod-rg/providers/Microsoft.Insights/components/mpt-scheduler-prod-ai",
+            "type": "microsoft.insights/components",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-scheduler-prod-rg/providers/Microsoft.KeyVault/vaults/kv-mpt-scheduler-prod",
+            "type": "microsoft.keyvault/vaults",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-scheduler-prod-rg/providers/Microsoft.Cache/Redis/mpt-scheduler-prod-redis",
+            "type": "microsoft.cache/redis",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-scheduler-prod-rg/providers/Microsoft.Storage/storageAccounts/stmptschedulerprod",
+            "type": "microsoft.storage/storageaccounts",
+            "env": "prod"
+          }
+        ]
+      },
+      {
+        "id": "mpt-export",
+        "resources": [
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-export-prod-rg/providers/Microsoft.App/containerApps/mpt-export-prod",
+            "type": "microsoft.app/containerapps",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-export-prod-rg/providers/Microsoft.Insights/components/mpt-export-prod-ai",
+            "type": "microsoft.insights/components",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-export-prod-rg/providers/Microsoft.KeyVault/vaults/kv-mpt-export-prod",
+            "type": "microsoft.keyvault/vaults",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-export-prod-rg/providers/Microsoft.Cache/Redis/mpt-export-prod-redis",
+            "type": "microsoft.cache/redis",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-export-prod-rg/providers/Microsoft.Storage/storageAccounts/stmptexportprod",
+            "type": "microsoft.storage/storageaccounts",
+            "env": "prod"
+          }
+        ]
+      },
+      {
+        "id": "swo-auth",
+        "resources": [
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-swo-auth-prod-rg/providers/Microsoft.App/containerApps/swo-auth-prod",
+            "type": "microsoft.app/containerapps",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-swo-auth-prod-rg/providers/Microsoft.Insights/components/swo-auth-prod-ai",
+            "type": "microsoft.insights/components",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-swo-auth-prod-rg/providers/Microsoft.KeyVault/vaults/kv-swo-auth-prod",
+            "type": "microsoft.keyvault/vaults",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-swo-auth-prod-rg/providers/Microsoft.Cache/Redis/swo-auth-prod-redis",
+            "type": "microsoft.cache/redis",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-swo-auth-prod-rg/providers/Microsoft.Storage/storageAccounts/stswoauthprod",
+            "type": "microsoft.storage/storageaccounts",
+            "env": "prod"
+          }
+        ]
+      },
+      {
+        "id": "swo-platform",
+        "resources": [
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-swo-platform-prod-rg/providers/Microsoft.App/containerApps/swo-platform-prod",
+            "type": "microsoft.app/containerapps",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-swo-platform-prod-rg/providers/Microsoft.Insights/components/swo-platform-prod-ai",
+            "type": "microsoft.insights/components",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-swo-platform-prod-rg/providers/Microsoft.KeyVault/vaults/kv-swo-platform-prod",
+            "type": "microsoft.keyvault/vaults",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-swo-platform-prod-rg/providers/Microsoft.Cache/Redis/swo-platform-prod-redis",
+            "type": "microsoft.cache/redis",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-swo-platform-prod-rg/providers/Microsoft.Storage/storageAccounts/stswoplatformprod",
+            "type": "microsoft.storage/storageaccounts",
+            "env": "prod"
+          }
+        ]
+      },
+      {
+        "id": "mpt-nav-stats",
+        "resources": [
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-nav-stats-prod-rg/providers/Microsoft.App/containerApps/mpt-nav-stats-prod",
+            "type": "microsoft.app/containerapps",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-nav-stats-prod-rg/providers/Microsoft.Insights/components/mpt-nav-stats-prod-ai",
+            "type": "microsoft.insights/components",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-nav-stats-prod-rg/providers/Microsoft.KeyVault/vaults/kv-mpt-nav-stats-prod",
+            "type": "microsoft.keyvault/vaults",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-nav-stats-prod-rg/providers/Microsoft.Cache/Redis/mpt-nav-stats-prod-redis",
+            "type": "microsoft.cache/redis",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-nav-stats-prod-rg/providers/Microsoft.Storage/storageAccounts/stmptnavstatsprod",
+            "type": "microsoft.storage/storageaccounts",
+            "env": "prod"
+          }
+        ]
+      },
+      {
+        "id": "swo-web-shell",
+        "resources": [
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-swo-web-shell-prod-rg/providers/Microsoft.App/containerApps/swo-web-shell-prod",
+            "type": "microsoft.app/containerapps",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-swo-web-shell-prod-rg/providers/Microsoft.Insights/components/swo-web-shell-prod-ai",
+            "type": "microsoft.insights/components",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-swo-web-shell-prod-rg/providers/Microsoft.KeyVault/vaults/kv-swo-web-shell-prod",
+            "type": "microsoft.keyvault/vaults",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-swo-web-shell-prod-rg/providers/Microsoft.Storage/storageAccounts/stswowebshellprod",
+            "type": "microsoft.storage/storageaccounts",
+            "env": "prod"
+          }
+        ]
+      },
+      {
+        "id": "swo-web-billing",
+        "resources": [
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-swo-web-billing-prod-rg/providers/Microsoft.App/containerApps/swo-web-billing-prod",
+            "type": "microsoft.app/containerapps",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-swo-web-billing-prod-rg/providers/Microsoft.Insights/components/swo-web-billing-prod-ai",
+            "type": "microsoft.insights/components",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-swo-web-billing-prod-rg/providers/Microsoft.KeyVault/vaults/kv-swo-web-billin-prod",
+            "type": "microsoft.keyvault/vaults",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-swo-web-billing-prod-rg/providers/Microsoft.Storage/storageAccounts/stswowebbillingprod",
+            "type": "microsoft.storage/storageaccounts",
+            "env": "prod"
+          }
+        ]
+      },
+      {
+        "id": "swo-web-commerce",
+        "resources": [
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-swo-web-commerce-prod-rg/providers/Microsoft.App/containerApps/swo-web-commerce-prod",
+            "type": "microsoft.app/containerapps",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-swo-web-commerce-prod-rg/providers/Microsoft.Insights/components/swo-web-commerce-prod-ai",
+            "type": "microsoft.insights/components",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-swo-web-commerce-prod-rg/providers/Microsoft.KeyVault/vaults/kv-swo-web-commer-prod",
+            "type": "microsoft.keyvault/vaults",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-swo-web-commerce-prod-rg/providers/Microsoft.Storage/storageAccounts/stswowebcommerceprod",
+            "type": "microsoft.storage/storageaccounts",
+            "env": "prod"
+          }
+        ]
+      },
+      {
+        "id": "swo-web-dashboard",
+        "resources": [
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-swo-web-dashboard-prod-rg/providers/Microsoft.App/containerApps/swo-web-dashboard-prod",
+            "type": "microsoft.app/containerapps",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-swo-web-dashboard-prod-rg/providers/Microsoft.Insights/components/swo-web-dashboard-prod-ai",
+            "type": "microsoft.insights/components",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-swo-web-dashboard-prod-rg/providers/Microsoft.KeyVault/vaults/kv-swo-web-dashbo-prod",
+            "type": "microsoft.keyvault/vaults",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-swo-web-dashboard-prod-rg/providers/Microsoft.Storage/storageAccounts/stswowebdashboardprod",
+            "type": "microsoft.storage/storageaccounts",
+            "env": "prod"
+          }
+        ]
+      },
+      {
+        "id": "mpt-web-procurement",
+        "resources": [
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-web-procurement-prod-rg/providers/Microsoft.App/containerApps/mpt-web-procurement-prod",
+            "type": "microsoft.app/containerapps",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-web-procurement-prod-rg/providers/Microsoft.Insights/components/mpt-web-procurement-prod-ai",
+            "type": "microsoft.insights/components",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-web-procurement-prod-rg/providers/Microsoft.KeyVault/vaults/kv-mpt-web-procur-prod",
+            "type": "microsoft.keyvault/vaults",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-web-procurement-prod-rg/providers/Microsoft.Storage/storageAccounts/stmptwebprocuremenprod",
+            "type": "microsoft.storage/storageaccounts",
+            "env": "prod"
+          }
+        ]
+      },
+      {
+        "id": "mpt-extension-adobe",
+        "resources": [
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-mpt-extension-adobe-prod-rg/providers/Microsoft.App/containerApps/mpt-extension-adobe-prod",
+            "type": "microsoft.app/containerapps",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-mpt-extension-adobe-prod-rg/providers/Microsoft.Insights/components/mpt-extension-adobe-prod-ai",
+            "type": "microsoft.insights/components",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-mpt-extension-adobe-prod-rg/providers/Microsoft.KeyVault/vaults/kv-mpt-extension--prod",
+            "type": "microsoft.keyvault/vaults",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-mpt-extension-adobe-prod-rg/providers/Microsoft.Cache/Redis/mpt-extension-adobe-prod-redis",
+            "type": "microsoft.cache/redis",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-mpt-extension-adobe-prod-rg/providers/Microsoft.Storage/storageAccounts/stmptextensionadobprod",
+            "type": "microsoft.storage/storageaccounts",
+            "env": "prod"
+          }
+        ]
+      },
+      {
+        "id": "mpt-extension-aws-management",
+        "resources": [
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-mpt-extension-aws-management-prod-rg/providers/Microsoft.App/containerApps/mpt-extension-aws-management-prod",
+            "type": "microsoft.app/containerapps",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-mpt-extension-aws-management-prod-rg/providers/Microsoft.Insights/components/mpt-extension-aws-management-prod-ai",
+            "type": "microsoft.insights/components",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-mpt-extension-aws-management-prod-rg/providers/Microsoft.KeyVault/vaults/kv-mpt-extension--prod",
+            "type": "microsoft.keyvault/vaults",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-mpt-extension-aws-management-prod-rg/providers/Microsoft.Cache/Redis/mpt-extension-aws-management-prod-redis",
+            "type": "microsoft.cache/redis",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-mpt-extension-aws-management-prod-rg/providers/Microsoft.Storage/storageAccounts/stmptextensionawsmprod",
+            "type": "microsoft.storage/storageaccounts",
+            "env": "prod"
+          }
+        ]
+      },
+      {
+        "id": "mpt-extension-installation",
+        "resources": [
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-mpt-extension-installation-prod-rg/providers/Microsoft.App/containerApps/mpt-extension-installation-prod",
+            "type": "microsoft.app/containerapps",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-mpt-extension-installation-prod-rg/providers/Microsoft.Insights/components/mpt-extension-installation-prod-ai",
+            "type": "microsoft.insights/components",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-mpt-extension-installation-prod-rg/providers/Microsoft.KeyVault/vaults/kv-mpt-extension--prod",
+            "type": "microsoft.keyvault/vaults",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-mpt-extension-installation-prod-rg/providers/Microsoft.Cache/Redis/mpt-extension-installation-prod-redis",
+            "type": "microsoft.cache/redis",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-mpt-extension-installation-prod-rg/providers/Microsoft.Storage/storageAccounts/stmptextensioninstprod",
+            "type": "microsoft.storage/storageaccounts",
+            "env": "prod"
+          }
+        ]
+      },
+      {
+        "id": "mpt-extension-operations",
+        "resources": [
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-mpt-extension-operations-prod-rg/providers/Microsoft.App/containerApps/mpt-extension-operations-prod",
+            "type": "microsoft.app/containerapps",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-mpt-extension-operations-prod-rg/providers/Microsoft.Insights/components/mpt-extension-operations-prod-ai",
+            "type": "microsoft.insights/components",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-mpt-extension-operations-prod-rg/providers/Microsoft.KeyVault/vaults/kv-mpt-extension--prod",
+            "type": "microsoft.keyvault/vaults",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-mpt-extension-operations-prod-rg/providers/Microsoft.Cache/Redis/mpt-extension-operations-prod-redis",
+            "type": "microsoft.cache/redis",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-mpt-extension-operations-prod-rg/providers/Microsoft.Storage/storageAccounts/stmptextensionoperprod",
+            "type": "microsoft.storage/storageaccounts",
+            "env": "prod"
+          }
+        ]
+      },
+      {
+        "id": "mpt-extension-producthub",
+        "resources": [
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-mpt-extension-producthub-prod-rg/providers/Microsoft.App/containerApps/mpt-extension-producthub-prod",
+            "type": "microsoft.app/containerapps",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-mpt-extension-producthub-prod-rg/providers/Microsoft.Insights/components/mpt-extension-producthub-prod-ai",
+            "type": "microsoft.insights/components",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-mpt-extension-producthub-prod-rg/providers/Microsoft.KeyVault/vaults/kv-mpt-extension--prod",
+            "type": "microsoft.keyvault/vaults",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-mpt-extension-producthub-prod-rg/providers/Microsoft.Cache/Redis/mpt-extension-producthub-prod-redis",
+            "type": "microsoft.cache/redis",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-mpt-extension-producthub-prod-rg/providers/Microsoft.Storage/storageAccounts/stmptextensionprodprod",
+            "type": "microsoft.storage/storageaccounts",
+            "env": "prod"
+          }
+        ]
+      },
+      {
+        "id": "mpt-extension-usage-reporting",
+        "resources": [
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-mpt-extension-usage-reporting-prod-rg/providers/Microsoft.App/containerApps/mpt-extension-usage-reporting-prod",
+            "type": "microsoft.app/containerapps",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-mpt-extension-usage-reporting-prod-rg/providers/Microsoft.Insights/components/mpt-extension-usage-reporting-prod-ai",
+            "type": "microsoft.insights/components",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-mpt-extension-usage-reporting-prod-rg/providers/Microsoft.KeyVault/vaults/kv-mpt-extension--prod",
+            "type": "microsoft.keyvault/vaults",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-mpt-extension-usage-reporting-prod-rg/providers/Microsoft.Cache/Redis/mpt-extension-usage-reporting-prod-redis",
+            "type": "microsoft.cache/redis",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-mpt-extension-usage-reporting-prod-rg/providers/Microsoft.Storage/storageAccounts/stmptextensionusagprod",
+            "type": "microsoft.storage/storageaccounts",
+            "env": "prod"
+          }
+        ]
+      },
+      {
+        "id": "swo-extension-mscsp",
+        "resources": [
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-swo-extension-mscsp-prod-rg/providers/Microsoft.App/containerApps/swo-extension-mscsp-prod",
+            "type": "microsoft.app/containerapps",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-swo-extension-mscsp-prod-rg/providers/Microsoft.Insights/components/swo-extension-mscsp-prod-ai",
+            "type": "microsoft.insights/components",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-swo-extension-mscsp-prod-rg/providers/Microsoft.KeyVault/vaults/kv-swo-extension--prod",
+            "type": "microsoft.keyvault/vaults",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-swo-extension-mscsp-prod-rg/providers/Microsoft.Cache/Redis/swo-extension-mscsp-prod-redis",
+            "type": "microsoft.cache/redis",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-swo-extension-mscsp-prod-rg/providers/Microsoft.Storage/storageAccounts/stswoextensionmscsprod",
+            "type": "microsoft.storage/storageaccounts",
+            "env": "prod"
+          }
+        ]
+      },
+      {
+        "id": "litellm",
+        "resources": [
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-litellm-prod-rg/providers/Microsoft.App/containerApps/litellm-prod",
+            "type": "microsoft.app/containerapps",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-litellm-prod-rg/providers/Microsoft.Insights/components/litellm-prod-ai",
+            "type": "microsoft.insights/components",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-litellm-prod-rg/providers/Microsoft.KeyVault/vaults/kv-litellm-prod",
+            "type": "microsoft.keyvault/vaults",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-litellm-prod-rg/providers/Microsoft.Cache/Redis/litellm-prod-redis",
+            "type": "microsoft.cache/redis",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-litellm-prod-rg/providers/Microsoft.Storage/storageAccounts/stlitellmprod",
+            "type": "microsoft.storage/storageaccounts",
+            "env": "prod"
+          }
+        ]
+      },
+      {
+        "id": "prism-web-api",
+        "resources": [
+          {
+            "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-web-api-prod-rg/providers/Microsoft.App/containerApps/prism-web-api-prod",
+            "type": "microsoft.app/containerapps",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-web-api-prod-rg/providers/Microsoft.Insights/components/prism-web-api-prod-ai",
+            "type": "microsoft.insights/components",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-web-api-prod-rg/providers/Microsoft.KeyVault/vaults/kv-prism-web-api-prod",
+            "type": "microsoft.keyvault/vaults",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-web-api-prod-rg/providers/Microsoft.Cache/Redis/prism-web-api-prod-redis",
+            "type": "microsoft.cache/redis",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-web-api-prod-rg/providers/Microsoft.Storage/storageAccounts/stprismwebapiprod",
+            "type": "microsoft.storage/storageaccounts",
+            "env": "prod"
+          }
+        ]
+      },
+      {
+        "id": "prism-web-portal",
+        "resources": [
+          {
+            "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-web-portal-prod-rg/providers/Microsoft.App/containerApps/prism-web-portal-prod",
+            "type": "microsoft.app/containerapps",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-web-portal-prod-rg/providers/Microsoft.Insights/components/prism-web-portal-prod-ai",
+            "type": "microsoft.insights/components",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-web-portal-prod-rg/providers/Microsoft.KeyVault/vaults/kv-prism-web-port-prod",
+            "type": "microsoft.keyvault/vaults",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-web-portal-prod-rg/providers/Microsoft.Storage/storageAccounts/stprismwebportalprod",
+            "type": "microsoft.storage/storageaccounts",
+            "env": "prod"
+          }
+        ]
+      },
+      {
+        "id": "prism-minion-core",
+        "resources": [
+          {
+            "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-minion-core-prod-rg/providers/Microsoft.App/containerApps/prism-minion-core-prod",
+            "type": "microsoft.app/containerapps",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-minion-core-prod-rg/providers/Microsoft.Insights/components/prism-minion-core-prod-ai",
+            "type": "microsoft.insights/components",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-minion-core-prod-rg/providers/Microsoft.KeyVault/vaults/kv-prism-minion-c-prod",
+            "type": "microsoft.keyvault/vaults",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-minion-core-prod-rg/providers/Microsoft.Cache/Redis/prism-minion-core-prod-redis",
+            "type": "microsoft.cache/redis",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-minion-core-prod-rg/providers/Microsoft.Storage/storageAccounts/stprismminioncoreprod",
+            "type": "microsoft.storage/storageaccounts",
+            "env": "prod"
+          }
+        ]
+      },
+      {
+        "id": "prism-minion-invoicing",
+        "resources": [
+          {
+            "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-minion-invoicing-prod-rg/providers/Microsoft.App/containerApps/prism-minion-invoicing-prod",
+            "type": "microsoft.app/containerapps",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-minion-invoicing-prod-rg/providers/Microsoft.Insights/components/prism-minion-invoicing-prod-ai",
+            "type": "microsoft.insights/components",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-minion-invoicing-prod-rg/providers/Microsoft.KeyVault/vaults/kv-prism-minion-i-prod",
+            "type": "microsoft.keyvault/vaults",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-minion-invoicing-prod-rg/providers/Microsoft.Cache/Redis/prism-minion-invoicing-prod-redis",
+            "type": "microsoft.cache/redis",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-minion-invoicing-prod-rg/providers/Microsoft.Storage/storageAccounts/stprismminioninvoiprod",
+            "type": "microsoft.storage/storageaccounts",
+            "env": "prod"
+          }
+        ]
+      },
+      {
+        "id": "prism-minion-partnercenter",
+        "resources": [
+          {
+            "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-minion-partnercenter-prod-rg/providers/Microsoft.App/containerApps/prism-minion-partnercenter-prod",
+            "type": "microsoft.app/containerapps",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-minion-partnercenter-prod-rg/providers/Microsoft.Insights/components/prism-minion-partnercenter-prod-ai",
+            "type": "microsoft.insights/components",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-minion-partnercenter-prod-rg/providers/Microsoft.KeyVault/vaults/kv-prism-minion-p-prod",
+            "type": "microsoft.keyvault/vaults",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-minion-partnercenter-prod-rg/providers/Microsoft.Cache/Redis/prism-minion-partnercenter-prod-redis",
+            "type": "microsoft.cache/redis",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-minion-partnercenter-prod-rg/providers/Microsoft.Storage/storageAccounts/stprismminionpartnprod",
+            "type": "microsoft.storage/storageaccounts",
+            "env": "prod"
+          }
+        ]
+      },
+      {
+        "id": "prism-minion-azure",
+        "resources": [
+          {
+            "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-minion-azure-prod-rg/providers/Microsoft.App/containerApps/prism-minion-azure-prod",
+            "type": "microsoft.app/containerapps",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-minion-azure-prod-rg/providers/Microsoft.Insights/components/prism-minion-azure-prod-ai",
+            "type": "microsoft.insights/components",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-minion-azure-prod-rg/providers/Microsoft.KeyVault/vaults/kv-prism-minion-a-prod",
+            "type": "microsoft.keyvault/vaults",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-minion-azure-prod-rg/providers/Microsoft.Cache/Redis/prism-minion-azure-prod-redis",
+            "type": "microsoft.cache/redis",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-minion-azure-prod-rg/providers/Microsoft.Storage/storageAccounts/stprismminionazureprod",
+            "type": "microsoft.storage/storageaccounts",
+            "env": "prod"
+          }
+        ]
+      },
+      {
+        "id": "prism-minion-recon",
+        "resources": [
+          {
+            "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-minion-recon-prod-rg/providers/Microsoft.App/containerApps/prism-minion-recon-prod",
+            "type": "microsoft.app/containerapps",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-minion-recon-prod-rg/providers/Microsoft.Insights/components/prism-minion-recon-prod-ai",
+            "type": "microsoft.insights/components",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-minion-recon-prod-rg/providers/Microsoft.KeyVault/vaults/kv-prism-minion-r-prod",
+            "type": "microsoft.keyvault/vaults",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-minion-recon-prod-rg/providers/Microsoft.Cache/Redis/prism-minion-recon-prod-redis",
+            "type": "microsoft.cache/redis",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-minion-recon-prod-rg/providers/Microsoft.Storage/storageAccounts/stprismminionreconprod",
+            "type": "microsoft.storage/storageaccounts",
+            "env": "prod"
+          }
+        ]
+      },
+      {
+        "id": "prism-web-signalr",
+        "resources": [
+          {
+            "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-web-signalr-prod-rg/providers/Microsoft.App/containerApps/prism-web-signalr-prod",
+            "type": "microsoft.app/containerapps",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-web-signalr-prod-rg/providers/Microsoft.Insights/components/prism-web-signalr-prod-ai",
+            "type": "microsoft.insights/components",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-web-signalr-prod-rg/providers/Microsoft.KeyVault/vaults/kv-prism-web-sign-prod",
+            "type": "microsoft.keyvault/vaults",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-web-signalr-prod-rg/providers/Microsoft.Cache/Redis/prism-web-signalr-prod-redis",
+            "type": "microsoft.cache/redis",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-web-signalr-prod-rg/providers/Microsoft.Storage/storageAccounts/stprismwebsignalrprod",
+            "type": "microsoft.storage/storageaccounts",
+            "env": "prod"
+          }
+        ]
+      },
+      {
+        "id": "prism-identity-identityprovider",
+        "resources": [
+          {
+            "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-identity-identityprovider-prod-rg/providers/Microsoft.App/containerApps/prism-identity-identityprovider-prod",
+            "type": "microsoft.app/containerapps",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-identity-identityprovider-prod-rg/providers/Microsoft.Insights/components/prism-identity-identityprovider-prod-ai",
+            "type": "microsoft.insights/components",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-identity-identityprovider-prod-rg/providers/Microsoft.KeyVault/vaults/kv-prism-identity-prod",
+            "type": "microsoft.keyvault/vaults",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-identity-identityprovider-prod-rg/providers/Microsoft.Cache/Redis/prism-identity-identityprovider-prod-redis",
+            "type": "microsoft.cache/redis",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-identity-identityprovider-prod-rg/providers/Microsoft.Storage/storageAccounts/stprismidentityideprod",
+            "type": "microsoft.storage/storageaccounts",
+            "env": "prod"
+          }
+        ]
+      },
+      {
+        "id": "Insights.Application.Api",
+        "resources": [
+          {
+            "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/cloudiq-insights-application-api-prod-rg/providers/Microsoft.App/containerApps/insights-application-api-prod",
+            "type": "microsoft.app/containerapps",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/cloudiq-insights-application-api-prod-rg/providers/Microsoft.Insights/components/insights-application-api-prod-ai",
+            "type": "microsoft.insights/components",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/cloudiq-insights-application-api-prod-rg/providers/Microsoft.KeyVault/vaults/kv-insights-appli-prod",
+            "type": "microsoft.keyvault/vaults",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/cloudiq-insights-application-api-prod-rg/providers/Microsoft.Cache/Redis/insights-application-api-prod-redis",
+            "type": "microsoft.cache/redis",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/cloudiq-insights-application-api-prod-rg/providers/Microsoft.Storage/storageAccounts/stinsightsapplicatprod",
+            "type": "microsoft.storage/storageaccounts",
+            "env": "prod"
+          }
+        ]
+      },
+      {
+        "id": "adobe-service",
+        "resources": [
+          {
+            "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/cloudiq-adobe-service-prod-rg/providers/Microsoft.App/containerApps/adobe-service-prod",
+            "type": "microsoft.app/containerapps",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/cloudiq-adobe-service-prod-rg/providers/Microsoft.Insights/components/adobe-service-prod-ai",
+            "type": "microsoft.insights/components",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/cloudiq-adobe-service-prod-rg/providers/Microsoft.KeyVault/vaults/kv-adobe-service-prod",
+            "type": "microsoft.keyvault/vaults",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/cloudiq-adobe-service-prod-rg/providers/Microsoft.Cache/Redis/adobe-service-prod-redis",
+            "type": "microsoft.cache/redis",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/cloudiq-adobe-service-prod-rg/providers/Microsoft.Storage/storageAccounts/stadobeserviceprod",
+            "type": "microsoft.storage/storageaccounts",
+            "env": "prod"
+          }
+        ]
+      },
+      {
+        "id": "adobe-service-graphql",
+        "resources": [
+          {
+            "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/cloudiq-adobe-service-graphql-prod-rg/providers/Microsoft.App/containerApps/adobe-service-graphql-prod",
+            "type": "microsoft.app/containerapps",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/cloudiq-adobe-service-graphql-prod-rg/providers/Microsoft.Insights/components/adobe-service-graphql-prod-ai",
+            "type": "microsoft.insights/components",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/cloudiq-adobe-service-graphql-prod-rg/providers/Microsoft.KeyVault/vaults/kv-adobe-service--prod",
+            "type": "microsoft.keyvault/vaults",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/cloudiq-adobe-service-graphql-prod-rg/providers/Microsoft.Cache/Redis/adobe-service-graphql-prod-redis",
+            "type": "microsoft.cache/redis",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/cloudiq-adobe-service-graphql-prod-rg/providers/Microsoft.Storage/storageAccounts/stadobeservicegrapprod",
+            "type": "microsoft.storage/storageaccounts",
+            "env": "prod"
+          }
+        ]
+      },
+      {
+        "id": "asset-api",
+        "resources": [
+          {
+            "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/cloudiq-asset-api-prod-rg/providers/Microsoft.App/containerApps/asset-api-prod",
+            "type": "microsoft.app/containerapps",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/cloudiq-asset-api-prod-rg/providers/Microsoft.Insights/components/asset-api-prod-ai",
+            "type": "microsoft.insights/components",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/cloudiq-asset-api-prod-rg/providers/Microsoft.KeyVault/vaults/kv-asset-api-prod",
+            "type": "microsoft.keyvault/vaults",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/cloudiq-asset-api-prod-rg/providers/Microsoft.Cache/Redis/asset-api-prod-redis",
+            "type": "microsoft.cache/redis",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/cloudiq-asset-api-prod-rg/providers/Microsoft.Storage/storageAccounts/stassetapiprod",
+            "type": "microsoft.storage/storageaccounts",
+            "env": "prod"
+          }
+        ]
+      },
+      {
+        "id": "agreement-api",
+        "resources": [
+          {
+            "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/cloudiq-agreement-api-prod-rg/providers/Microsoft.App/containerApps/agreement-api-prod",
+            "type": "microsoft.app/containerapps",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/cloudiq-agreement-api-prod-rg/providers/Microsoft.Insights/components/agreement-api-prod-ai",
+            "type": "microsoft.insights/components",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/cloudiq-agreement-api-prod-rg/providers/Microsoft.KeyVault/vaults/kv-agreement-api-prod",
+            "type": "microsoft.keyvault/vaults",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/cloudiq-agreement-api-prod-rg/providers/Microsoft.Cache/Redis/agreement-api-prod-redis",
+            "type": "microsoft.cache/redis",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/cloudiq-agreement-api-prod-rg/providers/Microsoft.Storage/storageAccounts/stagreementapiprod",
+            "type": "microsoft.storage/storageaccounts",
+            "env": "prod"
+          }
+        ]
+      },
+      {
+        "id": "aws-billing",
+        "resources": [
+          {
+            "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/cloudiq-aws-billing-prod-rg/providers/Microsoft.App/containerApps/aws-billing-prod",
+            "type": "microsoft.app/containerapps",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/cloudiq-aws-billing-prod-rg/providers/Microsoft.Insights/components/aws-billing-prod-ai",
+            "type": "microsoft.insights/components",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/cloudiq-aws-billing-prod-rg/providers/Microsoft.KeyVault/vaults/kv-aws-billing-prod",
+            "type": "microsoft.keyvault/vaults",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/cloudiq-aws-billing-prod-rg/providers/Microsoft.Cache/Redis/aws-billing-prod-redis",
+            "type": "microsoft.cache/redis",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/cloudiq-aws-billing-prod-rg/providers/Microsoft.Storage/storageAccounts/stawsbillingprod",
+            "type": "microsoft.storage/storageaccounts",
+            "env": "prod"
+          }
+        ]
+      },
+      {
+        "id": "aly-budgets-web-api",
+        "resources": [
+          {
+            "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-aly-budgets-web-api-prod-rg/providers/Microsoft.App/containerApps/aly-budgets-web-api-prod",
+            "type": "microsoft.app/containerapps",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-aly-budgets-web-api-prod-rg/providers/Microsoft.Insights/components/aly-budgets-web-api-prod-ai",
+            "type": "microsoft.insights/components",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-aly-budgets-web-api-prod-rg/providers/Microsoft.KeyVault/vaults/kv-aly-budgets-we-prod",
+            "type": "microsoft.keyvault/vaults",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-aly-budgets-web-api-prod-rg/providers/Microsoft.Cache/Redis/aly-budgets-web-api-prod-redis",
+            "type": "microsoft.cache/redis",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-aly-budgets-web-api-prod-rg/providers/Microsoft.Storage/storageAccounts/stalybudgetswebapiprod",
+            "type": "microsoft.storage/storageaccounts",
+            "env": "prod"
+          }
+        ]
+      },
+      {
+        "id": "aly-cloud-utilization-web-api",
+        "resources": [
+          {
+            "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-aly-cloud-utilization-web-api-prod-rg/providers/Microsoft.App/containerApps/aly-cloud-utilization-web-api-prod",
+            "type": "microsoft.app/containerapps",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-aly-cloud-utilization-web-api-prod-rg/providers/Microsoft.Insights/components/aly-cloud-utilization-web-api-prod-ai",
+            "type": "microsoft.insights/components",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-aly-cloud-utilization-web-api-prod-rg/providers/Microsoft.KeyVault/vaults/kv-aly-cloud-util-prod",
+            "type": "microsoft.keyvault/vaults",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-aly-cloud-utilization-web-api-prod-rg/providers/Microsoft.Cache/Redis/aly-cloud-utilization-web-api-prod-redis",
+            "type": "microsoft.cache/redis",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-aly-cloud-utilization-web-api-prod-rg/providers/Microsoft.Storage/storageAccounts/stalycloudutilizatprod",
+            "type": "microsoft.storage/storageaccounts",
+            "env": "prod"
+          }
+        ]
+      },
+      {
+        "id": "aly-consumption-ea-web-api",
+        "resources": [
+          {
+            "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-aly-consumption-ea-web-api-prod-rg/providers/Microsoft.App/containerApps/aly-consumption-ea-web-api-prod",
+            "type": "microsoft.app/containerapps",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-aly-consumption-ea-web-api-prod-rg/providers/Microsoft.Insights/components/aly-consumption-ea-web-api-prod-ai",
+            "type": "microsoft.insights/components",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-aly-consumption-ea-web-api-prod-rg/providers/Microsoft.KeyVault/vaults/kv-aly-consumptio-prod",
+            "type": "microsoft.keyvault/vaults",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-aly-consumption-ea-web-api-prod-rg/providers/Microsoft.Cache/Redis/aly-consumption-ea-web-api-prod-redis",
+            "type": "microsoft.cache/redis",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-aly-consumption-ea-web-api-prod-rg/providers/Microsoft.Storage/storageAccounts/stalyconsumptioneaprod",
+            "type": "microsoft.storage/storageaccounts",
+            "env": "prod"
+          }
+        ]
+      },
+      {
+        "id": "aly-consumption-aws-web-api",
+        "resources": [
+          {
+            "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-aly-consumption-aws-web-api-prod-rg/providers/Microsoft.App/containerApps/aly-consumption-aws-web-api-prod",
+            "type": "microsoft.app/containerapps",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-aly-consumption-aws-web-api-prod-rg/providers/Microsoft.Insights/components/aly-consumption-aws-web-api-prod-ai",
+            "type": "microsoft.insights/components",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-aly-consumption-aws-web-api-prod-rg/providers/Microsoft.KeyVault/vaults/kv-aly-consumptio-prod",
+            "type": "microsoft.keyvault/vaults",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-aly-consumption-aws-web-api-prod-rg/providers/Microsoft.Cache/Redis/aly-consumption-aws-web-api-prod-redis",
+            "type": "microsoft.cache/redis",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-aly-consumption-aws-web-api-prod-rg/providers/Microsoft.Storage/storageAccounts/stalyconsumptionawprod",
+            "type": "microsoft.storage/storageaccounts",
+            "env": "prod"
+          }
+        ]
+      },
+      {
+        "id": "aly-consumption-consolidation-web-api",
+        "resources": [
+          {
+            "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-aly-consumption-consolidation-web-api-prod-rg/providers/Microsoft.App/containerApps/aly-consumption-consolidation-web-api-p",
+            "type": "microsoft.app/containerapps",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-aly-consumption-consolidation-web-api-prod-rg/providers/Microsoft.Insights/components/aly-consumption-consolidation-web-api-prod-ai",
+            "type": "microsoft.insights/components",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-aly-consumption-consolidation-web-api-prod-rg/providers/Microsoft.KeyVault/vaults/kv-aly-consumptio-prod",
+            "type": "microsoft.keyvault/vaults",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-aly-consumption-consolidation-web-api-prod-rg/providers/Microsoft.Cache/Redis/aly-consumption-consolidation-web-api-prod-redis",
+            "type": "microsoft.cache/redis",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-aly-consumption-consolidation-web-api-prod-rg/providers/Microsoft.Storage/storageAccounts/stalyconsumptioncoprod",
+            "type": "microsoft.storage/storageaccounts",
+            "env": "prod"
+          }
+        ]
+      },
+      {
+        "id": "aly-azure-consumption-csp-web-api",
+        "resources": [
+          {
+            "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-aly-azure-consumption-csp-web-api-prod-rg/providers/Microsoft.App/containerApps/aly-azure-consumption-csp-web-api-prod",
+            "type": "microsoft.app/containerapps",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-aly-azure-consumption-csp-web-api-prod-rg/providers/Microsoft.Insights/components/aly-azure-consumption-csp-web-api-prod-ai",
+            "type": "microsoft.insights/components",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-aly-azure-consumption-csp-web-api-prod-rg/providers/Microsoft.KeyVault/vaults/kv-aly-azure-cons-prod",
+            "type": "microsoft.keyvault/vaults",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-aly-azure-consumption-csp-web-api-prod-rg/providers/Microsoft.Cache/Redis/aly-azure-consumption-csp-web-api-prod-redis",
+            "type": "microsoft.cache/redis",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-aly-azure-consumption-csp-web-api-prod-rg/providers/Microsoft.Storage/storageAccounts/stalyazureconsumptprod",
+            "type": "microsoft.storage/storageaccounts",
+            "env": "prod"
+          }
+        ]
+      },
+      {
+        "id": "activation-manager-bo-web-api",
+        "resources": [
+          {
+            "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-activation-manager-bo-web-api-prod-rg/providers/Microsoft.App/containerApps/activation-manager-bo-web-api-prod",
+            "type": "microsoft.app/containerapps",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-activation-manager-bo-web-api-prod-rg/providers/Microsoft.Insights/components/activation-manager-bo-web-api-prod-ai",
+            "type": "microsoft.insights/components",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-activation-manager-bo-web-api-prod-rg/providers/Microsoft.KeyVault/vaults/kv-activation-man-prod",
+            "type": "microsoft.keyvault/vaults",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-activation-manager-bo-web-api-prod-rg/providers/Microsoft.Cache/Redis/activation-manager-bo-web-api-prod-redis",
+            "type": "microsoft.cache/redis",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-activation-manager-bo-web-api-prod-rg/providers/Microsoft.Storage/storageAccounts/stactivationmanageprod",
+            "type": "microsoft.storage/storageaccounts",
+            "env": "prod"
+          }
+        ]
+      },
+      {
+        "id": "nova-anvil",
+        "resources": [
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/nova-nova-anvil-prod-rg/providers/Microsoft.App/containerApps/nova-anvil-prod",
+            "type": "microsoft.app/containerapps",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/nova-nova-anvil-prod-rg/providers/Microsoft.Insights/components/nova-anvil-prod-ai",
+            "type": "microsoft.insights/components",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/nova-nova-anvil-prod-rg/providers/Microsoft.KeyVault/vaults/kv-nova-anvil-prod",
+            "type": "microsoft.keyvault/vaults",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/nova-nova-anvil-prod-rg/providers/Microsoft.Cache/Redis/nova-anvil-prod-redis",
+            "type": "microsoft.cache/redis",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/nova-nova-anvil-prod-rg/providers/Microsoft.Storage/storageAccounts/stnovaanvilprod",
+            "type": "microsoft.storage/storageaccounts",
+            "env": "prod"
+          }
+        ]
+      },
+      {
+        "id": "podinfo",
+        "resources": [
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/cicd-infra-podinfo-prod-rg/providers/Microsoft.App/containerApps/podinfo-prod",
+            "type": "microsoft.app/containerapps",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/cicd-infra-podinfo-prod-rg/providers/Microsoft.Insights/components/podinfo-prod-ai",
+            "type": "microsoft.insights/components",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/cicd-infra-podinfo-prod-rg/providers/Microsoft.KeyVault/vaults/kv-podinfo-prod",
+            "type": "microsoft.keyvault/vaults",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/cicd-infra-podinfo-prod-rg/providers/Microsoft.Cache/Redis/podinfo-prod-redis",
+            "type": "microsoft.cache/redis",
+            "env": "prod"
+          },
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/cicd-infra-podinfo-prod-rg/providers/Microsoft.Storage/storageAccounts/stpodinfoprod",
+            "type": "microsoft.storage/storageaccounts",
+            "env": "prod"
+          }
+        ]
+      }
+    ],
+    "shared": [
+      {
+        "id": "shared-postgres-mpt",
+        "state": "ok",
+        "resources": [
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/shared-prod-rg/providers/Microsoft.DBforPostgreSQL/flexibleServers/shared-postgres-mpt-prod",
+            "type": "postgres-server",
+            "env": "prod",
+            "databases": [
+              {
+                "name": "audit",
+                "state": "linked",
+                "owner": "mpt-audit",
+                "used_by": [
+                  "mpt-audit"
+                ]
+              },
+              {
+                "name": "auth",
+                "state": "linked",
+                "owner": "swo-auth",
+                "used_by": [
+                  "swo-auth"
+                ]
+              },
+              {
+                "name": "billing",
+                "state": "linked",
+                "owner": "mpt-billing",
+                "used_by": [
+                  "mpt-billing"
+                ]
+              },
+              {
+                "name": "helpdesk",
+                "state": "linked",
+                "owner": "mpt-helpdesk",
+                "used_by": [
+                  "mpt-helpdesk"
+                ]
+              },
+              {
+                "name": "notifications",
+                "state": "linked",
+                "owner": "mpt-notifications",
+                "used_by": [
+                  "mpt-notifications"
+                ]
+              },
+              {
+                "name": "procurement",
+                "state": "linked",
+                "owner": "mpt-procurement",
+                "used_by": [
+                  "mpt-procurement"
+                ]
+              },
+              {
+                "name": "legacy_reports",
+                "state": "unclaimed",
+                "owner": null,
+                "used_by": []
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "shared-mssql-prism",
+        "state": "ok",
+        "resources": [
+          {
+            "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/shared-prod-rg/providers/Microsoft.Sql/servers/shared-mssql-prism-prod",
+            "type": "mssql-server",
+            "env": "prod",
+            "databases": [
+              {
+                "name": "prism-core",
+                "state": "linked",
+                "owner": "prism-web-api",
+                "used_by": [
+                  "prism-web-api",
+                  "prism-minion-core"
+                ]
+              },
+              {
+                "name": "prism-invoicing",
+                "state": "linked",
+                "owner": "prism-minion-invoicing",
+                "used_by": [
+                  "prism-minion-invoicing"
+                ]
+              },
+              {
+                "name": "prism-recon",
+                "state": "linked",
+                "owner": "prism-minion-recon",
+                "used_by": [
+                  "prism-minion-recon"
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "shared-mssql-pyra",
+        "state": "ok",
+        "resources": [
+          {
+            "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/shared-prod-rg/providers/Microsoft.Sql/servers/shared-mssql-pyra-prod",
+            "type": "mssql-server",
+            "env": "prod",
+            "databases": [
+              {
+                "name": "budgets",
+                "state": "linked",
+                "owner": "aly-budgets-web-api",
+                "used_by": [
+                  "aly-budgets-web-api"
+                ]
+              },
+              {
+                "name": "consumption",
+                "state": "linked",
+                "owner": "aly-consumption-consolidation-web-api",
+                "used_by": [
+                  "aly-consumption-ea-web-api",
+                  "aly-consumption-aws-web-api",
+                  "aly-consumption-consolidation-web-api",
+                  "aly-azure-consumption-csp-web-api"
+                ]
+              },
+              {
+                "name": "utilization",
+                "state": "linked",
+                "owner": "aly-cloud-utilization-web-api",
+                "used_by": [
+                  "aly-cloud-utilization-web-api"
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "aks-mpt-weu",
+        "state": "ok",
+        "resources": [
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/shared-prod-rg/providers/Microsoft.ContainerService/managedClusters/aks-mpt-weu-prod",
+            "type": "aks-cluster",
+            "env": "prod",
+            "databases": []
+          }
+        ]
+      },
+      {
+        "id": "servicebus-legacy",
+        "state": "ok",
+        "resources": [
+          {
+            "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/shared-prod-rg/providers/Microsoft.ServiceBus/namespaces/servicebus-legacy-prod",
+            "type": "servicebus-namespace",
+            "env": "prod",
+            "databases": []
+          }
+        ]
+      }
+    ],
+    "bindings": [
+      {
+        "service": "mpt-billing",
+        "environment": "dev",
+        "kind": "postgres",
+        "database": "billing",
+        "server": "shared-postgres-mpt",
+        "state": "present",
+        "resource": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/shared-dev-rg/providers/Microsoft.DBforPostgreSQL/flexibleServers/shared-postgres-mpt-dev"
+      },
+      {
+        "service": "mpt-billing",
+        "environment": "test",
+        "kind": "postgres",
+        "database": "billing",
+        "server": "shared-postgres-mpt",
+        "state": "present",
+        "resource": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/shared-test-rg/providers/Microsoft.DBforPostgreSQL/flexibleServers/shared-postgres-mpt-test"
+      },
+      {
+        "service": "mpt-billing",
+        "environment": "staging",
+        "kind": "postgres",
+        "database": "billing",
+        "server": "shared-postgres-mpt",
+        "state": "present",
+        "resource": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/shared-staging-rg/providers/Microsoft.DBforPostgreSQL/flexibleServers/shared-postgres-mpt-staging"
+      },
+      {
+        "service": "mpt-billing",
+        "environment": "prod",
+        "kind": "postgres",
+        "database": "billing",
+        "server": "shared-postgres-mpt",
+        "state": "present",
+        "resource": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/shared-prod-rg/providers/Microsoft.DBforPostgreSQL/flexibleServers/shared-postgres-mpt-prod"
+      },
+      {
+        "service": "mpt-procurement",
+        "environment": "dev",
+        "kind": "postgres",
+        "database": "procurement",
+        "server": "shared-postgres-mpt",
+        "state": "present",
+        "resource": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/shared-dev-rg/providers/Microsoft.DBforPostgreSQL/flexibleServers/shared-postgres-mpt-dev"
+      },
+      {
+        "service": "mpt-procurement",
+        "environment": "test",
+        "kind": "postgres",
+        "database": "procurement",
+        "server": "shared-postgres-mpt",
+        "state": "present",
+        "resource": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/shared-test-rg/providers/Microsoft.DBforPostgreSQL/flexibleServers/shared-postgres-mpt-test"
+      },
+      {
+        "service": "mpt-procurement",
+        "environment": "staging",
+        "kind": "postgres",
+        "database": "procurement",
+        "server": "shared-postgres-mpt",
+        "state": "present",
+        "resource": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/shared-staging-rg/providers/Microsoft.DBforPostgreSQL/flexibleServers/shared-postgres-mpt-staging"
+      },
+      {
+        "service": "mpt-procurement",
+        "environment": "prod",
+        "kind": "postgres",
+        "database": "procurement",
+        "server": "shared-postgres-mpt",
+        "state": "present",
+        "resource": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/shared-prod-rg/providers/Microsoft.DBforPostgreSQL/flexibleServers/shared-postgres-mpt-prod"
+      },
+      {
+        "service": "mpt-notifications",
+        "environment": "dev",
+        "kind": "postgres",
+        "database": "notifications",
+        "server": "shared-postgres-mpt",
+        "state": "present",
+        "resource": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/shared-dev-rg/providers/Microsoft.DBforPostgreSQL/flexibleServers/shared-postgres-mpt-dev"
+      },
+      {
+        "service": "mpt-notifications",
+        "environment": "test",
+        "kind": "postgres",
+        "database": "notifications",
+        "server": "shared-postgres-mpt",
+        "state": "present",
+        "resource": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/shared-test-rg/providers/Microsoft.DBforPostgreSQL/flexibleServers/shared-postgres-mpt-test"
+      },
+      {
+        "service": "mpt-notifications",
+        "environment": "staging",
+        "kind": "postgres",
+        "database": "notifications",
+        "server": "shared-postgres-mpt",
+        "state": "present",
+        "resource": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/shared-staging-rg/providers/Microsoft.DBforPostgreSQL/flexibleServers/shared-postgres-mpt-staging"
+      },
+      {
+        "service": "mpt-notifications",
+        "environment": "prod",
+        "kind": "postgres",
+        "database": "notifications",
+        "server": "shared-postgres-mpt",
+        "state": "present",
+        "resource": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/shared-prod-rg/providers/Microsoft.DBforPostgreSQL/flexibleServers/shared-postgres-mpt-prod"
+      },
+      {
+        "service": "mpt-audit",
+        "environment": "dev",
+        "kind": "postgres",
+        "database": "audit",
+        "server": "shared-postgres-mpt",
+        "state": "present",
+        "resource": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/shared-dev-rg/providers/Microsoft.DBforPostgreSQL/flexibleServers/shared-postgres-mpt-dev"
+      },
+      {
+        "service": "mpt-audit",
+        "environment": "test",
+        "kind": "postgres",
+        "database": "audit",
+        "server": "shared-postgres-mpt",
+        "state": "present",
+        "resource": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/shared-test-rg/providers/Microsoft.DBforPostgreSQL/flexibleServers/shared-postgres-mpt-test"
+      },
+      {
+        "service": "mpt-audit",
+        "environment": "staging",
+        "kind": "postgres",
+        "database": "audit",
+        "server": "shared-postgres-mpt",
+        "state": "present",
+        "resource": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/shared-staging-rg/providers/Microsoft.DBforPostgreSQL/flexibleServers/shared-postgres-mpt-staging"
+      },
+      {
+        "service": "mpt-audit",
+        "environment": "prod",
+        "kind": "postgres",
+        "database": "audit",
+        "server": "shared-postgres-mpt",
+        "state": "present",
+        "resource": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/shared-prod-rg/providers/Microsoft.DBforPostgreSQL/flexibleServers/shared-postgres-mpt-prod"
+      },
+      {
+        "service": "mpt-helpdesk",
+        "environment": "dev",
+        "kind": "postgres",
+        "database": "helpdesk",
+        "server": "shared-postgres-mpt",
+        "state": "present",
+        "resource": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/shared-dev-rg/providers/Microsoft.DBforPostgreSQL/flexibleServers/shared-postgres-mpt-dev"
+      },
+      {
+        "service": "mpt-helpdesk",
+        "environment": "test",
+        "kind": "postgres",
+        "database": "helpdesk",
+        "server": "shared-postgres-mpt",
+        "state": "present",
+        "resource": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/shared-test-rg/providers/Microsoft.DBforPostgreSQL/flexibleServers/shared-postgres-mpt-test"
+      },
+      {
+        "service": "mpt-helpdesk",
+        "environment": "staging",
+        "kind": "postgres",
+        "database": "helpdesk",
+        "server": "shared-postgres-mpt",
+        "state": "absent",
+        "resource": null
+      },
+      {
+        "service": "mpt-helpdesk",
+        "environment": "prod",
+        "kind": "postgres",
+        "database": "helpdesk",
+        "server": "shared-postgres-mpt",
+        "state": "present",
+        "resource": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/shared-prod-rg/providers/Microsoft.DBforPostgreSQL/flexibleServers/shared-postgres-mpt-prod"
+      },
+      {
+        "service": "swo-auth",
+        "environment": "dev",
+        "kind": "postgres",
+        "database": "auth",
+        "server": "shared-postgres-mpt",
+        "state": "present",
+        "resource": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/shared-dev-rg/providers/Microsoft.DBforPostgreSQL/flexibleServers/shared-postgres-mpt-dev"
+      },
+      {
+        "service": "swo-auth",
+        "environment": "test",
+        "kind": "postgres",
+        "database": "auth",
+        "server": "shared-postgres-mpt",
+        "state": "present",
+        "resource": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/shared-test-rg/providers/Microsoft.DBforPostgreSQL/flexibleServers/shared-postgres-mpt-test"
+      },
+      {
+        "service": "swo-auth",
+        "environment": "staging",
+        "kind": "postgres",
+        "database": "auth",
+        "server": "shared-postgres-mpt",
+        "state": "present",
+        "resource": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/shared-staging-rg/providers/Microsoft.DBforPostgreSQL/flexibleServers/shared-postgres-mpt-staging"
+      },
+      {
+        "service": "swo-auth",
+        "environment": "prod",
+        "kind": "postgres",
+        "database": "auth",
+        "server": "shared-postgres-mpt",
+        "state": "present",
+        "resource": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/shared-prod-rg/providers/Microsoft.DBforPostgreSQL/flexibleServers/shared-postgres-mpt-prod"
+      },
+      {
+        "service": "prism-web-api",
+        "environment": "development",
+        "kind": "mssql",
+        "database": "prism-core",
+        "server": "shared-mssql-prism",
+        "state": "present",
+        "resource": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/shared-dev-rg/providers/Microsoft.Sql/servers/shared-mssql-prism-dev"
+      },
+      {
+        "service": "prism-web-api",
+        "environment": "sandbox",
+        "kind": "mssql",
+        "database": "prism-core",
+        "server": "shared-mssql-prism",
+        "state": "present",
+        "resource": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/shared-sandbox-rg/providers/Microsoft.Sql/servers/shared-mssql-prism-sandbox"
+      },
+      {
+        "service": "prism-web-api",
+        "environment": "staging",
+        "kind": "mssql",
+        "database": "prism-core",
+        "server": "shared-mssql-prism",
+        "state": "present",
+        "resource": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/shared-staging-rg/providers/Microsoft.Sql/servers/shared-mssql-prism-staging"
+      },
+      {
+        "service": "prism-web-api",
+        "environment": "demo",
+        "kind": "mssql",
+        "database": "prism-core",
+        "server": "shared-mssql-prism",
+        "state": "unresolved",
+        "resource": null
+      },
+      {
+        "service": "prism-web-api",
+        "environment": "production",
+        "kind": "mssql",
+        "database": "prism-core",
+        "server": "shared-mssql-prism",
+        "state": "present",
+        "resource": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/shared-prod-rg/providers/Microsoft.Sql/servers/shared-mssql-prism-prod"
+      },
+      {
+        "service": "prism-minion-core",
+        "environment": "development",
+        "kind": "mssql",
+        "database": "prism-core",
+        "server": "shared-mssql-prism",
+        "state": "present",
+        "resource": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/shared-dev-rg/providers/Microsoft.Sql/servers/shared-mssql-prism-dev"
+      },
+      {
+        "service": "prism-minion-core",
+        "environment": "sandbox",
+        "kind": "mssql",
+        "database": "prism-core",
+        "server": "shared-mssql-prism",
+        "state": "present",
+        "resource": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/shared-sandbox-rg/providers/Microsoft.Sql/servers/shared-mssql-prism-sandbox"
+      },
+      {
+        "service": "prism-minion-core",
+        "environment": "staging",
+        "kind": "mssql",
+        "database": "prism-core",
+        "server": "shared-mssql-prism",
+        "state": "present",
+        "resource": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/shared-staging-rg/providers/Microsoft.Sql/servers/shared-mssql-prism-staging"
+      },
+      {
+        "service": "prism-minion-core",
+        "environment": "demo",
+        "kind": "mssql",
+        "database": "prism-core",
+        "server": "shared-mssql-prism",
+        "state": "unresolved",
+        "resource": null
+      },
+      {
+        "service": "prism-minion-core",
+        "environment": "production",
+        "kind": "mssql",
+        "database": "prism-core",
+        "server": "shared-mssql-prism",
+        "state": "present",
+        "resource": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/shared-prod-rg/providers/Microsoft.Sql/servers/shared-mssql-prism-prod"
+      },
+      {
+        "service": "prism-minion-invoicing",
+        "environment": "development",
+        "kind": "mssql",
+        "database": "prism-invoicing",
+        "server": "shared-mssql-prism",
+        "state": "present",
+        "resource": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/shared-dev-rg/providers/Microsoft.Sql/servers/shared-mssql-prism-dev"
+      },
+      {
+        "service": "prism-minion-invoicing",
+        "environment": "sandbox",
+        "kind": "mssql",
+        "database": "prism-invoicing",
+        "server": "shared-mssql-prism",
+        "state": "present",
+        "resource": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/shared-sandbox-rg/providers/Microsoft.Sql/servers/shared-mssql-prism-sandbox"
+      },
+      {
+        "service": "prism-minion-invoicing",
+        "environment": "staging",
+        "kind": "mssql",
+        "database": "prism-invoicing",
+        "server": "shared-mssql-prism",
+        "state": "present",
+        "resource": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/shared-staging-rg/providers/Microsoft.Sql/servers/shared-mssql-prism-staging"
+      },
+      {
+        "service": "prism-minion-invoicing",
+        "environment": "demo",
+        "kind": "mssql",
+        "database": "prism-invoicing",
+        "server": "shared-mssql-prism",
+        "state": "unresolved",
+        "resource": null
+      },
+      {
+        "service": "prism-minion-invoicing",
+        "environment": "production",
+        "kind": "mssql",
+        "database": "prism-invoicing",
+        "server": "shared-mssql-prism",
+        "state": "present",
+        "resource": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/shared-prod-rg/providers/Microsoft.Sql/servers/shared-mssql-prism-prod"
+      },
+      {
+        "service": "prism-minion-recon",
+        "environment": "development",
+        "kind": "mssql",
+        "database": "prism-recon",
+        "server": "shared-mssql-prism",
+        "state": "present",
+        "resource": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/shared-dev-rg/providers/Microsoft.Sql/servers/shared-mssql-prism-dev"
+      },
+      {
+        "service": "prism-minion-recon",
+        "environment": "sandbox",
+        "kind": "mssql",
+        "database": "prism-recon",
+        "server": "shared-mssql-prism",
+        "state": "present",
+        "resource": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/shared-sandbox-rg/providers/Microsoft.Sql/servers/shared-mssql-prism-sandbox"
+      },
+      {
+        "service": "prism-minion-recon",
+        "environment": "staging",
+        "kind": "mssql",
+        "database": "prism-recon",
+        "server": "shared-mssql-prism",
+        "state": "present",
+        "resource": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/shared-staging-rg/providers/Microsoft.Sql/servers/shared-mssql-prism-staging"
+      },
+      {
+        "service": "prism-minion-recon",
+        "environment": "demo",
+        "kind": "mssql",
+        "database": "prism-recon",
+        "server": "shared-mssql-prism",
+        "state": "unresolved",
+        "resource": null
+      },
+      {
+        "service": "prism-minion-recon",
+        "environment": "production",
+        "kind": "mssql",
+        "database": "prism-recon",
+        "server": "shared-mssql-prism",
+        "state": "present",
+        "resource": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/shared-prod-rg/providers/Microsoft.Sql/servers/shared-mssql-prism-prod"
+      },
+      {
+        "service": "aly-budgets-web-api",
+        "environment": "development",
+        "kind": "mssql",
+        "database": "budgets",
+        "server": "shared-mssql-pyra",
+        "state": "present",
+        "resource": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/shared-dev-rg/providers/Microsoft.Sql/servers/shared-mssql-pyra-dev"
+      },
+      {
+        "service": "aly-budgets-web-api",
+        "environment": "test",
+        "kind": "mssql",
+        "database": "budgets",
+        "server": "shared-mssql-pyra",
+        "state": "present",
+        "resource": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/shared-test-rg/providers/Microsoft.Sql/servers/shared-mssql-pyra-test"
+      },
+      {
+        "service": "aly-budgets-web-api",
+        "environment": "staging",
+        "kind": "mssql",
+        "database": "budgets",
+        "server": "shared-mssql-pyra",
+        "state": "present",
+        "resource": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/shared-staging-rg/providers/Microsoft.Sql/servers/shared-mssql-pyra-staging"
+      },
+      {
+        "service": "aly-budgets-web-api",
+        "environment": "production",
+        "kind": "mssql",
+        "database": "budgets",
+        "server": "shared-mssql-pyra",
+        "state": "present",
+        "resource": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/shared-prod-rg/providers/Microsoft.Sql/servers/shared-mssql-pyra-prod"
+      },
+      {
+        "service": "aly-cloud-utilization-web-api",
+        "environment": "development",
+        "kind": "mssql",
+        "database": "utilization",
+        "server": "shared-mssql-pyra",
+        "state": "present",
+        "resource": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/shared-dev-rg/providers/Microsoft.Sql/servers/shared-mssql-pyra-dev"
+      },
+      {
+        "service": "aly-cloud-utilization-web-api",
+        "environment": "test",
+        "kind": "mssql",
+        "database": "utilization",
+        "server": "shared-mssql-pyra",
+        "state": "present",
+        "resource": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/shared-test-rg/providers/Microsoft.Sql/servers/shared-mssql-pyra-test"
+      },
+      {
+        "service": "aly-cloud-utilization-web-api",
+        "environment": "staging",
+        "kind": "mssql",
+        "database": "utilization",
+        "server": "shared-mssql-pyra",
+        "state": "present",
+        "resource": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/shared-staging-rg/providers/Microsoft.Sql/servers/shared-mssql-pyra-staging"
+      },
+      {
+        "service": "aly-cloud-utilization-web-api",
+        "environment": "production",
+        "kind": "mssql",
+        "database": "utilization",
+        "server": "shared-mssql-pyra",
+        "state": "present",
+        "resource": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/shared-prod-rg/providers/Microsoft.Sql/servers/shared-mssql-pyra-prod"
+      },
+      {
+        "service": "aly-consumption-ea-web-api",
+        "environment": "development",
+        "kind": "mssql",
+        "database": "consumption",
+        "server": "shared-mssql-pyra",
+        "state": "present",
+        "resource": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/shared-dev-rg/providers/Microsoft.Sql/servers/shared-mssql-pyra-dev"
+      },
+      {
+        "service": "aly-consumption-ea-web-api",
+        "environment": "test",
+        "kind": "mssql",
+        "database": "consumption",
+        "server": "shared-mssql-pyra",
+        "state": "present",
+        "resource": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/shared-test-rg/providers/Microsoft.Sql/servers/shared-mssql-pyra-test"
+      },
+      {
+        "service": "aly-consumption-ea-web-api",
+        "environment": "staging",
+        "kind": "mssql",
+        "database": "consumption",
+        "server": "shared-mssql-pyra",
+        "state": "present",
+        "resource": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/shared-staging-rg/providers/Microsoft.Sql/servers/shared-mssql-pyra-staging"
+      },
+      {
+        "service": "aly-consumption-ea-web-api",
+        "environment": "production",
+        "kind": "mssql",
+        "database": "consumption",
+        "server": "shared-mssql-pyra",
+        "state": "present",
+        "resource": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/shared-prod-rg/providers/Microsoft.Sql/servers/shared-mssql-pyra-prod"
+      },
+      {
+        "service": "aly-consumption-aws-web-api",
+        "environment": "development",
+        "kind": "mssql",
+        "database": "consumption",
+        "server": "shared-mssql-pyra",
+        "state": "present",
+        "resource": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/shared-dev-rg/providers/Microsoft.Sql/servers/shared-mssql-pyra-dev"
+      },
+      {
+        "service": "aly-consumption-aws-web-api",
+        "environment": "test",
+        "kind": "mssql",
+        "database": "consumption",
+        "server": "shared-mssql-pyra",
+        "state": "present",
+        "resource": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/shared-test-rg/providers/Microsoft.Sql/servers/shared-mssql-pyra-test"
+      },
+      {
+        "service": "aly-consumption-aws-web-api",
+        "environment": "staging",
+        "kind": "mssql",
+        "database": "consumption",
+        "server": "shared-mssql-pyra",
+        "state": "present",
+        "resource": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/shared-staging-rg/providers/Microsoft.Sql/servers/shared-mssql-pyra-staging"
+      },
+      {
+        "service": "aly-consumption-aws-web-api",
+        "environment": "production",
+        "kind": "mssql",
+        "database": "consumption",
+        "server": "shared-mssql-pyra",
+        "state": "present",
+        "resource": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/shared-prod-rg/providers/Microsoft.Sql/servers/shared-mssql-pyra-prod"
+      },
+      {
+        "service": "aly-consumption-consolidation-web-api",
+        "environment": "development",
+        "kind": "mssql",
+        "database": "consumption",
+        "server": "shared-mssql-pyra",
+        "state": "present",
+        "resource": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/shared-dev-rg/providers/Microsoft.Sql/servers/shared-mssql-pyra-dev"
+      },
+      {
+        "service": "aly-consumption-consolidation-web-api",
+        "environment": "test",
+        "kind": "mssql",
+        "database": "consumption",
+        "server": "shared-mssql-pyra",
+        "state": "present",
+        "resource": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/shared-test-rg/providers/Microsoft.Sql/servers/shared-mssql-pyra-test"
+      },
+      {
+        "service": "aly-consumption-consolidation-web-api",
+        "environment": "staging",
+        "kind": "mssql",
+        "database": "consumption",
+        "server": "shared-mssql-pyra",
+        "state": "present",
+        "resource": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/shared-staging-rg/providers/Microsoft.Sql/servers/shared-mssql-pyra-staging"
+      },
+      {
+        "service": "aly-consumption-consolidation-web-api",
+        "environment": "production",
+        "kind": "mssql",
+        "database": "consumption",
+        "server": "shared-mssql-pyra",
+        "state": "present",
+        "resource": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/shared-prod-rg/providers/Microsoft.Sql/servers/shared-mssql-pyra-prod"
+      },
+      {
+        "service": "aly-azure-consumption-csp-web-api",
+        "environment": "development",
+        "kind": "mssql",
+        "database": "consumption",
+        "server": "shared-mssql-pyra",
+        "state": "present",
+        "resource": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/shared-dev-rg/providers/Microsoft.Sql/servers/shared-mssql-pyra-dev"
+      },
+      {
+        "service": "aly-azure-consumption-csp-web-api",
+        "environment": "test",
+        "kind": "mssql",
+        "database": "consumption",
+        "server": "shared-mssql-pyra",
+        "state": "present",
+        "resource": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/shared-test-rg/providers/Microsoft.Sql/servers/shared-mssql-pyra-test"
+      },
+      {
+        "service": "aly-azure-consumption-csp-web-api",
+        "environment": "staging",
+        "kind": "mssql",
+        "database": "consumption",
+        "server": "shared-mssql-pyra",
+        "state": "present",
+        "resource": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/shared-staging-rg/providers/Microsoft.Sql/servers/shared-mssql-pyra-staging"
+      },
+      {
+        "service": "aly-azure-consumption-csp-web-api",
+        "environment": "production",
+        "kind": "mssql",
+        "database": "consumption",
+        "server": "shared-mssql-pyra",
+        "state": "present",
+        "resource": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/shared-prod-rg/providers/Microsoft.Sql/servers/shared-mssql-pyra-prod"
+      }
+    ],
+    "unknown_tags": [
+      {
+        "tag": "mpt-legacy-sync",
+        "count": 3
+      }
+    ],
+    "untagged": [
+      {
+        "subscription": "3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01",
+        "resource_group": "networking-hub-rg",
+        "count": 14
+      },
+      {
+        "subscription": "3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01",
+        "resource_group": "MC_aks-mpt-weu_nodes",
+        "count": 9
+      },
+      {
+        "subscription": "c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03",
+        "resource_group": "legacy-vms-rg",
+        "count": 6
+      },
+      {
+        "subscription": "8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02",
+        "resource_group": "backup-vault-rg",
+        "count": 2
+      }
+    ]
+  }
+}

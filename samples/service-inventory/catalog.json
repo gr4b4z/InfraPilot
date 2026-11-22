@@ -1,0 +1,2948 @@
+{
+  "schemaVersion": 1,
+  "catalog_version": 12,
+  "content_hash": "sha256:30b0b1717c3db6d921110deeeab108a19040884040c770a3e3ce51d783e6187e",
+  "products": [
+    {
+      "id": "mpt",
+      "name": "Marketplace Platform",
+      "lifecycle": "active",
+      "business_owner": "Marta Kowalczyk",
+      "technical_owner": "Piotr Zielinski"
+    },
+    {
+      "id": "mpt-extensions",
+      "name": "Marketplace Extensions",
+      "lifecycle": "active",
+      "business_owner": "Marta Kowalczyk",
+      "technical_owner": "Jonas Berg"
+    },
+    {
+      "id": "prism",
+      "name": "Prism",
+      "lifecycle": "active",
+      "business_owner": "Elena Varga",
+      "technical_owner": "Tomas Novak"
+    },
+    {
+      "id": "cloudiq",
+      "name": "CloudIQ",
+      "lifecycle": "active",
+      "business_owner": "Sofia Lindqvist",
+      "technical_owner": "Daniel Moreau"
+    },
+    {
+      "id": "pyracloud",
+      "name": "PyraCloud Analytics",
+      "lifecycle": "active",
+      "business_owner": "Anders Holm",
+      "technical_owner": "Katarzyna Wojcik"
+    },
+    {
+      "id": "nova",
+      "name": "Nova",
+      "lifecycle": "active",
+      "business_owner": "Elena Varga",
+      "technical_owner": "Lukas Meier"
+    },
+    {
+      "id": "cicd-infra",
+      "name": "CI/CD Infrastructure",
+      "lifecycle": "active",
+      "business_owner": "Ines Duarte",
+      "technical_owner": "Ines Duarte"
+    },
+    {
+      "id": "data-platform",
+      "name": "Data Platform",
+      "lifecycle": "active",
+      "business_owner": "Anders Holm",
+      "technical_owner": "TODO"
+    }
+  ],
+  "teams": [
+    {
+      "id": "marketplace-core",
+      "lead": "Piotr Zielinski",
+      "deputy": "Agnieszka Mazur",
+      "github_team": "softwareone/marketplace-core",
+      "entra_group": "sg-marketplace-core",
+      "lifecycle": "active",
+      "products": [
+        "mpt"
+      ]
+    },
+    {
+      "id": "marketplace-web",
+      "lead": "Julia Schmidt",
+      "deputy": "Michal Lewandowski",
+      "github_team": "softwareone/marketplace-web",
+      "entra_group": "sg-marketplace-web",
+      "lifecycle": "active",
+      "products": [
+        "mpt"
+      ]
+    },
+    {
+      "id": "marketplace-extensions",
+      "lead": "Jonas Berg",
+      "deputy": "Nina Petrova",
+      "github_team": "softwareone/marketplace-extensions",
+      "entra_group": "sg-marketplace-extensions",
+      "lifecycle": "active",
+      "products": [
+        "mpt-extensions"
+      ]
+    },
+    {
+      "id": "prism-team",
+      "lead": "Tomas Novak",
+      "deputy": "Eva Horvath",
+      "github_team": "softwareone/prism-team",
+      "entra_group": "sg-prism-team",
+      "lifecycle": "active",
+      "products": [
+        "prism"
+      ]
+    },
+    {
+      "id": "cloudiq-team",
+      "lead": "Daniel Moreau",
+      "deputy": "Clara Rossi",
+      "github_team": "softwareone/cloudiq-team",
+      "entra_group": "sg-cloudiq-team",
+      "lifecycle": "active",
+      "products": [
+        "cloudiq"
+      ]
+    },
+    {
+      "id": "pyracloud-analytics",
+      "lead": "Katarzyna Wojcik",
+      "deputy": "Henrik Dahl",
+      "github_team": "softwareone/pyracloud-analytics",
+      "entra_group": "sg-pyracloud-analytics",
+      "lifecycle": "active",
+      "products": [
+        "pyracloud"
+      ]
+    },
+    {
+      "id": "platform-team",
+      "lead": "Ines Duarte",
+      "deputy": "Lukas Meier",
+      "github_team": "softwareone/platform-team",
+      "entra_group": "sg-platform-team",
+      "lifecycle": "active",
+      "products": [
+        "nova",
+        "cicd-infra"
+      ]
+    },
+    {
+      "id": "sre-team",
+      "lead": "Oskar Nilsson",
+      "deputy": "Ines Duarte",
+      "github_team": "softwareone/sre-team",
+      "entra_group": "sg-sre-team",
+      "lifecycle": "active",
+      "products": []
+    }
+  ],
+  "shared": [
+    {
+      "id": "shared-postgres-mpt",
+      "kind": "postgres-server",
+      "owner": "platform-team",
+      "description": "PostgreSQL flexible server for marketplace databases."
+    },
+    {
+      "id": "shared-mssql-prism",
+      "kind": "mssql-server",
+      "owner": "prism-team",
+      "description": "Azure SQL server for Prism databases."
+    },
+    {
+      "id": "shared-mssql-pyra",
+      "kind": "mssql-server",
+      "owner": "pyracloud-analytics",
+      "description": "Azure SQL elastic pool for PyraCloud."
+    },
+    {
+      "id": "aks-mpt-weu",
+      "kind": "aks-cluster",
+      "owner": "platform-team",
+      "description": "Shared AKS cluster that runs marketplace workloads."
+    },
+    {
+      "id": "servicebus-legacy",
+      "kind": "servicebus-namespace",
+      "owner": "sre-team",
+      "description": "Legacy Service Bus namespace; nothing is bound to it any more."
+    }
+  ],
+  "services": [
+    {
+      "schemaVersion": 1,
+      "id": "mpt-billing",
+      "description": "Invoices, charges and billing statements for marketplace orders.",
+      "product": "mpt",
+      "team": "marketplace-core",
+      "lifecycle": "production",
+      "type": "backend",
+      "tier": 1,
+      "repo": "softwareone/mpt-billing",
+      "exposure": "internal",
+      "customer_facing": true,
+      "environments": {
+        "dev": {
+          "aks": {
+            "cluster": "aks-mpt-dev-weu",
+            "namespace": "mpt-dev"
+          }
+        },
+        "test": {
+          "aks": {
+            "cluster": "aks-mpt-test-weu",
+            "namespace": "mpt-test"
+          }
+        },
+        "staging": {
+          "aks": {
+            "cluster": "aks-mpt-staging-weu",
+            "namespace": "mpt-staging"
+          }
+        },
+        "prod": {
+          "aks": {
+            "cluster": "aks-mpt-weu",
+            "namespace": "mpt-prod"
+          }
+        }
+      },
+      "workloads": {
+        "api": {
+          "kind": "api"
+        },
+        "sync": {
+          "kind": "worker"
+        }
+      },
+      "links": {},
+      "consumers": {
+        "apis": [],
+        "events": []
+      },
+      "bindings": {
+        "postgres": [
+          {
+            "database": "billing",
+            "server": "shared-postgres-mpt",
+            "owner": true,
+            "workloads": [
+              "api"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "id": "mpt-procurement",
+      "description": "Orders, subscriptions and agreements across vendors.",
+      "product": "mpt",
+      "team": "marketplace-core",
+      "lifecycle": "production",
+      "type": "backend",
+      "tier": 1,
+      "repo": "softwareone/mpt-procurement",
+      "exposure": "internal",
+      "customer_facing": true,
+      "environments": {
+        "dev": {
+          "aks": {
+            "cluster": "aks-mpt-dev-weu",
+            "namespace": "mpt-dev"
+          }
+        },
+        "test": {
+          "aks": {
+            "cluster": "aks-mpt-test-weu",
+            "namespace": "mpt-test"
+          }
+        },
+        "staging": {
+          "aks": {
+            "cluster": "aks-mpt-staging-weu",
+            "namespace": "mpt-staging"
+          }
+        },
+        "prod": {
+          "aks": {
+            "cluster": "aks-mpt-weu",
+            "namespace": "mpt-prod"
+          }
+        }
+      },
+      "workloads": {
+        "api": {
+          "kind": "api"
+        },
+        "sync": {
+          "kind": "worker"
+        }
+      },
+      "links": {},
+      "consumers": {
+        "apis": [],
+        "events": []
+      },
+      "bindings": {
+        "postgres": [
+          {
+            "database": "procurement",
+            "server": "shared-postgres-mpt",
+            "owner": true,
+            "workloads": [
+              "api"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "id": "mpt-notifications",
+      "description": "Email and in-app notifications with templates and preferences.",
+      "product": "mpt",
+      "team": "marketplace-core",
+      "lifecycle": "production",
+      "type": "backend",
+      "tier": 2,
+      "repo": "softwareone/mpt-notifications",
+      "exposure": "internal",
+      "customer_facing": false,
+      "environments": {
+        "dev": {
+          "aks": {
+            "cluster": "aks-mpt-dev-weu",
+            "namespace": "mpt-dev"
+          }
+        },
+        "test": {
+          "aks": {
+            "cluster": "aks-mpt-test-weu",
+            "namespace": "mpt-test"
+          }
+        },
+        "staging": {
+          "aks": {
+            "cluster": "aks-mpt-staging-weu",
+            "namespace": "mpt-staging"
+          }
+        },
+        "prod": {
+          "aks": {
+            "cluster": "aks-mpt-weu",
+            "namespace": "mpt-prod"
+          }
+        }
+      },
+      "workloads": {
+        "api": {
+          "kind": "api"
+        }
+      },
+      "links": {},
+      "consumers": {
+        "apis": [],
+        "events": []
+      },
+      "bindings": {
+        "postgres": [
+          {
+            "database": "notifications",
+            "server": "shared-postgres-mpt",
+            "owner": true,
+            "workloads": [
+              "api"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "id": "mpt-audit",
+      "description": "Append-only audit trail of every change in the marketplace.",
+      "product": "mpt",
+      "team": "marketplace-core",
+      "lifecycle": "production",
+      "type": "backend",
+      "tier": 2,
+      "repo": "softwareone/mpt-audit",
+      "exposure": "internal",
+      "customer_facing": false,
+      "environments": {
+        "dev": {
+          "aks": {
+            "cluster": "aks-mpt-dev-weu",
+            "namespace": "mpt-dev"
+          }
+        },
+        "test": {
+          "aks": {
+            "cluster": "aks-mpt-test-weu",
+            "namespace": "mpt-test"
+          }
+        },
+        "staging": {
+          "aks": {
+            "cluster": "aks-mpt-staging-weu",
+            "namespace": "mpt-staging"
+          }
+        },
+        "prod": {
+          "aks": {
+            "cluster": "aks-mpt-weu",
+            "namespace": "mpt-prod"
+          }
+        }
+      },
+      "workloads": {
+        "api": {
+          "kind": "api"
+        }
+      },
+      "links": {},
+      "consumers": {
+        "apis": [],
+        "events": []
+      },
+      "bindings": {
+        "postgres": [
+          {
+            "database": "audit",
+            "server": "shared-postgres-mpt",
+            "owner": true,
+            "workloads": [
+              "api"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "id": "mpt-currency",
+      "description": "Exchange rates and currency conversion.",
+      "product": "mpt",
+      "team": "marketplace-core",
+      "lifecycle": "production",
+      "type": "backend",
+      "tier": 3,
+      "repo": "softwareone/mpt-currency",
+      "exposure": "internal",
+      "customer_facing": false,
+      "environments": {
+        "dev": {
+          "aks": {
+            "cluster": "aks-mpt-dev-weu",
+            "namespace": "mpt-dev"
+          }
+        },
+        "test": {
+          "aks": {
+            "cluster": "aks-mpt-test-weu",
+            "namespace": "mpt-test"
+          }
+        },
+        "staging": {
+          "aks": {
+            "cluster": "aks-mpt-staging-weu",
+            "namespace": "mpt-staging"
+          }
+        },
+        "prod": {
+          "aks": {
+            "cluster": "aks-mpt-weu",
+            "namespace": "mpt-prod"
+          }
+        }
+      },
+      "workloads": {
+        "api": {
+          "kind": "api"
+        }
+      },
+      "links": {},
+      "consumers": {
+        "apis": [],
+        "events": []
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "id": "mpt-tasks",
+      "description": "Background task runner for long-running marketplace jobs.",
+      "product": "mpt",
+      "team": "marketplace-core",
+      "lifecycle": "production",
+      "type": "worker",
+      "tier": 2,
+      "repo": "softwareone/mpt-tasks",
+      "exposure": "internal",
+      "customer_facing": false,
+      "environments": {
+        "dev": {
+          "aks": {
+            "cluster": "aks-mpt-dev-weu",
+            "namespace": "mpt-dev"
+          }
+        },
+        "test": {
+          "aks": {
+            "cluster": "aks-mpt-test-weu",
+            "namespace": "mpt-test"
+          }
+        },
+        "staging": {
+          "aks": {
+            "cluster": "aks-mpt-staging-weu",
+            "namespace": "mpt-staging"
+          }
+        },
+        "prod": {
+          "aks": {
+            "cluster": "aks-mpt-weu",
+            "namespace": "mpt-prod"
+          }
+        }
+      },
+      "workloads": {
+        "worker": {
+          "kind": "worker"
+        }
+      },
+      "links": {},
+      "consumers": {
+        "apis": [],
+        "events": []
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "id": "mpt-helpdesk",
+      "description": "Support cases and chat between clients and operations.",
+      "product": "mpt",
+      "team": "marketplace-core",
+      "lifecycle": "production",
+      "type": "backend",
+      "tier": 3,
+      "repo": "softwareone/mpt-helpdesk",
+      "exposure": "internal",
+      "customer_facing": false,
+      "environments": {
+        "dev": {
+          "aks": {
+            "cluster": "aks-mpt-dev-weu",
+            "namespace": "mpt-dev"
+          }
+        },
+        "test": {
+          "aks": {
+            "cluster": "aks-mpt-test-weu",
+            "namespace": "mpt-test"
+          }
+        },
+        "staging": {
+          "aks": {
+            "cluster": "aks-mpt-staging-weu",
+            "namespace": "mpt-staging"
+          }
+        },
+        "prod": {
+          "aks": {
+            "cluster": "aks-mpt-weu",
+            "namespace": "mpt-prod"
+          }
+        }
+      },
+      "workloads": {
+        "api": {
+          "kind": "api"
+        }
+      },
+      "links": {},
+      "consumers": {
+        "apis": [],
+        "events": []
+      },
+      "bindings": {
+        "postgres": [
+          {
+            "database": "helpdesk",
+            "server": "shared-postgres-mpt",
+            "owner": true,
+            "workloads": [
+              "api"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "id": "mpt-public-catalog",
+      "description": "Public product catalog with search.",
+      "product": "mpt",
+      "team": "marketplace-core",
+      "lifecycle": "production",
+      "type": "backend",
+      "tier": 2,
+      "repo": "softwareone/mpt-public-catalog",
+      "exposure": "internal",
+      "customer_facing": false,
+      "environments": {
+        "dev": {
+          "aks": {
+            "cluster": "aks-mpt-dev-weu",
+            "namespace": "mpt-dev"
+          }
+        },
+        "test": {
+          "aks": {
+            "cluster": "aks-mpt-test-weu",
+            "namespace": "mpt-test"
+          }
+        },
+        "staging": {
+          "aks": {
+            "cluster": "aks-mpt-staging-weu",
+            "namespace": "mpt-staging"
+          }
+        },
+        "prod": {
+          "aks": {
+            "cluster": "aks-mpt-weu",
+            "namespace": "mpt-prod"
+          }
+        }
+      },
+      "workloads": {
+        "api": {
+          "kind": "api"
+        }
+      },
+      "links": {},
+      "consumers": {
+        "apis": [],
+        "events": []
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "id": "mpt-spotlight",
+      "description": "Highlights things that need a user's attention.",
+      "product": "mpt",
+      "team": "marketplace-core",
+      "lifecycle": "production",
+      "type": "backend",
+      "tier": 3,
+      "repo": "softwareone/mpt-spotlight",
+      "exposure": "internal",
+      "customer_facing": false,
+      "environments": {
+        "dev": {
+          "aks": {
+            "cluster": "aks-mpt-dev-weu",
+            "namespace": "mpt-dev"
+          }
+        },
+        "test": {
+          "aks": {
+            "cluster": "aks-mpt-test-weu",
+            "namespace": "mpt-test"
+          }
+        },
+        "staging": {
+          "aks": {
+            "cluster": "aks-mpt-staging-weu",
+            "namespace": "mpt-staging"
+          }
+        },
+        "prod": {
+          "aks": {
+            "cluster": "aks-mpt-weu",
+            "namespace": "mpt-prod"
+          }
+        }
+      },
+      "workloads": {
+        "api": {
+          "kind": "api"
+        }
+      },
+      "links": {},
+      "consumers": {
+        "apis": [],
+        "events": []
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "id": "mpt-scheduler",
+      "description": "Cron-style scheduling for marketplace jobs.",
+      "product": "mpt",
+      "team": "marketplace-core",
+      "lifecycle": "production",
+      "type": "worker",
+      "tier": 3,
+      "repo": "softwareone/mpt-scheduler",
+      "exposure": "internal",
+      "customer_facing": false,
+      "environments": {
+        "dev": {
+          "aks": {
+            "cluster": "aks-mpt-dev-weu",
+            "namespace": "mpt-dev"
+          }
+        },
+        "test": {
+          "aks": {
+            "cluster": "aks-mpt-test-weu",
+            "namespace": "mpt-test"
+          }
+        },
+        "staging": {
+          "aks": {
+            "cluster": "aks-mpt-staging-weu",
+            "namespace": "mpt-staging"
+          }
+        },
+        "prod": {
+          "aks": {
+            "cluster": "aks-mpt-weu",
+            "namespace": "mpt-prod"
+          }
+        }
+      },
+      "workloads": {
+        "worker": {
+          "kind": "worker"
+        }
+      },
+      "links": {},
+      "consumers": {
+        "apis": [],
+        "events": []
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "id": "mpt-export",
+      "description": "CSV and Excel exports of marketplace data.",
+      "product": "mpt",
+      "team": "marketplace-core",
+      "lifecycle": "production",
+      "type": "worker",
+      "tier": 3,
+      "repo": "softwareone/mpt-export",
+      "exposure": "internal",
+      "customer_facing": false,
+      "environments": {
+        "dev": {
+          "aks": {
+            "cluster": "aks-mpt-dev-weu",
+            "namespace": "mpt-dev"
+          }
+        },
+        "test": {
+          "aks": {
+            "cluster": "aks-mpt-test-weu",
+            "namespace": "mpt-test"
+          }
+        },
+        "staging": {
+          "aks": {
+            "cluster": "aks-mpt-staging-weu",
+            "namespace": "mpt-staging"
+          }
+        },
+        "prod": {
+          "aks": {
+            "cluster": "aks-mpt-weu",
+            "namespace": "mpt-prod"
+          }
+        }
+      },
+      "workloads": {
+        "worker": {
+          "kind": "worker"
+        }
+      },
+      "links": {},
+      "consumers": {
+        "apis": [],
+        "events": []
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "id": "swo-auth",
+      "description": "Sign-in, tokens and account membership.",
+      "product": "mpt",
+      "team": "marketplace-core",
+      "lifecycle": "production",
+      "type": "backend",
+      "tier": 1,
+      "repo": "softwareone/swo-auth",
+      "exposure": "internal",
+      "customer_facing": true,
+      "environments": {
+        "dev": {
+          "aks": {
+            "cluster": "aks-mpt-dev-weu",
+            "namespace": "mpt-dev"
+          }
+        },
+        "test": {
+          "aks": {
+            "cluster": "aks-mpt-test-weu",
+            "namespace": "mpt-test"
+          }
+        },
+        "staging": {
+          "aks": {
+            "cluster": "aks-mpt-staging-weu",
+            "namespace": "mpt-staging"
+          }
+        },
+        "prod": {
+          "aks": {
+            "cluster": "aks-mpt-weu",
+            "namespace": "mpt-prod"
+          }
+        }
+      },
+      "workloads": {
+        "api": {
+          "kind": "api"
+        },
+        "sync": {
+          "kind": "worker"
+        }
+      },
+      "links": {},
+      "consumers": {
+        "apis": [],
+        "events": []
+      },
+      "bindings": {
+        "postgres": [
+          {
+            "database": "auth",
+            "server": "shared-postgres-mpt",
+            "owner": true,
+            "workloads": [
+              "api"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "id": "swo-platform",
+      "description": "Platform API gateway in front of the marketplace services.",
+      "product": "mpt",
+      "team": "marketplace-core",
+      "lifecycle": "production",
+      "type": "backend",
+      "tier": 1,
+      "repo": "softwareone/swo-platform",
+      "exposure": "public",
+      "customer_facing": true,
+      "environments": {
+        "dev": {
+          "aks": {
+            "cluster": "aks-mpt-dev-weu",
+            "namespace": "mpt-dev"
+          }
+        },
+        "test": {
+          "aks": {
+            "cluster": "aks-mpt-test-weu",
+            "namespace": "mpt-test"
+          }
+        },
+        "staging": {
+          "aks": {
+            "cluster": "aks-mpt-staging-weu",
+            "namespace": "mpt-staging"
+          }
+        },
+        "prod": {
+          "aks": {
+            "cluster": "aks-mpt-weu",
+            "namespace": "mpt-prod"
+          }
+        }
+      },
+      "workloads": {
+        "api": {
+          "kind": "api"
+        },
+        "sync": {
+          "kind": "worker"
+        }
+      },
+      "links": {},
+      "consumers": {
+        "apis": [],
+        "events": []
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "id": "mpt-nav-stats",
+      "description": "Nightly statistics from the ERP. Being replaced by billing reports.",
+      "product": "mpt",
+      "team": "marketplace-core",
+      "lifecycle": "deprecated",
+      "type": "worker",
+      "tier": 3,
+      "repo": "softwareone/mpt-nav-stats",
+      "exposure": "internal",
+      "customer_facing": false,
+      "environments": {
+        "dev": {
+          "aks": {
+            "cluster": "aks-mpt-dev-weu",
+            "namespace": "mpt-dev"
+          }
+        },
+        "test": {
+          "aks": {
+            "cluster": "aks-mpt-test-weu",
+            "namespace": "mpt-test"
+          }
+        },
+        "staging": {
+          "aks": {
+            "cluster": "aks-mpt-staging-weu",
+            "namespace": "mpt-staging"
+          }
+        },
+        "prod": {
+          "aks": {
+            "cluster": "aks-mpt-weu",
+            "namespace": "mpt-prod"
+          }
+        }
+      },
+      "workloads": {
+        "worker": {
+          "kind": "worker"
+        }
+      },
+      "links": {},
+      "consumers": {
+        "apis": [],
+        "events": []
+      },
+      "replaced_by": "mpt-billing"
+    },
+    {
+      "schemaVersion": 1,
+      "id": "mpt-ai-assistant",
+      "description": "Assistant that answers questions about orders and subscriptions.",
+      "product": "mpt",
+      "team": "marketplace-core",
+      "lifecycle": "planned",
+      "type": "backend",
+      "tier": 2,
+      "repo": "softwareone/mpt-ai-assistant",
+      "exposure": "internal",
+      "customer_facing": false,
+      "environments": {
+        "dev": {
+          "aks": {
+            "cluster": "aks-mpt-dev-weu",
+            "namespace": "mpt-dev"
+          }
+        }
+      },
+      "workloads": {
+        "api": {
+          "kind": "api"
+        }
+      },
+      "links": {},
+      "consumers": {
+        "apis": [],
+        "events": []
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "id": "swo-web-shell",
+      "description": "Micro-frontend shell that hosts every marketplace page.",
+      "product": "mpt",
+      "team": "marketplace-web",
+      "lifecycle": "production",
+      "type": "frontend",
+      "tier": 1,
+      "repo": "softwareone/swo-web-shell",
+      "exposure": "public",
+      "customer_facing": true,
+      "environments": {
+        "dev": {
+          "aks": {
+            "cluster": "aks-mpt-dev-weu",
+            "namespace": "mpt-dev"
+          }
+        },
+        "test": {
+          "aks": {
+            "cluster": "aks-mpt-test-weu",
+            "namespace": "mpt-test"
+          }
+        },
+        "staging": {
+          "aks": {
+            "cluster": "aks-mpt-staging-weu",
+            "namespace": "mpt-staging"
+          }
+        },
+        "prod": {
+          "aks": {
+            "cluster": "aks-mpt-weu",
+            "namespace": "mpt-prod"
+          }
+        }
+      },
+      "workloads": {
+        "api": {
+          "kind": "web"
+        }
+      },
+      "links": {},
+      "consumers": {
+        "apis": [],
+        "events": []
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "id": "swo-web-billing",
+      "description": "Billing pages.",
+      "product": "mpt",
+      "team": "marketplace-web",
+      "lifecycle": "production",
+      "type": "frontend",
+      "tier": 2,
+      "repo": "softwareone/swo-web-billing",
+      "exposure": "public",
+      "customer_facing": true,
+      "environments": {
+        "dev": {
+          "aks": {
+            "cluster": "aks-mpt-dev-weu",
+            "namespace": "mpt-dev"
+          }
+        },
+        "test": {
+          "aks": {
+            "cluster": "aks-mpt-test-weu",
+            "namespace": "mpt-test"
+          }
+        },
+        "staging": {
+          "aks": {
+            "cluster": "aks-mpt-staging-weu",
+            "namespace": "mpt-staging"
+          }
+        },
+        "prod": {
+          "aks": {
+            "cluster": "aks-mpt-weu",
+            "namespace": "mpt-prod"
+          }
+        }
+      },
+      "workloads": {
+        "api": {
+          "kind": "web"
+        }
+      },
+      "links": {},
+      "consumers": {
+        "apis": [],
+        "events": []
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "id": "swo-web-commerce",
+      "description": "Commerce pages: orders, subscriptions, agreements.",
+      "product": "mpt",
+      "team": "marketplace-web",
+      "lifecycle": "production",
+      "type": "frontend",
+      "tier": 2,
+      "repo": "softwareone/swo-web-commerce",
+      "exposure": "public",
+      "customer_facing": true,
+      "environments": {
+        "dev": {
+          "aks": {
+            "cluster": "aks-mpt-dev-weu",
+            "namespace": "mpt-dev"
+          }
+        },
+        "test": {
+          "aks": {
+            "cluster": "aks-mpt-test-weu",
+            "namespace": "mpt-test"
+          }
+        },
+        "staging": {
+          "aks": {
+            "cluster": "aks-mpt-staging-weu",
+            "namespace": "mpt-staging"
+          }
+        },
+        "prod": {
+          "aks": {
+            "cluster": "aks-mpt-weu",
+            "namespace": "mpt-prod"
+          }
+        }
+      },
+      "workloads": {
+        "api": {
+          "kind": "web"
+        }
+      },
+      "links": {},
+      "consumers": {
+        "apis": [],
+        "events": []
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "id": "swo-web-dashboard",
+      "description": "Home dashboard.",
+      "product": "mpt",
+      "team": "marketplace-web",
+      "lifecycle": "production",
+      "type": "frontend",
+      "tier": 3,
+      "repo": "softwareone/swo-web-dashboard",
+      "exposure": "public",
+      "customer_facing": true,
+      "environments": {
+        "dev": {
+          "aks": {
+            "cluster": "aks-mpt-dev-weu",
+            "namespace": "mpt-dev"
+          }
+        },
+        "test": {
+          "aks": {
+            "cluster": "aks-mpt-test-weu",
+            "namespace": "mpt-test"
+          }
+        },
+        "staging": {
+          "aks": {
+            "cluster": "aks-mpt-staging-weu",
+            "namespace": "mpt-staging"
+          }
+        },
+        "prod": {
+          "aks": {
+            "cluster": "aks-mpt-weu",
+            "namespace": "mpt-prod"
+          }
+        }
+      },
+      "workloads": {
+        "api": {
+          "kind": "web"
+        }
+      },
+      "links": {},
+      "consumers": {
+        "apis": [],
+        "events": []
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "id": "mpt-web-procurement",
+      "description": "Procurement wizard pages.",
+      "product": "mpt",
+      "team": "marketplace-web",
+      "lifecycle": "production",
+      "type": "frontend",
+      "tier": 2,
+      "repo": "softwareone/mpt-web-procurement",
+      "exposure": "public",
+      "customer_facing": true,
+      "environments": {
+        "dev": {
+          "aks": {
+            "cluster": "aks-mpt-dev-weu",
+            "namespace": "mpt-dev"
+          }
+        },
+        "test": {
+          "aks": {
+            "cluster": "aks-mpt-test-weu",
+            "namespace": "mpt-test"
+          }
+        },
+        "staging": {
+          "aks": {
+            "cluster": "aks-mpt-staging-weu",
+            "namespace": "mpt-staging"
+          }
+        },
+        "prod": {
+          "aks": {
+            "cluster": "aks-mpt-weu",
+            "namespace": "mpt-prod"
+          }
+        }
+      },
+      "workloads": {
+        "api": {
+          "kind": "web"
+        }
+      },
+      "links": {},
+      "consumers": {
+        "apis": [],
+        "events": []
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "id": "mpt-extension-adobe",
+      "description": "Fulfils Adobe VIP Marketplace orders.",
+      "product": "mpt-extensions",
+      "team": "marketplace-extensions",
+      "lifecycle": "production",
+      "type": "backend",
+      "tier": 1,
+      "repo": "softwareone/mpt-extension-adobe",
+      "exposure": "internal",
+      "customer_facing": true,
+      "environments": {
+        "dev": {
+          "aks": {
+            "cluster": "aks-mpt-dev-weu",
+            "namespace": "mpt-extensions-dev"
+          }
+        },
+        "test": {
+          "aks": {
+            "cluster": "aks-mpt-test-weu",
+            "namespace": "mpt-extensions-test"
+          }
+        },
+        "staging": {
+          "aks": {
+            "cluster": "aks-mpt-staging-weu",
+            "namespace": "mpt-extensions-staging"
+          }
+        },
+        "prod": {
+          "aks": {
+            "cluster": "aks-mpt-weu",
+            "namespace": "mpt-extensions-prod"
+          }
+        }
+      },
+      "workloads": {
+        "api": {
+          "kind": "api"
+        },
+        "sync": {
+          "kind": "worker"
+        }
+      },
+      "links": {},
+      "consumers": {
+        "apis": [],
+        "events": []
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "id": "mpt-extension-aws-management",
+      "description": "Creates and manages AWS accounts for marketplace clients.",
+      "product": "mpt-extensions",
+      "team": "marketplace-extensions",
+      "lifecycle": "production",
+      "type": "backend",
+      "tier": 2,
+      "repo": "softwareone/mpt-extension-aws-management",
+      "exposure": "internal",
+      "customer_facing": false,
+      "environments": {
+        "dev": {
+          "aks": {
+            "cluster": "aks-mpt-dev-weu",
+            "namespace": "mpt-extensions-dev"
+          }
+        },
+        "test": {
+          "aks": {
+            "cluster": "aks-mpt-test-weu",
+            "namespace": "mpt-extensions-test"
+          }
+        },
+        "staging": {
+          "aks": {
+            "cluster": "aks-mpt-staging-weu",
+            "namespace": "mpt-extensions-staging"
+          }
+        },
+        "prod": {
+          "aks": {
+            "cluster": "aks-mpt-weu",
+            "namespace": "mpt-extensions-prod"
+          }
+        }
+      },
+      "workloads": {
+        "api": {
+          "kind": "api"
+        }
+      },
+      "links": {},
+      "consumers": {
+        "apis": [],
+        "events": []
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "id": "mpt-extension-installation",
+      "description": "Installs extensions into client accounts.",
+      "product": "mpt-extensions",
+      "team": "marketplace-extensions",
+      "lifecycle": "production",
+      "type": "backend",
+      "tier": 2,
+      "repo": "softwareone/mpt-extension-installation",
+      "exposure": "internal",
+      "customer_facing": false,
+      "environments": {
+        "dev": {
+          "aks": {
+            "cluster": "aks-mpt-dev-weu",
+            "namespace": "mpt-extensions-dev"
+          }
+        },
+        "test": {
+          "aks": {
+            "cluster": "aks-mpt-test-weu",
+            "namespace": "mpt-extensions-test"
+          }
+        },
+        "staging": {
+          "aks": {
+            "cluster": "aks-mpt-staging-weu",
+            "namespace": "mpt-extensions-staging"
+          }
+        },
+        "prod": {
+          "aks": {
+            "cluster": "aks-mpt-weu",
+            "namespace": "mpt-extensions-prod"
+          }
+        }
+      },
+      "workloads": {
+        "api": {
+          "kind": "api"
+        }
+      },
+      "links": {},
+      "consumers": {
+        "apis": [],
+        "events": []
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "id": "mpt-extension-operations",
+      "description": "Operational tools for extension support.",
+      "product": "mpt-extensions",
+      "team": "marketplace-extensions",
+      "lifecycle": "production",
+      "type": "backend",
+      "tier": 2,
+      "repo": "softwareone/mpt-extension-operations",
+      "exposure": "internal",
+      "customer_facing": false,
+      "environments": {
+        "dev": {
+          "aks": {
+            "cluster": "aks-mpt-dev-weu",
+            "namespace": "mpt-extensions-dev"
+          }
+        },
+        "test": {
+          "aks": {
+            "cluster": "aks-mpt-test-weu",
+            "namespace": "mpt-extensions-test"
+          }
+        },
+        "staging": {
+          "aks": {
+            "cluster": "aks-mpt-staging-weu",
+            "namespace": "mpt-extensions-staging"
+          }
+        },
+        "prod": {
+          "aks": {
+            "cluster": "aks-mpt-weu",
+            "namespace": "mpt-extensions-prod"
+          }
+        }
+      },
+      "workloads": {
+        "api": {
+          "kind": "api"
+        }
+      },
+      "links": {},
+      "consumers": {
+        "apis": [],
+        "events": []
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "id": "mpt-extension-producthub",
+      "description": "Product information sync from vendors.",
+      "product": "mpt-extensions",
+      "team": "marketplace-extensions",
+      "lifecycle": "production",
+      "type": "backend",
+      "tier": 3,
+      "repo": "softwareone/mpt-extension-producthub",
+      "exposure": "internal",
+      "customer_facing": false,
+      "environments": {
+        "dev": {
+          "aks": {
+            "cluster": "aks-mpt-dev-weu",
+            "namespace": "mpt-extensions-dev"
+          }
+        },
+        "test": {
+          "aks": {
+            "cluster": "aks-mpt-test-weu",
+            "namespace": "mpt-extensions-test"
+          }
+        },
+        "staging": {
+          "aks": {
+            "cluster": "aks-mpt-staging-weu",
+            "namespace": "mpt-extensions-staging"
+          }
+        },
+        "prod": {
+          "aks": {
+            "cluster": "aks-mpt-weu",
+            "namespace": "mpt-extensions-prod"
+          }
+        }
+      },
+      "workloads": {
+        "api": {
+          "kind": "api"
+        }
+      },
+      "links": {},
+      "consumers": {
+        "apis": [],
+        "events": []
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "id": "mpt-extension-usage-reporting",
+      "description": "Collects usage from vendors and reports it for billing.",
+      "product": "mpt-extensions",
+      "team": "marketplace-extensions",
+      "lifecycle": "production",
+      "type": "worker",
+      "tier": 2,
+      "repo": "softwareone/mpt-extension-usage-reporting",
+      "exposure": "internal",
+      "customer_facing": false,
+      "environments": {
+        "dev": {
+          "aks": {
+            "cluster": "aks-mpt-dev-weu",
+            "namespace": "mpt-extensions-dev"
+          }
+        },
+        "test": {
+          "aks": {
+            "cluster": "aks-mpt-test-weu",
+            "namespace": "mpt-extensions-test"
+          }
+        },
+        "staging": {
+          "aks": {
+            "cluster": "aks-mpt-staging-weu",
+            "namespace": "mpt-extensions-staging"
+          }
+        },
+        "prod": {
+          "aks": {
+            "cluster": "aks-mpt-weu",
+            "namespace": "mpt-extensions-prod"
+          }
+        }
+      },
+      "workloads": {
+        "worker": {
+          "kind": "worker"
+        }
+      },
+      "links": {},
+      "consumers": {
+        "apis": [],
+        "events": []
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "id": "swo-extension-mscsp",
+      "description": "Fulfils Microsoft CSP orders through Partner Center.",
+      "product": "mpt-extensions",
+      "team": "marketplace-extensions",
+      "lifecycle": "production",
+      "type": "backend",
+      "tier": 1,
+      "repo": "softwareone/swo-extension-mscsp",
+      "exposure": "internal",
+      "customer_facing": true,
+      "environments": {
+        "dev": {
+          "aks": {
+            "cluster": "aks-mpt-dev-weu",
+            "namespace": "mpt-extensions-dev"
+          }
+        },
+        "test": {
+          "aks": {
+            "cluster": "aks-mpt-test-weu",
+            "namespace": "mpt-extensions-test"
+          }
+        },
+        "staging": {
+          "aks": {
+            "cluster": "aks-mpt-staging-weu",
+            "namespace": "mpt-extensions-staging"
+          }
+        },
+        "prod": {
+          "aks": {
+            "cluster": "aks-mpt-weu",
+            "namespace": "mpt-extensions-prod"
+          }
+        }
+      },
+      "workloads": {
+        "api": {
+          "kind": "api"
+        },
+        "sync": {
+          "kind": "worker"
+        }
+      },
+      "links": {},
+      "consumers": {
+        "apis": [],
+        "events": []
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "id": "litellm",
+      "description": "LLM gateway used by extension experiments.",
+      "product": "mpt-extensions",
+      "team": "marketplace-extensions",
+      "lifecycle": "experimental",
+      "type": "backend",
+      "tier": 3,
+      "repo": "softwareone/litellm",
+      "exposure": "internal",
+      "customer_facing": false,
+      "environments": {
+        "dev": {
+          "aks": {
+            "cluster": "aks-mpt-dev-weu",
+            "namespace": "mpt-extensions-dev"
+          }
+        }
+      },
+      "workloads": {
+        "api": {
+          "kind": "api"
+        }
+      },
+      "links": {},
+      "consumers": {
+        "apis": [],
+        "events": []
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "id": "prism-web-api",
+      "description": "Prism public API.",
+      "product": "prism",
+      "team": "prism-team",
+      "lifecycle": "production",
+      "type": "backend",
+      "tier": 1,
+      "repo": "softwareone/prism-web-api",
+      "exposure": "public",
+      "customer_facing": true,
+      "environments": {
+        "development": {
+          "aks": {
+            "cluster": "aks-prism-dev",
+            "namespace": "prism-development"
+          }
+        },
+        "sandbox": {
+          "aks": {
+            "cluster": "aks-prism-sandbox",
+            "namespace": "prism-sandbox"
+          }
+        },
+        "staging": {
+          "aks": {
+            "cluster": "aks-prism-staging",
+            "namespace": "prism-staging"
+          }
+        },
+        "demo": {
+          "aks": {
+            "cluster": "aks-prism-demo",
+            "namespace": "prism-demo"
+          }
+        },
+        "production": {
+          "aks": {
+            "cluster": "aks-prism-prod",
+            "namespace": "prism-production"
+          }
+        }
+      },
+      "workloads": {
+        "api": {
+          "kind": "api"
+        },
+        "sync": {
+          "kind": "worker"
+        }
+      },
+      "links": {},
+      "consumers": {
+        "apis": [],
+        "events": []
+      },
+      "bindings": {
+        "mssql": [
+          {
+            "database": "prism-core",
+            "server": "shared-mssql-prism",
+            "owner": true,
+            "workloads": [
+              "api"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "id": "prism-web-portal",
+      "description": "Prism customer portal.",
+      "product": "prism",
+      "team": "prism-team",
+      "lifecycle": "production",
+      "type": "frontend",
+      "tier": 1,
+      "repo": "softwareone/prism-web-portal",
+      "exposure": "public",
+      "customer_facing": true,
+      "environments": {
+        "development": {
+          "aks": {
+            "cluster": "aks-prism-dev",
+            "namespace": "prism-development"
+          }
+        },
+        "sandbox": {
+          "aks": {
+            "cluster": "aks-prism-sandbox",
+            "namespace": "prism-sandbox"
+          }
+        },
+        "staging": {
+          "aks": {
+            "cluster": "aks-prism-staging",
+            "namespace": "prism-staging"
+          }
+        },
+        "demo": {
+          "aks": {
+            "cluster": "aks-prism-demo",
+            "namespace": "prism-demo"
+          }
+        },
+        "production": {
+          "aks": {
+            "cluster": "aks-prism-prod",
+            "namespace": "prism-production"
+          }
+        }
+      },
+      "workloads": {
+        "api": {
+          "kind": "web"
+        }
+      },
+      "links": {},
+      "consumers": {
+        "apis": [],
+        "events": []
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "id": "prism-minion-core",
+      "description": "Core background processing.",
+      "product": "prism",
+      "team": "prism-team",
+      "lifecycle": "production",
+      "type": "worker",
+      "tier": 1,
+      "repo": "softwareone/prism-minion-core",
+      "exposure": "internal",
+      "customer_facing": true,
+      "environments": {
+        "development": {
+          "aks": {
+            "cluster": "aks-prism-dev",
+            "namespace": "prism-development"
+          }
+        },
+        "sandbox": {
+          "aks": {
+            "cluster": "aks-prism-sandbox",
+            "namespace": "prism-sandbox"
+          }
+        },
+        "staging": {
+          "aks": {
+            "cluster": "aks-prism-staging",
+            "namespace": "prism-staging"
+          }
+        },
+        "demo": {
+          "aks": {
+            "cluster": "aks-prism-demo",
+            "namespace": "prism-demo"
+          }
+        },
+        "production": {
+          "aks": {
+            "cluster": "aks-prism-prod",
+            "namespace": "prism-production"
+          }
+        }
+      },
+      "workloads": {
+        "worker": {
+          "kind": "worker"
+        }
+      },
+      "links": {},
+      "consumers": {
+        "apis": [],
+        "events": []
+      },
+      "bindings": {
+        "mssql": [
+          {
+            "database": "prism-core",
+            "server": "shared-mssql-prism",
+            "owner": false,
+            "workloads": [
+              "worker"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "id": "prism-minion-invoicing",
+      "description": "Invoice runs.",
+      "product": "prism",
+      "team": "prism-team",
+      "lifecycle": "production",
+      "type": "worker",
+      "tier": 1,
+      "repo": "softwareone/prism-minion-invoicing",
+      "exposure": "internal",
+      "customer_facing": true,
+      "environments": {
+        "development": {
+          "aks": {
+            "cluster": "aks-prism-dev",
+            "namespace": "prism-development"
+          }
+        },
+        "sandbox": {
+          "aks": {
+            "cluster": "aks-prism-sandbox",
+            "namespace": "prism-sandbox"
+          }
+        },
+        "staging": {
+          "aks": {
+            "cluster": "aks-prism-staging",
+            "namespace": "prism-staging"
+          }
+        },
+        "demo": {
+          "aks": {
+            "cluster": "aks-prism-demo",
+            "namespace": "prism-demo"
+          }
+        },
+        "production": {
+          "aks": {
+            "cluster": "aks-prism-prod",
+            "namespace": "prism-production"
+          }
+        }
+      },
+      "workloads": {
+        "worker": {
+          "kind": "worker"
+        }
+      },
+      "links": {},
+      "consumers": {
+        "apis": [],
+        "events": []
+      },
+      "bindings": {
+        "mssql": [
+          {
+            "database": "prism-invoicing",
+            "server": "shared-mssql-prism",
+            "owner": true,
+            "workloads": [
+              "worker"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "id": "prism-minion-partnercenter",
+      "description": "Partner Center synchronisation.",
+      "product": "prism",
+      "team": "prism-team",
+      "lifecycle": "production",
+      "type": "worker",
+      "tier": 2,
+      "repo": "softwareone/prism-minion-partnercenter",
+      "exposure": "internal",
+      "customer_facing": false,
+      "environments": {
+        "development": {
+          "aks": {
+            "cluster": "aks-prism-dev",
+            "namespace": "prism-development"
+          }
+        },
+        "sandbox": {
+          "aks": {
+            "cluster": "aks-prism-sandbox",
+            "namespace": "prism-sandbox"
+          }
+        },
+        "staging": {
+          "aks": {
+            "cluster": "aks-prism-staging",
+            "namespace": "prism-staging"
+          }
+        },
+        "demo": {
+          "aks": {
+            "cluster": "aks-prism-demo",
+            "namespace": "prism-demo"
+          }
+        },
+        "production": {
+          "aks": {
+            "cluster": "aks-prism-prod",
+            "namespace": "prism-production"
+          }
+        }
+      },
+      "workloads": {
+        "worker": {
+          "kind": "worker"
+        }
+      },
+      "links": {},
+      "consumers": {
+        "apis": [],
+        "events": []
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "id": "prism-minion-azure",
+      "description": "Azure consumption import.",
+      "product": "prism",
+      "team": "prism-team",
+      "lifecycle": "production",
+      "type": "worker",
+      "tier": 2,
+      "repo": "softwareone/prism-minion-azure",
+      "exposure": "internal",
+      "customer_facing": false,
+      "environments": {
+        "development": {
+          "aks": {
+            "cluster": "aks-prism-dev",
+            "namespace": "prism-development"
+          }
+        },
+        "sandbox": {
+          "aks": {
+            "cluster": "aks-prism-sandbox",
+            "namespace": "prism-sandbox"
+          }
+        },
+        "staging": {
+          "aks": {
+            "cluster": "aks-prism-staging",
+            "namespace": "prism-staging"
+          }
+        },
+        "demo": {
+          "aks": {
+            "cluster": "aks-prism-demo",
+            "namespace": "prism-demo"
+          }
+        },
+        "production": {
+          "aks": {
+            "cluster": "aks-prism-prod",
+            "namespace": "prism-production"
+          }
+        }
+      },
+      "workloads": {
+        "worker": {
+          "kind": "worker"
+        }
+      },
+      "links": {},
+      "consumers": {
+        "apis": [],
+        "events": []
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "id": "prism-minion-recon",
+      "description": "Reconciliation of vendor invoices.",
+      "product": "prism",
+      "team": "prism-team",
+      "lifecycle": "production",
+      "type": "worker",
+      "tier": 2,
+      "repo": "softwareone/prism-minion-recon",
+      "exposure": "internal",
+      "customer_facing": false,
+      "environments": {
+        "development": {
+          "aks": {
+            "cluster": "aks-prism-dev",
+            "namespace": "prism-development"
+          }
+        },
+        "sandbox": {
+          "aks": {
+            "cluster": "aks-prism-sandbox",
+            "namespace": "prism-sandbox"
+          }
+        },
+        "staging": {
+          "aks": {
+            "cluster": "aks-prism-staging",
+            "namespace": "prism-staging"
+          }
+        },
+        "demo": {
+          "aks": {
+            "cluster": "aks-prism-demo",
+            "namespace": "prism-demo"
+          }
+        },
+        "production": {
+          "aks": {
+            "cluster": "aks-prism-prod",
+            "namespace": "prism-production"
+          }
+        }
+      },
+      "workloads": {
+        "worker": {
+          "kind": "worker"
+        }
+      },
+      "links": {},
+      "consumers": {
+        "apis": [],
+        "events": []
+      },
+      "bindings": {
+        "mssql": [
+          {
+            "database": "prism-recon",
+            "server": "shared-mssql-prism",
+            "owner": true,
+            "workloads": [
+              "worker"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "id": "prism-web-signalr",
+      "description": "Real-time updates for the portal.",
+      "product": "prism",
+      "team": "prism-team",
+      "lifecycle": "production",
+      "type": "backend",
+      "tier": 3,
+      "repo": "softwareone/prism-web-signalr",
+      "exposure": "internal",
+      "customer_facing": false,
+      "environments": {
+        "development": {
+          "aks": {
+            "cluster": "aks-prism-dev",
+            "namespace": "prism-development"
+          }
+        },
+        "sandbox": {
+          "aks": {
+            "cluster": "aks-prism-sandbox",
+            "namespace": "prism-sandbox"
+          }
+        },
+        "staging": {
+          "aks": {
+            "cluster": "aks-prism-staging",
+            "namespace": "prism-staging"
+          }
+        },
+        "demo": {
+          "aks": {
+            "cluster": "aks-prism-demo",
+            "namespace": "prism-demo"
+          }
+        },
+        "production": {
+          "aks": {
+            "cluster": "aks-prism-prod",
+            "namespace": "prism-production"
+          }
+        }
+      },
+      "workloads": {
+        "api": {
+          "kind": "api"
+        }
+      },
+      "links": {},
+      "consumers": {
+        "apis": [],
+        "events": []
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "id": "prism-identity-identityprovider",
+      "description": "Identity provider for Prism users.",
+      "product": "prism",
+      "team": "prism-team",
+      "lifecycle": "production",
+      "type": "backend",
+      "tier": 1,
+      "repo": "softwareone/prism-identity-identityprovider",
+      "exposure": "internal",
+      "customer_facing": true,
+      "environments": {
+        "development": {
+          "aks": {
+            "cluster": "aks-prism-dev",
+            "namespace": "prism-development"
+          }
+        },
+        "sandbox": {
+          "aks": {
+            "cluster": "aks-prism-sandbox",
+            "namespace": "prism-sandbox"
+          }
+        },
+        "staging": {
+          "aks": {
+            "cluster": "aks-prism-staging",
+            "namespace": "prism-staging"
+          }
+        },
+        "demo": {
+          "aks": {
+            "cluster": "aks-prism-demo",
+            "namespace": "prism-demo"
+          }
+        },
+        "production": {
+          "aks": {
+            "cluster": "aks-prism-prod",
+            "namespace": "prism-production"
+          }
+        }
+      },
+      "workloads": {
+        "api": {
+          "kind": "api"
+        },
+        "sync": {
+          "kind": "worker"
+        }
+      },
+      "links": {},
+      "consumers": {
+        "apis": [],
+        "events": []
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "id": "Insights.Application.Api",
+      "description": "CloudIQ insights API.",
+      "product": "cloudiq",
+      "team": "cloudiq-team",
+      "lifecycle": "production",
+      "type": "backend",
+      "tier": 1,
+      "repo": "softwareone/insights-application-api",
+      "exposure": "public",
+      "customer_facing": true,
+      "environments": {
+        "development": {
+          "aks": {
+            "cluster": "aks-cloudiq-dev",
+            "namespace": "cloudiq-development"
+          }
+        },
+        "sit": {
+          "aks": {
+            "cluster": "aks-cloudiq-sit",
+            "namespace": "cloudiq-sit"
+          }
+        },
+        "uat": {
+          "aks": {
+            "cluster": "aks-cloudiq-uat",
+            "namespace": "cloudiq-uat"
+          }
+        },
+        "staging": {
+          "aks": {
+            "cluster": "aks-cloudiq-staging",
+            "namespace": "cloudiq-staging"
+          }
+        },
+        "prod": {
+          "aks": {
+            "cluster": "aks-cloudiq-prod",
+            "namespace": "cloudiq-prod"
+          }
+        }
+      },
+      "workloads": {
+        "api": {
+          "kind": "api"
+        },
+        "sync": {
+          "kind": "worker"
+        }
+      },
+      "links": {},
+      "consumers": {
+        "apis": [],
+        "events": []
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "id": "adobe-service",
+      "description": "Adobe licence management.",
+      "product": "cloudiq",
+      "team": "cloudiq-team",
+      "lifecycle": "production",
+      "type": "backend",
+      "tier": 2,
+      "repo": "softwareone/adobe-service",
+      "exposure": "internal",
+      "customer_facing": false,
+      "environments": {
+        "development": {
+          "aks": {
+            "cluster": "aks-cloudiq-dev",
+            "namespace": "cloudiq-development"
+          }
+        },
+        "sit": {
+          "aks": {
+            "cluster": "aks-cloudiq-sit",
+            "namespace": "cloudiq-sit"
+          }
+        },
+        "uat": {
+          "aks": {
+            "cluster": "aks-cloudiq-uat",
+            "namespace": "cloudiq-uat"
+          }
+        },
+        "staging": {
+          "aks": {
+            "cluster": "aks-cloudiq-staging",
+            "namespace": "cloudiq-staging"
+          }
+        },
+        "prod": {
+          "aks": {
+            "cluster": "aks-cloudiq-prod",
+            "namespace": "cloudiq-prod"
+          }
+        }
+      },
+      "workloads": {
+        "api": {
+          "kind": "api"
+        }
+      },
+      "links": {},
+      "consumers": {
+        "apis": [],
+        "events": []
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "id": "adobe-service-graphql",
+      "description": "GraphQL front for the Adobe service.",
+      "product": "cloudiq",
+      "team": "cloudiq-team",
+      "lifecycle": "production",
+      "type": "backend",
+      "tier": 2,
+      "repo": "softwareone/adobe-service-graphql",
+      "exposure": "internal",
+      "customer_facing": false,
+      "environments": {
+        "development": {
+          "aks": {
+            "cluster": "aks-cloudiq-dev",
+            "namespace": "cloudiq-development"
+          }
+        },
+        "sit": {
+          "aks": {
+            "cluster": "aks-cloudiq-sit",
+            "namespace": "cloudiq-sit"
+          }
+        },
+        "uat": {
+          "aks": {
+            "cluster": "aks-cloudiq-uat",
+            "namespace": "cloudiq-uat"
+          }
+        },
+        "staging": {
+          "aks": {
+            "cluster": "aks-cloudiq-staging",
+            "namespace": "cloudiq-staging"
+          }
+        },
+        "prod": {
+          "aks": {
+            "cluster": "aks-cloudiq-prod",
+            "namespace": "cloudiq-prod"
+          }
+        }
+      },
+      "workloads": {
+        "api": {
+          "kind": "api"
+        }
+      },
+      "links": {},
+      "consumers": {
+        "apis": [],
+        "events": []
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "id": "asset-api",
+      "description": "Software asset inventory.",
+      "product": "cloudiq",
+      "team": "cloudiq-team",
+      "lifecycle": "production",
+      "type": "backend",
+      "tier": 2,
+      "repo": "softwareone/asset-api",
+      "exposure": "internal",
+      "customer_facing": false,
+      "environments": {
+        "development": {
+          "aks": {
+            "cluster": "aks-cloudiq-dev",
+            "namespace": "cloudiq-development"
+          }
+        },
+        "staging": {
+          "aks": {
+            "cluster": "aks-cloudiq-staging",
+            "namespace": "cloudiq-staging"
+          }
+        },
+        "prod": {
+          "aks": {
+            "cluster": "aks-cloudiq-prod",
+            "namespace": "cloudiq-prod"
+          }
+        }
+      },
+      "workloads": {
+        "api": {
+          "kind": "api"
+        }
+      },
+      "links": {},
+      "consumers": {
+        "apis": [],
+        "events": []
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "id": "agreement-api",
+      "description": "Customer agreements.",
+      "product": "cloudiq",
+      "team": "cloudiq-team",
+      "lifecycle": "production",
+      "type": "backend",
+      "tier": 3,
+      "repo": "softwareone/agreement-api",
+      "exposure": "internal",
+      "customer_facing": false,
+      "environments": {
+        "development": {
+          "aks": {
+            "cluster": "aks-cloudiq-dev",
+            "namespace": "cloudiq-development"
+          }
+        },
+        "staging": {
+          "aks": {
+            "cluster": "aks-cloudiq-staging",
+            "namespace": "cloudiq-staging"
+          }
+        },
+        "prod": {
+          "aks": {
+            "cluster": "aks-cloudiq-prod",
+            "namespace": "cloudiq-prod"
+          }
+        }
+      },
+      "workloads": {
+        "api": {
+          "kind": "api"
+        }
+      },
+      "links": {},
+      "consumers": {
+        "apis": [],
+        "events": []
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "id": "aws-billing",
+      "description": "Imports AWS billing data.",
+      "product": "cloudiq",
+      "team": "cloudiq-team",
+      "lifecycle": "production",
+      "type": "worker",
+      "tier": 2,
+      "repo": "softwareone/aws-billing",
+      "exposure": "internal",
+      "customer_facing": false,
+      "environments": {
+        "development": {
+          "aks": {
+            "cluster": "aks-cloudiq-dev",
+            "namespace": "cloudiq-development"
+          }
+        },
+        "staging": {
+          "aks": {
+            "cluster": "aks-cloudiq-staging",
+            "namespace": "cloudiq-staging"
+          }
+        },
+        "prod": {
+          "aks": {
+            "cluster": "aks-cloudiq-prod",
+            "namespace": "cloudiq-prod"
+          }
+        }
+      },
+      "workloads": {
+        "worker": {
+          "kind": "worker"
+        }
+      },
+      "links": {},
+      "consumers": {
+        "apis": [],
+        "events": []
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "id": "aly-budgets-web-api",
+      "description": "Budgets and alerts.",
+      "product": "pyracloud",
+      "team": "pyracloud-analytics",
+      "lifecycle": "production",
+      "type": "backend",
+      "tier": 2,
+      "repo": "softwareone/aly-budgets-web-api",
+      "exposure": "internal",
+      "customer_facing": false,
+      "environments": {
+        "development": {
+          "aks": {
+            "cluster": "aks-pyracloud-dev",
+            "namespace": "pyracloud-development"
+          }
+        },
+        "test": {
+          "aks": {
+            "cluster": "aks-pyracloud-test",
+            "namespace": "pyracloud-test"
+          }
+        },
+        "staging": {
+          "aks": {
+            "cluster": "aks-pyracloud-staging",
+            "namespace": "pyracloud-staging"
+          }
+        },
+        "production": {
+          "aks": {
+            "cluster": "aks-pyracloud-prod",
+            "namespace": "pyracloud-production"
+          }
+        }
+      },
+      "workloads": {
+        "api": {
+          "kind": "api"
+        }
+      },
+      "links": {},
+      "consumers": {
+        "apis": [],
+        "events": []
+      },
+      "bindings": {
+        "mssql": [
+          {
+            "database": "budgets",
+            "server": "shared-mssql-pyra",
+            "owner": true,
+            "workloads": [
+              "api"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "id": "aly-cloud-utilization-web-api",
+      "description": "Cloud utilisation reports.",
+      "product": "pyracloud",
+      "team": "pyracloud-analytics",
+      "lifecycle": "production",
+      "type": "backend",
+      "tier": 2,
+      "repo": "softwareone/aly-cloud-utilization-web-api",
+      "exposure": "internal",
+      "customer_facing": false,
+      "environments": {
+        "development": {
+          "aks": {
+            "cluster": "aks-pyracloud-dev",
+            "namespace": "pyracloud-development"
+          }
+        },
+        "test": {
+          "aks": {
+            "cluster": "aks-pyracloud-test",
+            "namespace": "pyracloud-test"
+          }
+        },
+        "staging": {
+          "aks": {
+            "cluster": "aks-pyracloud-staging",
+            "namespace": "pyracloud-staging"
+          }
+        },
+        "production": {
+          "aks": {
+            "cluster": "aks-pyracloud-prod",
+            "namespace": "pyracloud-production"
+          }
+        }
+      },
+      "workloads": {
+        "api": {
+          "kind": "api"
+        }
+      },
+      "links": {},
+      "consumers": {
+        "apis": [],
+        "events": []
+      },
+      "bindings": {
+        "mssql": [
+          {
+            "database": "utilization",
+            "server": "shared-mssql-pyra",
+            "owner": true,
+            "workloads": [
+              "api"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "id": "aly-consumption-ea-web-api",
+      "description": "Azure EA consumption.",
+      "product": "pyracloud",
+      "team": "pyracloud-analytics",
+      "lifecycle": "production",
+      "type": "backend",
+      "tier": 1,
+      "repo": "softwareone/aly-consumption-ea-web-api",
+      "exposure": "internal",
+      "customer_facing": true,
+      "environments": {
+        "development": {
+          "aks": {
+            "cluster": "aks-pyracloud-dev",
+            "namespace": "pyracloud-development"
+          }
+        },
+        "test": {
+          "aks": {
+            "cluster": "aks-pyracloud-test",
+            "namespace": "pyracloud-test"
+          }
+        },
+        "staging": {
+          "aks": {
+            "cluster": "aks-pyracloud-staging",
+            "namespace": "pyracloud-staging"
+          }
+        },
+        "production": {
+          "aks": {
+            "cluster": "aks-pyracloud-prod",
+            "namespace": "pyracloud-production"
+          }
+        }
+      },
+      "workloads": {
+        "api": {
+          "kind": "api"
+        },
+        "sync": {
+          "kind": "worker"
+        }
+      },
+      "links": {},
+      "consumers": {
+        "apis": [],
+        "events": []
+      },
+      "bindings": {
+        "mssql": [
+          {
+            "database": "consumption",
+            "server": "shared-mssql-pyra",
+            "owner": false,
+            "workloads": [
+              "api"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "id": "aly-consumption-aws-web-api",
+      "description": "AWS consumption.",
+      "product": "pyracloud",
+      "team": "pyracloud-analytics",
+      "lifecycle": "production",
+      "type": "backend",
+      "tier": 1,
+      "repo": "softwareone/aly-consumption-aws-web-api",
+      "exposure": "internal",
+      "customer_facing": true,
+      "environments": {
+        "development": {
+          "aks": {
+            "cluster": "aks-pyracloud-dev",
+            "namespace": "pyracloud-development"
+          }
+        },
+        "test": {
+          "aks": {
+            "cluster": "aks-pyracloud-test",
+            "namespace": "pyracloud-test"
+          }
+        },
+        "staging": {
+          "aks": {
+            "cluster": "aks-pyracloud-staging",
+            "namespace": "pyracloud-staging"
+          }
+        },
+        "production": {
+          "aks": {
+            "cluster": "aks-pyracloud-prod",
+            "namespace": "pyracloud-production"
+          }
+        }
+      },
+      "workloads": {
+        "api": {
+          "kind": "api"
+        },
+        "sync": {
+          "kind": "worker"
+        }
+      },
+      "links": {},
+      "consumers": {
+        "apis": [],
+        "events": []
+      },
+      "bindings": {
+        "mssql": [
+          {
+            "database": "consumption",
+            "server": "shared-mssql-pyra",
+            "owner": false,
+            "workloads": [
+              "api"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "id": "aly-consumption-consolidation-web-api",
+      "description": "Consolidates consumption across clouds.",
+      "product": "pyracloud",
+      "team": "pyracloud-analytics",
+      "lifecycle": "production",
+      "type": "worker",
+      "tier": 2,
+      "repo": "softwareone/aly-consumption-consolidation-web-api",
+      "exposure": "internal",
+      "customer_facing": false,
+      "environments": {
+        "development": {
+          "aks": {
+            "cluster": "aks-pyracloud-dev",
+            "namespace": "pyracloud-development"
+          }
+        },
+        "test": {
+          "aks": {
+            "cluster": "aks-pyracloud-test",
+            "namespace": "pyracloud-test"
+          }
+        },
+        "staging": {
+          "aks": {
+            "cluster": "aks-pyracloud-staging",
+            "namespace": "pyracloud-staging"
+          }
+        },
+        "production": {
+          "aks": {
+            "cluster": "aks-pyracloud-prod",
+            "namespace": "pyracloud-production"
+          }
+        }
+      },
+      "workloads": {
+        "worker": {
+          "kind": "worker"
+        }
+      },
+      "links": {},
+      "consumers": {
+        "apis": [],
+        "events": []
+      },
+      "bindings": {
+        "mssql": [
+          {
+            "database": "consumption",
+            "server": "shared-mssql-pyra",
+            "owner": true,
+            "workloads": [
+              "worker"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "id": "aly-azure-consumption-csp-web-api",
+      "description": "Azure CSP consumption.",
+      "product": "pyracloud",
+      "team": "pyracloud-analytics",
+      "lifecycle": "production",
+      "type": "backend",
+      "tier": 2,
+      "repo": "softwareone/aly-azure-consumption-csp-web-api",
+      "exposure": "internal",
+      "customer_facing": false,
+      "environments": {
+        "development": {
+          "aks": {
+            "cluster": "aks-pyracloud-dev",
+            "namespace": "pyracloud-development"
+          }
+        },
+        "test": {
+          "aks": {
+            "cluster": "aks-pyracloud-test",
+            "namespace": "pyracloud-test"
+          }
+        },
+        "staging": {
+          "aks": {
+            "cluster": "aks-pyracloud-staging",
+            "namespace": "pyracloud-staging"
+          }
+        },
+        "production": {
+          "aks": {
+            "cluster": "aks-pyracloud-prod",
+            "namespace": "pyracloud-production"
+          }
+        }
+      },
+      "workloads": {
+        "api": {
+          "kind": "api"
+        }
+      },
+      "links": {},
+      "consumers": {
+        "apis": [],
+        "events": []
+      },
+      "bindings": {
+        "mssql": [
+          {
+            "database": "consumption",
+            "server": "shared-mssql-pyra",
+            "owner": false,
+            "workloads": [
+              "api"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "id": "activation-manager-bo-web-api",
+      "description": "Back-office activation manager.",
+      "product": "pyracloud",
+      "team": "pyracloud-analytics",
+      "lifecycle": "production",
+      "type": "backend",
+      "tier": 3,
+      "repo": "softwareone/activation-manager-bo-web-api",
+      "exposure": "internal",
+      "customer_facing": false,
+      "environments": {
+        "development": {
+          "aks": {
+            "cluster": "aks-pyracloud-dev",
+            "namespace": "pyracloud-development"
+          }
+        },
+        "test": {
+          "aks": {
+            "cluster": "aks-pyracloud-test",
+            "namespace": "pyracloud-test"
+          }
+        },
+        "staging": {
+          "aks": {
+            "cluster": "aks-pyracloud-staging",
+            "namespace": "pyracloud-staging"
+          }
+        },
+        "production": {
+          "aks": {
+            "cluster": "aks-pyracloud-prod",
+            "namespace": "pyracloud-production"
+          }
+        }
+      },
+      "workloads": {
+        "api": {
+          "kind": "api"
+        }
+      },
+      "links": {},
+      "consumers": {
+        "apis": [],
+        "events": []
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "id": "nova-anvil",
+      "description": "Nova build and template engine.",
+      "product": "nova",
+      "team": "platform-team",
+      "lifecycle": "production",
+      "type": "backend",
+      "tier": 3,
+      "repo": "softwareone/nova-anvil",
+      "exposure": "internal",
+      "customer_facing": false,
+      "environments": {
+        "dev": {
+          "aks": {
+            "cluster": "aks-nova-dev",
+            "namespace": "nova-dev"
+          }
+        },
+        "prod": {
+          "aks": {
+            "cluster": "aks-nova-prod",
+            "namespace": "nova-prod"
+          }
+        }
+      },
+      "workloads": {
+        "api": {
+          "kind": "api"
+        }
+      },
+      "links": {},
+      "consumers": {
+        "apis": [],
+        "events": []
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "id": "podinfo",
+      "description": "Sample workload that checks the GitOps pipeline end to end.",
+      "product": "cicd-infra",
+      "team": "platform-team",
+      "lifecycle": "production",
+      "type": "backend",
+      "tier": 3,
+      "repo": "softwareone/podinfo",
+      "exposure": "internal",
+      "customer_facing": false,
+      "environments": {
+        "staging": {
+          "aks": {
+            "cluster": "aks-cicd-infra-staging",
+            "namespace": "cicd-infra-staging"
+          }
+        }
+      },
+      "workloads": {
+        "api": {
+          "kind": "api"
+        }
+      },
+      "links": {},
+      "consumers": {
+        "apis": [],
+        "events": []
+      }
+    }
+  ]
+}

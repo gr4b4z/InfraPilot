@@ -1,0 +1,3435 @@
+{
+  "schemaVersion": 2,
+  "period": "2026-08",
+  "complete": true,
+  "generated_at": "2026-09-03T05:00:00Z",
+  "catalog_version": 12,
+  "sources": [
+    {
+      "id": "azure",
+      "rows": 10687,
+      "scopes": 3,
+      "totals": {
+        "total": {
+          "USD": 61991.12,
+          "EUR": 9022.06
+        },
+        "direct": {
+          "USD": 42912.68,
+          "EUR": 7297.15
+        },
+        "shared": {
+          "USD": 11732.72,
+          "EUR": 1724.91
+        },
+        "shared_unsplit": {
+          "USD": 416.07
+        },
+        "unallocated": {
+          "USD": 6929.65
+        }
+      }
+    },
+    {
+      "id": "aws",
+      "rows": 213,
+      "scopes": 1,
+      "totals": {
+        "total": {
+          "USD": 2959.89
+        },
+        "direct": {
+          "USD": 2263.49
+        },
+        "shared": {},
+        "shared_unsplit": {},
+        "unallocated": {
+          "USD": 696.4
+        }
+      }
+    }
+  ],
+  "totals": {
+    "total": {
+      "USD": 64951.01,
+      "EUR": 9022.06
+    },
+    "direct": {
+      "USD": 45176.17,
+      "EUR": 7297.15
+    },
+    "shared": {
+      "USD": 11732.72,
+      "EUR": 1724.91
+    },
+    "shared_unsplit": {
+      "USD": 416.07
+    },
+    "unallocated": {
+      "USD": 7626.05
+    }
+  },
+  "services": [
+    {
+      "id": "mpt-billing",
+      "product": "mpt",
+      "team": "marketplace-core",
+      "direct": {
+        "USD": 4612.07
+      },
+      "shared": {
+        "USD": 644.77
+      },
+      "total": {
+        "USD": 5256.84
+      },
+      "resources": [
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-billing-prod-rg/providers/Microsoft.App/containerApps/mpt-billing-prod",
+          "cost": {
+            "USD": 2536.64
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-billing-prod-rg/providers/Microsoft.Insights/components/mpt-billing-prod-ai",
+          "cost": {
+            "USD": 553.45
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-billing-prod-rg/providers/Microsoft.KeyVault/vaults/kv-mpt-billing-prod",
+          "cost": {
+            "USD": 138.36
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-billing-prod-rg/providers/Microsoft.Cache/Redis/mpt-billing-prod-redis",
+          "cost": {
+            "USD": 830.17
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-billing-prod-rg/providers/Microsoft.Storage/storageAccounts/stmptbillingprod",
+          "cost": {
+            "USD": 553.45
+          },
+          "via": "tag"
+        }
+      ],
+      "shared_from": [
+        {
+          "shared": "shared-postgres-mpt",
+          "cost": {
+            "USD": 439.98
+          }
+        },
+        {
+          "shared": "aks-mpt-weu",
+          "cost": {
+            "USD": 204.79
+          }
+        }
+      ]
+    },
+    {
+      "id": "mpt-procurement",
+      "product": "mpt",
+      "team": "marketplace-core",
+      "direct": {
+        "USD": 3517.33
+      },
+      "shared": {
+        "USD": 644.77
+      },
+      "total": {
+        "USD": 4162.1
+      },
+      "resources": [
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-procurement-prod-rg/providers/Microsoft.App/containerApps/mpt-procurement-prod",
+          "cost": {
+            "USD": 1934.53
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-procurement-prod-rg/providers/Microsoft.Insights/components/mpt-procurement-prod-ai",
+          "cost": {
+            "USD": 422.08
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-procurement-prod-rg/providers/Microsoft.KeyVault/vaults/kv-mpt-procuremen-prod",
+          "cost": {
+            "USD": 105.52
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-procurement-prod-rg/providers/Microsoft.Cache/Redis/mpt-procurement-prod-redis",
+          "cost": {
+            "USD": 633.12
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-procurement-prod-rg/providers/Microsoft.Storage/storageAccounts/stmptprocurementprod",
+          "cost": {
+            "USD": 422.08
+          },
+          "via": "tag"
+        }
+      ],
+      "shared_from": [
+        {
+          "shared": "shared-postgres-mpt",
+          "cost": {
+            "USD": 439.98
+          }
+        },
+        {
+          "shared": "aks-mpt-weu",
+          "cost": {
+            "USD": 204.79
+          }
+        }
+      ]
+    },
+    {
+      "id": "mpt-notifications",
+      "product": "mpt",
+      "team": "marketplace-core",
+      "direct": {
+        "USD": 1403.51
+      },
+      "shared": {
+        "USD": 644.77
+      },
+      "total": {
+        "USD": 2048.28
+      },
+      "resources": [
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-notifications-prod-rg/providers/Microsoft.App/containerApps/mpt-notifications-prod",
+          "cost": {
+            "USD": 771.93
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-notifications-prod-rg/providers/Microsoft.Insights/components/mpt-notifications-prod-ai",
+          "cost": {
+            "USD": 168.42
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-notifications-prod-rg/providers/Microsoft.KeyVault/vaults/kv-mpt-notificati-prod",
+          "cost": {
+            "USD": 42.11
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-notifications-prod-rg/providers/Microsoft.Cache/Redis/mpt-notifications-prod-redis",
+          "cost": {
+            "USD": 252.63
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-notifications-prod-rg/providers/Microsoft.Storage/storageAccounts/stmptnotificationsprod",
+          "cost": {
+            "USD": 168.42
+          },
+          "via": "tag"
+        }
+      ],
+      "shared_from": [
+        {
+          "shared": "shared-postgres-mpt",
+          "cost": {
+            "USD": 439.98
+          }
+        },
+        {
+          "shared": "aks-mpt-weu",
+          "cost": {
+            "USD": 204.79
+          }
+        }
+      ]
+    },
+    {
+      "id": "mpt-audit",
+      "product": "mpt",
+      "team": "marketplace-core",
+      "direct": {
+        "USD": 1078.39
+      },
+      "shared": {
+        "USD": 644.77
+      },
+      "total": {
+        "USD": 1723.16
+      },
+      "resources": [
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-audit-prod-rg/providers/Microsoft.App/containerApps/mpt-audit-prod",
+          "cost": {
+            "USD": 593.11
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-audit-prod-rg/providers/Microsoft.Insights/components/mpt-audit-prod-ai",
+          "cost": {
+            "USD": 129.41
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-audit-prod-rg/providers/Microsoft.KeyVault/vaults/kv-mpt-audit-prod",
+          "cost": {
+            "USD": 32.35
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-audit-prod-rg/providers/Microsoft.Cache/Redis/mpt-audit-prod-redis",
+          "cost": {
+            "USD": 194.11
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-audit-prod-rg/providers/Microsoft.Storage/storageAccounts/stmptauditprod",
+          "cost": {
+            "USD": 129.41
+          },
+          "via": "tag"
+        }
+      ],
+      "shared_from": [
+        {
+          "shared": "shared-postgres-mpt",
+          "cost": {
+            "USD": 439.98
+          }
+        },
+        {
+          "shared": "aks-mpt-weu",
+          "cost": {
+            "USD": 204.79
+          }
+        }
+      ]
+    },
+    {
+      "id": "mpt-currency",
+      "product": "mpt",
+      "team": "marketplace-core",
+      "direct": {
+        "USD": 346.43
+      },
+      "shared": {
+        "USD": 204.79
+      },
+      "total": {
+        "USD": 551.22
+      },
+      "resources": [
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-currency-prod-rg/providers/Microsoft.App/containerApps/mpt-currency-prod",
+          "cost": {
+            "USD": 190.54
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-currency-prod-rg/providers/Microsoft.Insights/components/mpt-currency-prod-ai",
+          "cost": {
+            "USD": 41.57
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-currency-prod-rg/providers/Microsoft.KeyVault/vaults/kv-mpt-currency-prod",
+          "cost": {
+            "USD": 10.39
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-currency-prod-rg/providers/Microsoft.Cache/Redis/mpt-currency-prod-redis",
+          "cost": {
+            "USD": 62.36
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-currency-prod-rg/providers/Microsoft.Storage/storageAccounts/stmptcurrencyprod",
+          "cost": {
+            "USD": 41.57
+          },
+          "via": "tag"
+        }
+      ],
+      "shared_from": [
+        {
+          "shared": "aks-mpt-weu",
+          "cost": {
+            "USD": 204.79
+          }
+        }
+      ]
+    },
+    {
+      "id": "mpt-tasks",
+      "product": "mpt",
+      "team": "marketplace-core",
+      "direct": {
+        "USD": 776.39
+      },
+      "shared": {
+        "USD": 204.79
+      },
+      "total": {
+        "USD": 981.18
+      },
+      "resources": [
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-tasks-prod-rg/providers/Microsoft.App/containerApps/mpt-tasks-prod",
+          "cost": {
+            "USD": 427.01
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-tasks-prod-rg/providers/Microsoft.Insights/components/mpt-tasks-prod-ai",
+          "cost": {
+            "USD": 93.17
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-tasks-prod-rg/providers/Microsoft.KeyVault/vaults/kv-mpt-tasks-prod",
+          "cost": {
+            "USD": 23.29
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-tasks-prod-rg/providers/Microsoft.Cache/Redis/mpt-tasks-prod-redis",
+          "cost": {
+            "USD": 139.75
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-tasks-prod-rg/providers/Microsoft.Storage/storageAccounts/stmpttasksprod",
+          "cost": {
+            "USD": 93.17
+          },
+          "via": "tag"
+        }
+      ],
+      "shared_from": [
+        {
+          "shared": "aks-mpt-weu",
+          "cost": {
+            "USD": 204.79
+          }
+        }
+      ]
+    },
+    {
+      "id": "mpt-helpdesk",
+      "product": "mpt",
+      "team": "marketplace-core",
+      "direct": {
+        "USD": 587.9
+      },
+      "shared": {
+        "USD": 644.77
+      },
+      "total": {
+        "USD": 1232.67
+      },
+      "resources": [
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-helpdesk-prod-rg/providers/Microsoft.App/containerApps/mpt-helpdesk-prod",
+          "cost": {
+            "USD": 323.34
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-helpdesk-prod-rg/providers/Microsoft.Insights/components/mpt-helpdesk-prod-ai",
+          "cost": {
+            "USD": 70.55
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-helpdesk-prod-rg/providers/Microsoft.KeyVault/vaults/kv-mpt-helpdesk-prod",
+          "cost": {
+            "USD": 17.64
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-helpdesk-prod-rg/providers/Microsoft.Cache/Redis/mpt-helpdesk-prod-redis",
+          "cost": {
+            "USD": 105.82
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-helpdesk-prod-rg/providers/Microsoft.Storage/storageAccounts/stmpthelpdeskprod",
+          "cost": {
+            "USD": 70.55
+          },
+          "via": "tag"
+        }
+      ],
+      "shared_from": [
+        {
+          "shared": "shared-postgres-mpt",
+          "cost": {
+            "USD": 439.98
+          }
+        },
+        {
+          "shared": "aks-mpt-weu",
+          "cost": {
+            "USD": 204.79
+          }
+        }
+      ]
+    },
+    {
+      "id": "mpt-public-catalog",
+      "product": "mpt",
+      "team": "marketplace-core",
+      "direct": {
+        "USD": 1614.0
+      },
+      "shared": {
+        "USD": 204.79
+      },
+      "total": {
+        "USD": 1818.79
+      },
+      "resources": [
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-public-catalog-prod-rg/providers/Microsoft.App/containerApps/mpt-public-catalog-prod",
+          "cost": {
+            "USD": 887.7
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-public-catalog-prod-rg/providers/Microsoft.Insights/components/mpt-public-catalog-prod-ai",
+          "cost": {
+            "USD": 193.68
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-public-catalog-prod-rg/providers/Microsoft.KeyVault/vaults/kv-mpt-public-cat-prod",
+          "cost": {
+            "USD": 48.42
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-public-catalog-prod-rg/providers/Microsoft.Cache/Redis/mpt-public-catalog-prod-redis",
+          "cost": {
+            "USD": 290.52
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-public-catalog-prod-rg/providers/Microsoft.Storage/storageAccounts/stmptpubliccatalogprod",
+          "cost": {
+            "USD": 193.68
+          },
+          "via": "tag"
+        }
+      ],
+      "shared_from": [
+        {
+          "shared": "aks-mpt-weu",
+          "cost": {
+            "USD": 204.79
+          }
+        }
+      ]
+    },
+    {
+      "id": "mpt-spotlight",
+      "product": "mpt",
+      "team": "marketplace-core",
+      "direct": {
+        "USD": 437.16
+      },
+      "shared": {
+        "USD": 204.79
+      },
+      "total": {
+        "USD": 641.95
+      },
+      "resources": [
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-spotlight-prod-rg/providers/Microsoft.App/containerApps/mpt-spotlight-prod",
+          "cost": {
+            "USD": 240.44
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-spotlight-prod-rg/providers/Microsoft.Insights/components/mpt-spotlight-prod-ai",
+          "cost": {
+            "USD": 52.46
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-spotlight-prod-rg/providers/Microsoft.KeyVault/vaults/kv-mpt-spotlight-prod",
+          "cost": {
+            "USD": 13.11
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-spotlight-prod-rg/providers/Microsoft.Cache/Redis/mpt-spotlight-prod-redis",
+          "cost": {
+            "USD": 78.69
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-spotlight-prod-rg/providers/Microsoft.Storage/storageAccounts/stmptspotlightprod",
+          "cost": {
+            "USD": 52.46
+          },
+          "via": "tag"
+        }
+      ],
+      "shared_from": [
+        {
+          "shared": "aks-mpt-weu",
+          "cost": {
+            "USD": 204.79
+          }
+        }
+      ]
+    },
+    {
+      "id": "mpt-scheduler",
+      "product": "mpt",
+      "team": "marketplace-core",
+      "direct": {
+        "USD": 212.23
+      },
+      "shared": {
+        "USD": 204.79
+      },
+      "total": {
+        "USD": 417.02
+      },
+      "resources": [
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-scheduler-prod-rg/providers/Microsoft.App/containerApps/mpt-scheduler-prod",
+          "cost": {
+            "USD": 116.72
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-scheduler-prod-rg/providers/Microsoft.Insights/components/mpt-scheduler-prod-ai",
+          "cost": {
+            "USD": 25.47
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-scheduler-prod-rg/providers/Microsoft.KeyVault/vaults/kv-mpt-scheduler-prod",
+          "cost": {
+            "USD": 6.37
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-scheduler-prod-rg/providers/Microsoft.Cache/Redis/mpt-scheduler-prod-redis",
+          "cost": {
+            "USD": 38.2
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-scheduler-prod-rg/providers/Microsoft.Storage/storageAccounts/stmptschedulerprod",
+          "cost": {
+            "USD": 25.47
+          },
+          "via": "tag"
+        }
+      ],
+      "shared_from": [
+        {
+          "shared": "aks-mpt-weu",
+          "cost": {
+            "USD": 204.79
+          }
+        }
+      ]
+    },
+    {
+      "id": "mpt-export",
+      "product": "mpt",
+      "team": "marketplace-core",
+      "direct": {
+        "USD": 294.69
+      },
+      "shared": {
+        "USD": 204.79
+      },
+      "total": {
+        "USD": 499.48
+      },
+      "resources": [
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-export-prod-rg/providers/Microsoft.App/containerApps/mpt-export-prod",
+          "cost": {
+            "USD": 162.08
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-export-prod-rg/providers/Microsoft.Insights/components/mpt-export-prod-ai",
+          "cost": {
+            "USD": 35.36
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-export-prod-rg/providers/Microsoft.KeyVault/vaults/kv-mpt-export-prod",
+          "cost": {
+            "USD": 8.84
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-export-prod-rg/providers/Microsoft.Cache/Redis/mpt-export-prod-redis",
+          "cost": {
+            "USD": 53.05
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-export-prod-rg/providers/Microsoft.Storage/storageAccounts/stmptexportprod",
+          "cost": {
+            "USD": 35.36
+          },
+          "via": "tag"
+        }
+      ],
+      "shared_from": [
+        {
+          "shared": "aks-mpt-weu",
+          "cost": {
+            "USD": 204.79
+          }
+        }
+      ]
+    },
+    {
+      "id": "swo-auth",
+      "product": "mpt",
+      "team": "marketplace-core",
+      "direct": {
+        "USD": 2153.67
+      },
+      "shared": {
+        "USD": 644.74
+      },
+      "total": {
+        "USD": 2798.41
+      },
+      "resources": [
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-swo-auth-prod-rg/providers/Microsoft.App/containerApps/swo-auth-prod",
+          "cost": {
+            "USD": 1184.52
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-swo-auth-prod-rg/providers/Microsoft.Insights/components/swo-auth-prod-ai",
+          "cost": {
+            "USD": 258.44
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-swo-auth-prod-rg/providers/Microsoft.KeyVault/vaults/kv-swo-auth-prod",
+          "cost": {
+            "USD": 64.61
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-swo-auth-prod-rg/providers/Microsoft.Cache/Redis/swo-auth-prod-redis",
+          "cost": {
+            "USD": 387.66
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-swo-auth-prod-rg/providers/Microsoft.Storage/storageAccounts/stswoauthprod",
+          "cost": {
+            "USD": 258.44
+          },
+          "via": "tag"
+        }
+      ],
+      "shared_from": [
+        {
+          "shared": "shared-postgres-mpt",
+          "cost": {
+            "USD": 439.95
+          }
+        },
+        {
+          "shared": "aks-mpt-weu",
+          "cost": {
+            "USD": 204.79
+          }
+        }
+      ]
+    },
+    {
+      "id": "swo-platform",
+      "product": "mpt",
+      "team": "marketplace-core",
+      "direct": {
+        "USD": 2817.68
+      },
+      "shared": {
+        "USD": 204.79
+      },
+      "total": {
+        "USD": 3022.47
+      },
+      "resources": [
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-swo-platform-prod-rg/providers/Microsoft.App/containerApps/swo-platform-prod",
+          "cost": {
+            "USD": 1549.73
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-swo-platform-prod-rg/providers/Microsoft.Insights/components/swo-platform-prod-ai",
+          "cost": {
+            "USD": 338.12
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-swo-platform-prod-rg/providers/Microsoft.KeyVault/vaults/kv-swo-platform-prod",
+          "cost": {
+            "USD": 84.53
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-swo-platform-prod-rg/providers/Microsoft.Cache/Redis/swo-platform-prod-redis",
+          "cost": {
+            "USD": 507.18
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-swo-platform-prod-rg/providers/Microsoft.Storage/storageAccounts/stswoplatformprod",
+          "cost": {
+            "USD": 338.12
+          },
+          "via": "tag"
+        }
+      ],
+      "shared_from": [
+        {
+          "shared": "aks-mpt-weu",
+          "cost": {
+            "USD": 204.79
+          }
+        }
+      ]
+    },
+    {
+      "id": "mpt-nav-stats",
+      "product": "mpt",
+      "team": "marketplace-core",
+      "direct": {
+        "USD": 126.0
+      },
+      "shared": {
+        "USD": 204.79
+      },
+      "total": {
+        "USD": 330.79
+      },
+      "resources": [
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-nav-stats-prod-rg/providers/Microsoft.App/containerApps/mpt-nav-stats-prod",
+          "cost": {
+            "USD": 69.3
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-nav-stats-prod-rg/providers/Microsoft.Insights/components/mpt-nav-stats-prod-ai",
+          "cost": {
+            "USD": 15.12
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-nav-stats-prod-rg/providers/Microsoft.KeyVault/vaults/kv-mpt-nav-stats-prod",
+          "cost": {
+            "USD": 3.78
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-nav-stats-prod-rg/providers/Microsoft.Cache/Redis/mpt-nav-stats-prod-redis",
+          "cost": {
+            "USD": 22.68
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-nav-stats-prod-rg/providers/Microsoft.Storage/storageAccounts/stmptnavstatsprod",
+          "cost": {
+            "USD": 15.12
+          },
+          "via": "tag"
+        }
+      ],
+      "shared_from": [
+        {
+          "shared": "aks-mpt-weu",
+          "cost": {
+            "USD": 204.79
+          }
+        }
+      ]
+    },
+    {
+      "id": "mpt-ai-assistant",
+      "product": "mpt",
+      "team": "marketplace-core",
+      "direct": {},
+      "shared": {},
+      "total": {},
+      "resources": [],
+      "shared_from": []
+    },
+    {
+      "id": "swo-web-shell",
+      "product": "mpt",
+      "team": "marketplace-web",
+      "direct": {
+        "USD": 388.08
+      },
+      "shared": {
+        "USD": 204.79
+      },
+      "total": {
+        "USD": 592.87
+      },
+      "resources": [
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-swo-web-shell-prod-rg/providers/Microsoft.App/containerApps/swo-web-shell-prod",
+          "cost": {
+            "USD": 260.3
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-swo-web-shell-prod-rg/providers/Microsoft.Insights/components/swo-web-shell-prod-ai",
+          "cost": {
+            "USD": 56.79
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-swo-web-shell-prod-rg/providers/Microsoft.KeyVault/vaults/kv-swo-web-shell-prod",
+          "cost": {
+            "USD": 14.2
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-swo-web-shell-prod-rg/providers/Microsoft.Storage/storageAccounts/stswowebshellprod",
+          "cost": {
+            "USD": 56.79
+          },
+          "via": "tag"
+        }
+      ],
+      "shared_from": [
+        {
+          "shared": "aks-mpt-weu",
+          "cost": {
+            "USD": 204.79
+          }
+        }
+      ]
+    },
+    {
+      "id": "swo-web-billing",
+      "product": "mpt",
+      "team": "marketplace-web",
+      "direct": {
+        "USD": 155.31
+      },
+      "shared": {
+        "USD": 204.79
+      },
+      "total": {
+        "USD": 360.1
+      },
+      "resources": [
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-swo-web-billing-prod-rg/providers/Microsoft.App/containerApps/swo-web-billing-prod",
+          "cost": {
+            "USD": 104.17
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-swo-web-billing-prod-rg/providers/Microsoft.Insights/components/swo-web-billing-prod-ai",
+          "cost": {
+            "USD": 22.73
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-swo-web-billing-prod-rg/providers/Microsoft.KeyVault/vaults/kv-swo-web-billin-prod",
+          "cost": {
+            "USD": 5.68
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-swo-web-billing-prod-rg/providers/Microsoft.Storage/storageAccounts/stswowebbillingprod",
+          "cost": {
+            "USD": 22.73
+          },
+          "via": "tag"
+        }
+      ],
+      "shared_from": [
+        {
+          "shared": "aks-mpt-weu",
+          "cost": {
+            "USD": 204.79
+          }
+        }
+      ]
+    },
+    {
+      "id": "swo-web-commerce",
+      "product": "mpt",
+      "team": "marketplace-web",
+      "direct": {
+        "USD": 189.14
+      },
+      "shared": {
+        "USD": 204.79
+      },
+      "total": {
+        "USD": 393.93
+      },
+      "resources": [
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-swo-web-commerce-prod-rg/providers/Microsoft.App/containerApps/swo-web-commerce-prod",
+          "cost": {
+            "USD": 126.86
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-swo-web-commerce-prod-rg/providers/Microsoft.Insights/components/swo-web-commerce-prod-ai",
+          "cost": {
+            "USD": 27.68
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-swo-web-commerce-prod-rg/providers/Microsoft.KeyVault/vaults/kv-swo-web-commer-prod",
+          "cost": {
+            "USD": 6.92
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-swo-web-commerce-prod-rg/providers/Microsoft.Storage/storageAccounts/stswowebcommerceprod",
+          "cost": {
+            "USD": 27.68
+          },
+          "via": "tag"
+        }
+      ],
+      "shared_from": [
+        {
+          "shared": "aks-mpt-weu",
+          "cost": {
+            "USD": 204.79
+          }
+        }
+      ]
+    },
+    {
+      "id": "swo-web-dashboard",
+      "product": "mpt",
+      "team": "marketplace-web",
+      "direct": {
+        "USD": 123.21
+      },
+      "shared": {
+        "USD": 204.79
+      },
+      "total": {
+        "USD": 328.0
+      },
+      "resources": [
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-swo-web-dashboard-prod-rg/providers/Microsoft.App/containerApps/swo-web-dashboard-prod",
+          "cost": {
+            "USD": 82.64
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-swo-web-dashboard-prod-rg/providers/Microsoft.Insights/components/swo-web-dashboard-prod-ai",
+          "cost": {
+            "USD": 18.03
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-swo-web-dashboard-prod-rg/providers/Microsoft.KeyVault/vaults/kv-swo-web-dashbo-prod",
+          "cost": {
+            "USD": 4.51
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-swo-web-dashboard-prod-rg/providers/Microsoft.Storage/storageAccounts/stswowebdashboardprod",
+          "cost": {
+            "USD": 18.03
+          },
+          "via": "tag"
+        }
+      ],
+      "shared_from": [
+        {
+          "shared": "aks-mpt-weu",
+          "cost": {
+            "USD": 204.79
+          }
+        }
+      ]
+    },
+    {
+      "id": "mpt-web-procurement",
+      "product": "mpt",
+      "team": "marketplace-web",
+      "direct": {
+        "USD": 151.22
+      },
+      "shared": {
+        "USD": 204.79
+      },
+      "total": {
+        "USD": 356.01
+      },
+      "resources": [
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-web-procurement-prod-rg/providers/Microsoft.App/containerApps/mpt-web-procurement-prod",
+          "cost": {
+            "USD": 101.43
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-web-procurement-prod-rg/providers/Microsoft.Insights/components/mpt-web-procurement-prod-ai",
+          "cost": {
+            "USD": 22.13
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-web-procurement-prod-rg/providers/Microsoft.KeyVault/vaults/kv-mpt-web-procur-prod",
+          "cost": {
+            "USD": 5.53
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-mpt-web-procurement-prod-rg/providers/Microsoft.Storage/storageAccounts/stmptwebprocuremenprod",
+          "cost": {
+            "USD": 22.13
+          },
+          "via": "tag"
+        }
+      ],
+      "shared_from": [
+        {
+          "shared": "aks-mpt-weu",
+          "cost": {
+            "USD": 204.79
+          }
+        }
+      ]
+    },
+    {
+      "id": "mpt-extension-adobe",
+      "product": "mpt-extensions",
+      "team": "marketplace-extensions",
+      "direct": {
+        "USD": 1004.69
+      },
+      "shared": {
+        "USD": 204.79
+      },
+      "total": {
+        "USD": 1209.48
+      },
+      "resources": [
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-mpt-extension-adobe-prod-rg/providers/Microsoft.App/containerApps/mpt-extension-adobe-prod",
+          "cost": {
+            "USD": 552.58
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-mpt-extension-adobe-prod-rg/providers/Microsoft.Insights/components/mpt-extension-adobe-prod-ai",
+          "cost": {
+            "USD": 120.56
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-mpt-extension-adobe-prod-rg/providers/Microsoft.KeyVault/vaults/kv-mpt-extension--prod",
+          "cost": {
+            "USD": 30.14
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-mpt-extension-adobe-prod-rg/providers/Microsoft.Cache/Redis/mpt-extension-adobe-prod-redis",
+          "cost": {
+            "USD": 180.85
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-mpt-extension-adobe-prod-rg/providers/Microsoft.Storage/storageAccounts/stmptextensionadobprod",
+          "cost": {
+            "USD": 120.56
+          },
+          "via": "tag"
+        }
+      ],
+      "shared_from": [
+        {
+          "shared": "aks-mpt-weu",
+          "cost": {
+            "USD": 204.79
+          }
+        }
+      ]
+    },
+    {
+      "id": "mpt-extension-aws-management",
+      "product": "mpt-extensions",
+      "team": "marketplace-extensions",
+      "direct": {
+        "USD": 1369.04
+      },
+      "shared": {
+        "USD": 204.79
+      },
+      "total": {
+        "USD": 1573.83
+      },
+      "resources": [
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-mpt-extension-aws-management-prod-rg/providers/Microsoft.App/containerApps/mpt-extension-aws-management-prod",
+          "cost": {
+            "USD": 338.84
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-mpt-extension-aws-management-prod-rg/providers/Microsoft.Insights/components/mpt-extension-aws-management-prod-ai",
+          "cost": {
+            "USD": 73.93
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-mpt-extension-aws-management-prod-rg/providers/Microsoft.KeyVault/vaults/kv-mpt-extension--prod",
+          "cost": {
+            "USD": 18.48
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-mpt-extension-aws-management-prod-rg/providers/Microsoft.Cache/Redis/mpt-extension-aws-management-prod-redis",
+          "cost": {
+            "USD": 110.89
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-mpt-extension-aws-management-prod-rg/providers/Microsoft.Storage/storageAccounts/stmptextensionawsmprod",
+          "cost": {
+            "USD": 73.93
+          },
+          "via": "tag"
+        },
+        {
+          "source": "aws",
+          "id": "arn:aws:organizations::123456789012:account/mpt-extension-aws-management",
+          "cost": {
+            "USD": 752.97
+          },
+          "via": "tag"
+        }
+      ],
+      "shared_from": [
+        {
+          "shared": "aks-mpt-weu",
+          "cost": {
+            "USD": 204.79
+          }
+        }
+      ]
+    },
+    {
+      "id": "mpt-extension-installation",
+      "product": "mpt-extensions",
+      "team": "marketplace-extensions",
+      "direct": {
+        "USD": 490.15
+      },
+      "shared": {
+        "USD": 204.79
+      },
+      "total": {
+        "USD": 694.94
+      },
+      "resources": [
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-mpt-extension-installation-prod-rg/providers/Microsoft.App/containerApps/mpt-extension-installation-prod",
+          "cost": {
+            "USD": 269.58
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-mpt-extension-installation-prod-rg/providers/Microsoft.Insights/components/mpt-extension-installation-prod-ai",
+          "cost": {
+            "USD": 58.82
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-mpt-extension-installation-prod-rg/providers/Microsoft.KeyVault/vaults/kv-mpt-extension--prod",
+          "cost": {
+            "USD": 14.7
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-mpt-extension-installation-prod-rg/providers/Microsoft.Cache/Redis/mpt-extension-installation-prod-redis",
+          "cost": {
+            "USD": 88.23
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-mpt-extension-installation-prod-rg/providers/Microsoft.Storage/storageAccounts/stmptextensioninstprod",
+          "cost": {
+            "USD": 58.82
+          },
+          "via": "tag"
+        }
+      ],
+      "shared_from": [
+        {
+          "shared": "aks-mpt-weu",
+          "cost": {
+            "USD": 204.79
+          }
+        }
+      ]
+    },
+    {
+      "id": "mpt-extension-operations",
+      "product": "mpt-extensions",
+      "team": "marketplace-extensions",
+      "direct": {
+        "USD": 614.89
+      },
+      "shared": {
+        "USD": 204.79
+      },
+      "total": {
+        "USD": 819.68
+      },
+      "resources": [
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-mpt-extension-operations-prod-rg/providers/Microsoft.App/containerApps/mpt-extension-operations-prod",
+          "cost": {
+            "USD": 338.18
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-mpt-extension-operations-prod-rg/providers/Microsoft.Insights/components/mpt-extension-operations-prod-ai",
+          "cost": {
+            "USD": 73.79
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-mpt-extension-operations-prod-rg/providers/Microsoft.KeyVault/vaults/kv-mpt-extension--prod",
+          "cost": {
+            "USD": 18.45
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-mpt-extension-operations-prod-rg/providers/Microsoft.Cache/Redis/mpt-extension-operations-prod-redis",
+          "cost": {
+            "USD": 110.68
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-mpt-extension-operations-prod-rg/providers/Microsoft.Storage/storageAccounts/stmptextensionoperprod",
+          "cost": {
+            "USD": 73.79
+          },
+          "via": "tag"
+        }
+      ],
+      "shared_from": [
+        {
+          "shared": "aks-mpt-weu",
+          "cost": {
+            "USD": 204.79
+          }
+        }
+      ]
+    },
+    {
+      "id": "mpt-extension-producthub",
+      "product": "mpt-extensions",
+      "team": "marketplace-extensions",
+      "direct": {
+        "USD": 358.51
+      },
+      "shared": {
+        "USD": 204.79
+      },
+      "total": {
+        "USD": 563.3
+      },
+      "resources": [
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-mpt-extension-producthub-prod-rg/providers/Microsoft.App/containerApps/mpt-extension-producthub-prod",
+          "cost": {
+            "USD": 197.18
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-mpt-extension-producthub-prod-rg/providers/Microsoft.Insights/components/mpt-extension-producthub-prod-ai",
+          "cost": {
+            "USD": 43.02
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-mpt-extension-producthub-prod-rg/providers/Microsoft.KeyVault/vaults/kv-mpt-extension--prod",
+          "cost": {
+            "USD": 10.76
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-mpt-extension-producthub-prod-rg/providers/Microsoft.Cache/Redis/mpt-extension-producthub-prod-redis",
+          "cost": {
+            "USD": 64.53
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-mpt-extension-producthub-prod-rg/providers/Microsoft.Storage/storageAccounts/stmptextensionprodprod",
+          "cost": {
+            "USD": 43.02
+          },
+          "via": "tag"
+        }
+      ],
+      "shared_from": [
+        {
+          "shared": "aks-mpt-weu",
+          "cost": {
+            "USD": 204.79
+          }
+        }
+      ]
+    },
+    {
+      "id": "mpt-extension-usage-reporting",
+      "product": "mpt-extensions",
+      "team": "marketplace-extensions",
+      "direct": {
+        "USD": 758.57
+      },
+      "shared": {
+        "USD": 204.79
+      },
+      "total": {
+        "USD": 963.36
+      },
+      "resources": [
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-mpt-extension-usage-reporting-prod-rg/providers/Microsoft.App/containerApps/mpt-extension-usage-reporting-prod",
+          "cost": {
+            "USD": 417.21
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-mpt-extension-usage-reporting-prod-rg/providers/Microsoft.Insights/components/mpt-extension-usage-reporting-prod-ai",
+          "cost": {
+            "USD": 91.03
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-mpt-extension-usage-reporting-prod-rg/providers/Microsoft.KeyVault/vaults/kv-mpt-extension--prod",
+          "cost": {
+            "USD": 22.76
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-mpt-extension-usage-reporting-prod-rg/providers/Microsoft.Cache/Redis/mpt-extension-usage-reporting-prod-redis",
+          "cost": {
+            "USD": 136.54
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-mpt-extension-usage-reporting-prod-rg/providers/Microsoft.Storage/storageAccounts/stmptextensionusagprod",
+          "cost": {
+            "USD": 91.03
+          },
+          "via": "tag"
+        }
+      ],
+      "shared_from": [
+        {
+          "shared": "aks-mpt-weu",
+          "cost": {
+            "USD": 204.79
+          }
+        }
+      ]
+    },
+    {
+      "id": "swo-extension-mscsp",
+      "product": "mpt-extensions",
+      "team": "marketplace-extensions",
+      "direct": {
+        "USD": 1242.93
+      },
+      "shared": {
+        "USD": 204.79
+      },
+      "total": {
+        "USD": 1447.72
+      },
+      "resources": [
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-swo-extension-mscsp-prod-rg/providers/Microsoft.App/containerApps/swo-extension-mscsp-prod",
+          "cost": {
+            "USD": 683.61
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-swo-extension-mscsp-prod-rg/providers/Microsoft.Insights/components/swo-extension-mscsp-prod-ai",
+          "cost": {
+            "USD": 149.15
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-swo-extension-mscsp-prod-rg/providers/Microsoft.KeyVault/vaults/kv-swo-extension--prod",
+          "cost": {
+            "USD": 37.29
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-swo-extension-mscsp-prod-rg/providers/Microsoft.Cache/Redis/swo-extension-mscsp-prod-redis",
+          "cost": {
+            "USD": 223.73
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-swo-extension-mscsp-prod-rg/providers/Microsoft.Storage/storageAccounts/stswoextensionmscsprod",
+          "cost": {
+            "USD": 149.15
+          },
+          "via": "tag"
+        }
+      ],
+      "shared_from": [
+        {
+          "shared": "aks-mpt-weu",
+          "cost": {
+            "USD": 204.79
+          }
+        }
+      ]
+    },
+    {
+      "id": "litellm",
+      "product": "mpt-extensions",
+      "team": "marketplace-extensions",
+      "direct": {
+        "USD": 1292.51
+      },
+      "shared": {
+        "USD": 204.82
+      },
+      "total": {
+        "USD": 1497.33
+      },
+      "resources": [
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-litellm-prod-rg/providers/Microsoft.App/containerApps/litellm-prod",
+          "cost": {
+            "USD": 710.88
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-litellm-prod-rg/providers/Microsoft.Insights/components/litellm-prod-ai",
+          "cost": {
+            "USD": 155.1
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-litellm-prod-rg/providers/Microsoft.KeyVault/vaults/kv-litellm-prod",
+          "cost": {
+            "USD": 38.78
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-litellm-prod-rg/providers/Microsoft.Cache/Redis/litellm-prod-redis",
+          "cost": {
+            "USD": 232.65
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/mpt-extensions-litellm-prod-rg/providers/Microsoft.Storage/storageAccounts/stlitellmprod",
+          "cost": {
+            "USD": 155.1
+          },
+          "via": "tag"
+        }
+      ],
+      "shared_from": [
+        {
+          "shared": "aks-mpt-weu",
+          "cost": {
+            "USD": 204.82
+          }
+        }
+      ]
+    },
+    {
+      "id": "prism-web-api",
+      "product": "prism",
+      "team": "prism-team",
+      "direct": {
+        "EUR": 2118.07
+      },
+      "shared": {
+        "EUR": 431.22
+      },
+      "total": {
+        "EUR": 2549.29
+      },
+      "resources": [
+        {
+          "source": "azure",
+          "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-web-api-prod-rg/providers/Microsoft.App/containerApps/prism-web-api-prod",
+          "cost": {
+            "EUR": 1164.94
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-web-api-prod-rg/providers/Microsoft.Insights/components/prism-web-api-prod-ai",
+          "cost": {
+            "EUR": 254.17
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-web-api-prod-rg/providers/Microsoft.KeyVault/vaults/kv-prism-web-api-prod",
+          "cost": {
+            "EUR": 63.54
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-web-api-prod-rg/providers/Microsoft.Cache/Redis/prism-web-api-prod-redis",
+          "cost": {
+            "EUR": 381.25
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-web-api-prod-rg/providers/Microsoft.Storage/storageAccounts/stprismwebapiprod",
+          "cost": {
+            "EUR": 254.17
+          },
+          "via": "tag"
+        }
+      ],
+      "shared_from": [
+        {
+          "shared": "shared-mssql-prism",
+          "cost": {
+            "EUR": 431.22
+          }
+        }
+      ]
+    },
+    {
+      "id": "prism-web-portal",
+      "product": "prism",
+      "team": "prism-team",
+      "direct": {
+        "EUR": 612.26
+      },
+      "shared": {},
+      "total": {
+        "EUR": 612.26
+      },
+      "resources": [
+        {
+          "source": "azure",
+          "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-web-portal-prod-rg/providers/Microsoft.App/containerApps/prism-web-portal-prod",
+          "cost": {
+            "EUR": 410.66
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-web-portal-prod-rg/providers/Microsoft.Insights/components/prism-web-portal-prod-ai",
+          "cost": {
+            "EUR": 89.6
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-web-portal-prod-rg/providers/Microsoft.KeyVault/vaults/kv-prism-web-port-prod",
+          "cost": {
+            "EUR": 22.4
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-web-portal-prod-rg/providers/Microsoft.Storage/storageAccounts/stprismwebportalprod",
+          "cost": {
+            "EUR": 89.6
+          },
+          "via": "tag"
+        }
+      ],
+      "shared_from": []
+    },
+    {
+      "id": "prism-minion-core",
+      "product": "prism",
+      "team": "prism-team",
+      "direct": {
+        "EUR": 1168.74
+      },
+      "shared": {
+        "EUR": 431.23
+      },
+      "total": {
+        "EUR": 1599.97
+      },
+      "resources": [
+        {
+          "source": "azure",
+          "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-minion-core-prod-rg/providers/Microsoft.App/containerApps/prism-minion-core-prod",
+          "cost": {
+            "EUR": 642.81
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-minion-core-prod-rg/providers/Microsoft.Insights/components/prism-minion-core-prod-ai",
+          "cost": {
+            "EUR": 140.25
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-minion-core-prod-rg/providers/Microsoft.KeyVault/vaults/kv-prism-minion-c-prod",
+          "cost": {
+            "EUR": 35.06
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-minion-core-prod-rg/providers/Microsoft.Cache/Redis/prism-minion-core-prod-redis",
+          "cost": {
+            "EUR": 210.37
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-minion-core-prod-rg/providers/Microsoft.Storage/storageAccounts/stprismminioncoreprod",
+          "cost": {
+            "EUR": 140.25
+          },
+          "via": "tag"
+        }
+      ],
+      "shared_from": [
+        {
+          "shared": "shared-mssql-prism",
+          "cost": {
+            "EUR": 431.23
+          }
+        }
+      ]
+    },
+    {
+      "id": "prism-minion-invoicing",
+      "product": "prism",
+      "team": "prism-team",
+      "direct": {
+        "EUR": 948.06
+      },
+      "shared": {
+        "EUR": 431.23
+      },
+      "total": {
+        "EUR": 1379.29
+      },
+      "resources": [
+        {
+          "source": "azure",
+          "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-minion-invoicing-prod-rg/providers/Microsoft.App/containerApps/prism-minion-invoicing-prod",
+          "cost": {
+            "EUR": 521.43
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-minion-invoicing-prod-rg/providers/Microsoft.Insights/components/prism-minion-invoicing-prod-ai",
+          "cost": {
+            "EUR": 113.77
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-minion-invoicing-prod-rg/providers/Microsoft.KeyVault/vaults/kv-prism-minion-i-prod",
+          "cost": {
+            "EUR": 28.44
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-minion-invoicing-prod-rg/providers/Microsoft.Cache/Redis/prism-minion-invoicing-prod-redis",
+          "cost": {
+            "EUR": 170.65
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-minion-invoicing-prod-rg/providers/Microsoft.Storage/storageAccounts/stprismminioninvoiprod",
+          "cost": {
+            "EUR": 113.77
+          },
+          "via": "tag"
+        }
+      ],
+      "shared_from": [
+        {
+          "shared": "shared-mssql-prism",
+          "cost": {
+            "EUR": 431.23
+          }
+        }
+      ]
+    },
+    {
+      "id": "prism-minion-partnercenter",
+      "product": "prism",
+      "team": "prism-team",
+      "direct": {
+        "EUR": 908.43
+      },
+      "shared": {},
+      "total": {
+        "EUR": 908.43
+      },
+      "resources": [
+        {
+          "source": "azure",
+          "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-minion-partnercenter-prod-rg/providers/Microsoft.App/containerApps/prism-minion-partnercenter-prod",
+          "cost": {
+            "EUR": 499.64
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-minion-partnercenter-prod-rg/providers/Microsoft.Insights/components/prism-minion-partnercenter-prod-ai",
+          "cost": {
+            "EUR": 109.01
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-minion-partnercenter-prod-rg/providers/Microsoft.KeyVault/vaults/kv-prism-minion-p-prod",
+          "cost": {
+            "EUR": 27.25
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-minion-partnercenter-prod-rg/providers/Microsoft.Cache/Redis/prism-minion-partnercenter-prod-redis",
+          "cost": {
+            "EUR": 163.52
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-minion-partnercenter-prod-rg/providers/Microsoft.Storage/storageAccounts/stprismminionpartnprod",
+          "cost": {
+            "EUR": 109.01
+          },
+          "via": "tag"
+        }
+      ],
+      "shared_from": []
+    },
+    {
+      "id": "prism-minion-azure",
+      "product": "prism",
+      "team": "prism-team",
+      "direct": {
+        "EUR": 539.6
+      },
+      "shared": {},
+      "total": {
+        "EUR": 539.6
+      },
+      "resources": [
+        {
+          "source": "azure",
+          "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-minion-azure-prod-rg/providers/Microsoft.App/containerApps/prism-minion-azure-prod",
+          "cost": {
+            "EUR": 296.78
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-minion-azure-prod-rg/providers/Microsoft.Insights/components/prism-minion-azure-prod-ai",
+          "cost": {
+            "EUR": 64.75
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-minion-azure-prod-rg/providers/Microsoft.KeyVault/vaults/kv-prism-minion-a-prod",
+          "cost": {
+            "EUR": 16.19
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-minion-azure-prod-rg/providers/Microsoft.Cache/Redis/prism-minion-azure-prod-redis",
+          "cost": {
+            "EUR": 97.13
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-minion-azure-prod-rg/providers/Microsoft.Storage/storageAccounts/stprismminionazureprod",
+          "cost": {
+            "EUR": 64.75
+          },
+          "via": "tag"
+        }
+      ],
+      "shared_from": []
+    },
+    {
+      "id": "prism-minion-recon",
+      "product": "prism",
+      "team": "prism-team",
+      "direct": {
+        "EUR": 425.73
+      },
+      "shared": {
+        "EUR": 431.23
+      },
+      "total": {
+        "EUR": 856.96
+      },
+      "resources": [
+        {
+          "source": "azure",
+          "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-minion-recon-prod-rg/providers/Microsoft.App/containerApps/prism-minion-recon-prod",
+          "cost": {
+            "EUR": 234.15
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-minion-recon-prod-rg/providers/Microsoft.Insights/components/prism-minion-recon-prod-ai",
+          "cost": {
+            "EUR": 51.09
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-minion-recon-prod-rg/providers/Microsoft.KeyVault/vaults/kv-prism-minion-r-prod",
+          "cost": {
+            "EUR": 12.77
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-minion-recon-prod-rg/providers/Microsoft.Cache/Redis/prism-minion-recon-prod-redis",
+          "cost": {
+            "EUR": 76.63
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-minion-recon-prod-rg/providers/Microsoft.Storage/storageAccounts/stprismminionreconprod",
+          "cost": {
+            "EUR": 51.09
+          },
+          "via": "tag"
+        }
+      ],
+      "shared_from": [
+        {
+          "shared": "shared-mssql-prism",
+          "cost": {
+            "EUR": 431.23
+          }
+        }
+      ]
+    },
+    {
+      "id": "prism-web-signalr",
+      "product": "prism",
+      "team": "prism-team",
+      "direct": {
+        "EUR": 199.82
+      },
+      "shared": {},
+      "total": {
+        "EUR": 199.82
+      },
+      "resources": [
+        {
+          "source": "azure",
+          "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-web-signalr-prod-rg/providers/Microsoft.App/containerApps/prism-web-signalr-prod",
+          "cost": {
+            "EUR": 109.9
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-web-signalr-prod-rg/providers/Microsoft.Insights/components/prism-web-signalr-prod-ai",
+          "cost": {
+            "EUR": 23.98
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-web-signalr-prod-rg/providers/Microsoft.KeyVault/vaults/kv-prism-web-sign-prod",
+          "cost": {
+            "EUR": 5.99
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-web-signalr-prod-rg/providers/Microsoft.Cache/Redis/prism-web-signalr-prod-redis",
+          "cost": {
+            "EUR": 35.97
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-web-signalr-prod-rg/providers/Microsoft.Storage/storageAccounts/stprismwebsignalrprod",
+          "cost": {
+            "EUR": 23.98
+          },
+          "via": "tag"
+        }
+      ],
+      "shared_from": []
+    },
+    {
+      "id": "prism-identity-identityprovider",
+      "product": "prism",
+      "team": "prism-team",
+      "direct": {
+        "EUR": 376.44
+      },
+      "shared": {},
+      "total": {
+        "EUR": 376.44
+      },
+      "resources": [
+        {
+          "source": "azure",
+          "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-identity-identityprovider-prod-rg/providers/Microsoft.App/containerApps/prism-identity-identityprovider-prod",
+          "cost": {
+            "EUR": 207.05
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-identity-identityprovider-prod-rg/providers/Microsoft.Insights/components/prism-identity-identityprovider-prod-ai",
+          "cost": {
+            "EUR": 45.17
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-identity-identityprovider-prod-rg/providers/Microsoft.KeyVault/vaults/kv-prism-identity-prod",
+          "cost": {
+            "EUR": 11.29
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-identity-identityprovider-prod-rg/providers/Microsoft.Cache/Redis/prism-identity-identityprovider-prod-redis",
+          "cost": {
+            "EUR": 67.76
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/prism-prism-identity-identityprovider-prod-rg/providers/Microsoft.Storage/storageAccounts/stprismidentityideprod",
+          "cost": {
+            "EUR": 45.17
+          },
+          "via": "tag"
+        }
+      ],
+      "shared_from": []
+    },
+    {
+      "id": "Insights.Application.Api",
+      "product": "cloudiq",
+      "team": "cloudiq-team",
+      "direct": {
+        "USD": 1836.01
+      },
+      "shared": {},
+      "total": {
+        "USD": 1836.01
+      },
+      "resources": [
+        {
+          "source": "azure",
+          "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/cloudiq-insights-application-api-prod-rg/providers/Microsoft.App/containerApps/insights-application-api-prod",
+          "cost": {
+            "USD": 1009.81
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/cloudiq-insights-application-api-prod-rg/providers/Microsoft.Insights/components/insights-application-api-prod-ai",
+          "cost": {
+            "USD": 220.32
+          },
+          "via": "override"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/cloudiq-insights-application-api-prod-rg/providers/Microsoft.KeyVault/vaults/kv-insights-appli-prod",
+          "cost": {
+            "USD": 55.08
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/cloudiq-insights-application-api-prod-rg/providers/Microsoft.Cache/Redis/insights-application-api-prod-redis",
+          "cost": {
+            "USD": 330.48
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/cloudiq-insights-application-api-prod-rg/providers/Microsoft.Storage/storageAccounts/stinsightsapplicatprod",
+          "cost": {
+            "USD": 220.32
+          },
+          "via": "tag"
+        }
+      ],
+      "shared_from": []
+    },
+    {
+      "id": "adobe-service",
+      "product": "cloudiq",
+      "team": "cloudiq-team",
+      "direct": {
+        "USD": 874.27
+      },
+      "shared": {},
+      "total": {
+        "USD": 874.27
+      },
+      "resources": [
+        {
+          "source": "azure",
+          "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/cloudiq-adobe-service-prod-rg/providers/Microsoft.App/containerApps/adobe-service-prod",
+          "cost": {
+            "USD": 480.85
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/cloudiq-adobe-service-prod-rg/providers/Microsoft.Insights/components/adobe-service-prod-ai",
+          "cost": {
+            "USD": 104.91
+          },
+          "via": "override"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/cloudiq-adobe-service-prod-rg/providers/Microsoft.KeyVault/vaults/kv-adobe-service-prod",
+          "cost": {
+            "USD": 26.23
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/cloudiq-adobe-service-prod-rg/providers/Microsoft.Cache/Redis/adobe-service-prod-redis",
+          "cost": {
+            "USD": 157.37
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/cloudiq-adobe-service-prod-rg/providers/Microsoft.Storage/storageAccounts/stadobeserviceprod",
+          "cost": {
+            "USD": 104.91
+          },
+          "via": "tag"
+        }
+      ],
+      "shared_from": []
+    },
+    {
+      "id": "adobe-service-graphql",
+      "product": "cloudiq",
+      "team": "cloudiq-team",
+      "direct": {
+        "USD": 381.42
+      },
+      "shared": {},
+      "total": {
+        "USD": 381.42
+      },
+      "resources": [
+        {
+          "source": "azure",
+          "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/cloudiq-adobe-service-graphql-prod-rg/providers/Microsoft.App/containerApps/adobe-service-graphql-prod",
+          "cost": {
+            "USD": 209.78
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/cloudiq-adobe-service-graphql-prod-rg/providers/Microsoft.Insights/components/adobe-service-graphql-prod-ai",
+          "cost": {
+            "USD": 45.77
+          },
+          "via": "override"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/cloudiq-adobe-service-graphql-prod-rg/providers/Microsoft.KeyVault/vaults/kv-adobe-service--prod",
+          "cost": {
+            "USD": 11.44
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/cloudiq-adobe-service-graphql-prod-rg/providers/Microsoft.Cache/Redis/adobe-service-graphql-prod-redis",
+          "cost": {
+            "USD": 68.66
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/cloudiq-adobe-service-graphql-prod-rg/providers/Microsoft.Storage/storageAccounts/stadobeservicegrapprod",
+          "cost": {
+            "USD": 45.77
+          },
+          "via": "tag"
+        }
+      ],
+      "shared_from": []
+    },
+    {
+      "id": "asset-api",
+      "product": "cloudiq",
+      "team": "cloudiq-team",
+      "direct": {
+        "USD": 616.27
+      },
+      "shared": {},
+      "total": {
+        "USD": 616.27
+      },
+      "resources": [
+        {
+          "source": "azure",
+          "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/cloudiq-asset-api-prod-rg/providers/Microsoft.App/containerApps/asset-api-prod",
+          "cost": {
+            "USD": 338.95
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/cloudiq-asset-api-prod-rg/providers/Microsoft.Insights/components/asset-api-prod-ai",
+          "cost": {
+            "USD": 73.95
+          },
+          "via": "override"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/cloudiq-asset-api-prod-rg/providers/Microsoft.KeyVault/vaults/kv-asset-api-prod",
+          "cost": {
+            "USD": 18.49
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/cloudiq-asset-api-prod-rg/providers/Microsoft.Cache/Redis/asset-api-prod-redis",
+          "cost": {
+            "USD": 110.93
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/cloudiq-asset-api-prod-rg/providers/Microsoft.Storage/storageAccounts/stassetapiprod",
+          "cost": {
+            "USD": 73.95
+          },
+          "via": "tag"
+        }
+      ],
+      "shared_from": []
+    },
+    {
+      "id": "agreement-api",
+      "product": "cloudiq",
+      "team": "cloudiq-team",
+      "direct": {
+        "USD": 287.23
+      },
+      "shared": {},
+      "total": {
+        "USD": 287.23
+      },
+      "resources": [
+        {
+          "source": "azure",
+          "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/cloudiq-agreement-api-prod-rg/providers/Microsoft.App/containerApps/agreement-api-prod",
+          "cost": {
+            "USD": 157.97
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/cloudiq-agreement-api-prod-rg/providers/Microsoft.Insights/components/agreement-api-prod-ai",
+          "cost": {
+            "USD": 34.47
+          },
+          "via": "override"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/cloudiq-agreement-api-prod-rg/providers/Microsoft.KeyVault/vaults/kv-agreement-api-prod",
+          "cost": {
+            "USD": 8.62
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/cloudiq-agreement-api-prod-rg/providers/Microsoft.Cache/Redis/agreement-api-prod-redis",
+          "cost": {
+            "USD": 51.7
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/cloudiq-agreement-api-prod-rg/providers/Microsoft.Storage/storageAccounts/stagreementapiprod",
+          "cost": {
+            "USD": 34.47
+          },
+          "via": "tag"
+        }
+      ],
+      "shared_from": []
+    },
+    {
+      "id": "aws-billing",
+      "product": "cloudiq",
+      "team": "cloudiq-team",
+      "direct": {
+        "USD": 1105.46
+      },
+      "shared": {},
+      "total": {
+        "USD": 1105.46
+      },
+      "resources": [
+        {
+          "source": "azure",
+          "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/cloudiq-aws-billing-prod-rg/providers/Microsoft.App/containerApps/aws-billing-prod",
+          "cost": {
+            "USD": 243.2
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/cloudiq-aws-billing-prod-rg/providers/Microsoft.Insights/components/aws-billing-prod-ai",
+          "cost": {
+            "USD": 53.06
+          },
+          "via": "override"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/cloudiq-aws-billing-prod-rg/providers/Microsoft.KeyVault/vaults/kv-aws-billing-prod",
+          "cost": {
+            "USD": 13.27
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/cloudiq-aws-billing-prod-rg/providers/Microsoft.Cache/Redis/aws-billing-prod-redis",
+          "cost": {
+            "USD": 79.59
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/cloudiq-aws-billing-prod-rg/providers/Microsoft.Storage/storageAccounts/stawsbillingprod",
+          "cost": {
+            "USD": 53.06
+          },
+          "via": "tag"
+        },
+        {
+          "source": "aws",
+          "id": "arn:aws:organizations::123456789012:account/aws-billing",
+          "cost": {
+            "USD": 663.28
+          },
+          "via": "tag"
+        }
+      ],
+      "shared_from": []
+    },
+    {
+      "id": "aly-budgets-web-api",
+      "product": "pyracloud",
+      "team": "pyracloud-analytics",
+      "direct": {
+        "USD": 783.24
+      },
+      "shared": {
+        "USD": 593.92
+      },
+      "total": {
+        "USD": 1377.16
+      },
+      "resources": [
+        {
+          "source": "azure",
+          "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-aly-budgets-web-api-prod-rg/providers/Microsoft.App/containerApps/aly-budgets-web-api-prod",
+          "cost": {
+            "USD": 430.78
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-aly-budgets-web-api-prod-rg/providers/Microsoft.Insights/components/aly-budgets-web-api-prod-ai",
+          "cost": {
+            "USD": 93.99
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-aly-budgets-web-api-prod-rg/providers/Microsoft.KeyVault/vaults/kv-aly-budgets-we-prod",
+          "cost": {
+            "USD": 23.5
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-aly-budgets-web-api-prod-rg/providers/Microsoft.Cache/Redis/aly-budgets-web-api-prod-redis",
+          "cost": {
+            "USD": 140.98
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-aly-budgets-web-api-prod-rg/providers/Microsoft.Storage/storageAccounts/stalybudgetswebapiprod",
+          "cost": {
+            "USD": 93.99
+          },
+          "via": "tag"
+        }
+      ],
+      "shared_from": [
+        {
+          "shared": "shared-mssql-pyra",
+          "cost": {
+            "USD": 593.92
+          }
+        }
+      ]
+    },
+    {
+      "id": "aly-cloud-utilization-web-api",
+      "product": "pyracloud",
+      "team": "pyracloud-analytics",
+      "direct": {
+        "USD": 1533.33
+      },
+      "shared": {
+        "USD": 593.92
+      },
+      "total": {
+        "USD": 2127.25
+      },
+      "resources": [
+        {
+          "source": "azure",
+          "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-aly-cloud-utilization-web-api-prod-rg/providers/Microsoft.App/containerApps/aly-cloud-utilization-web-api-prod",
+          "cost": {
+            "USD": 843.33
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-aly-cloud-utilization-web-api-prod-rg/providers/Microsoft.Insights/components/aly-cloud-utilization-web-api-prod-ai",
+          "cost": {
+            "USD": 184.0
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-aly-cloud-utilization-web-api-prod-rg/providers/Microsoft.KeyVault/vaults/kv-aly-cloud-util-prod",
+          "cost": {
+            "USD": 46.0
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-aly-cloud-utilization-web-api-prod-rg/providers/Microsoft.Cache/Redis/aly-cloud-utilization-web-api-prod-redis",
+          "cost": {
+            "USD": 276.0
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-aly-cloud-utilization-web-api-prod-rg/providers/Microsoft.Storage/storageAccounts/stalycloudutilizatprod",
+          "cost": {
+            "USD": 184.0
+          },
+          "via": "tag"
+        }
+      ],
+      "shared_from": [
+        {
+          "shared": "shared-mssql-pyra",
+          "cost": {
+            "USD": 593.92
+          }
+        }
+      ]
+    },
+    {
+      "id": "aly-consumption-ea-web-api",
+      "product": "pyracloud",
+      "team": "pyracloud-analytics",
+      "direct": {
+        "USD": 2332.34
+      },
+      "shared": {
+        "USD": 593.91
+      },
+      "total": {
+        "USD": 2926.25
+      },
+      "resources": [
+        {
+          "source": "azure",
+          "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-aly-consumption-ea-web-api-prod-rg/providers/Microsoft.App/containerApps/aly-consumption-ea-web-api-prod",
+          "cost": {
+            "USD": 1282.79
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-aly-consumption-ea-web-api-prod-rg/providers/Microsoft.Insights/components/aly-consumption-ea-web-api-prod-ai",
+          "cost": {
+            "USD": 279.88
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-aly-consumption-ea-web-api-prod-rg/providers/Microsoft.KeyVault/vaults/kv-aly-consumptio-prod",
+          "cost": {
+            "USD": 69.97
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-aly-consumption-ea-web-api-prod-rg/providers/Microsoft.Cache/Redis/aly-consumption-ea-web-api-prod-redis",
+          "cost": {
+            "USD": 419.82
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-aly-consumption-ea-web-api-prod-rg/providers/Microsoft.Storage/storageAccounts/stalyconsumptioneaprod",
+          "cost": {
+            "USD": 279.88
+          },
+          "via": "tag"
+        }
+      ],
+      "shared_from": [
+        {
+          "shared": "shared-mssql-pyra",
+          "cost": {
+            "USD": 593.91
+          }
+        }
+      ]
+    },
+    {
+      "id": "aly-consumption-aws-web-api",
+      "product": "pyracloud",
+      "team": "pyracloud-analytics",
+      "direct": {
+        "USD": 2118.09
+      },
+      "shared": {
+        "USD": 593.92
+      },
+      "total": {
+        "USD": 2712.01
+      },
+      "resources": [
+        {
+          "source": "azure",
+          "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-aly-consumption-aws-web-api-prod-rg/providers/Microsoft.App/containerApps/aly-consumption-aws-web-api-prod",
+          "cost": {
+            "USD": 698.97
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-aly-consumption-aws-web-api-prod-rg/providers/Microsoft.Insights/components/aly-consumption-aws-web-api-prod-ai",
+          "cost": {
+            "USD": 152.5
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-aly-consumption-aws-web-api-prod-rg/providers/Microsoft.KeyVault/vaults/kv-aly-consumptio-prod",
+          "cost": {
+            "USD": 38.13
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-aly-consumption-aws-web-api-prod-rg/providers/Microsoft.Cache/Redis/aly-consumption-aws-web-api-prod-redis",
+          "cost": {
+            "USD": 228.75
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-aly-consumption-aws-web-api-prod-rg/providers/Microsoft.Storage/storageAccounts/stalyconsumptionawprod",
+          "cost": {
+            "USD": 152.5
+          },
+          "via": "tag"
+        },
+        {
+          "source": "aws",
+          "id": "arn:aws:organizations::123456789012:account/aly-consumption-aws-web-api",
+          "cost": {
+            "USD": 847.24
+          },
+          "via": "tag"
+        }
+      ],
+      "shared_from": [
+        {
+          "shared": "shared-mssql-pyra",
+          "cost": {
+            "USD": 593.92
+          }
+        }
+      ]
+    },
+    {
+      "id": "aly-consumption-consolidation-web-api",
+      "product": "pyracloud",
+      "team": "pyracloud-analytics",
+      "direct": {
+        "USD": 3288.03
+      },
+      "shared": {
+        "USD": 593.92
+      },
+      "total": {
+        "USD": 3881.95
+      },
+      "resources": [
+        {
+          "source": "azure",
+          "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-aly-consumption-consolidation-web-api-prod-rg/providers/Microsoft.App/containerApps/aly-consumption-consolidation-web-api-p",
+          "cost": {
+            "USD": 1808.42
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-aly-consumption-consolidation-web-api-prod-rg/providers/Microsoft.Insights/components/aly-consumption-consolidation-web-api-prod-ai",
+          "cost": {
+            "USD": 394.56
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-aly-consumption-consolidation-web-api-prod-rg/providers/Microsoft.KeyVault/vaults/kv-aly-consumptio-prod",
+          "cost": {
+            "USD": 98.64
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-aly-consumption-consolidation-web-api-prod-rg/providers/Microsoft.Cache/Redis/aly-consumption-consolidation-web-api-prod-redis",
+          "cost": {
+            "USD": 591.85
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-aly-consumption-consolidation-web-api-prod-rg/providers/Microsoft.Storage/storageAccounts/stalyconsumptioncoprod",
+          "cost": {
+            "USD": 394.56
+          },
+          "via": "tag"
+        }
+      ],
+      "shared_from": [
+        {
+          "shared": "shared-mssql-pyra",
+          "cost": {
+            "USD": 593.92
+          }
+        }
+      ]
+    },
+    {
+      "id": "aly-azure-consumption-csp-web-api",
+      "product": "pyracloud",
+      "team": "pyracloud-analytics",
+      "direct": {
+        "USD": 1238.06
+      },
+      "shared": {
+        "USD": 593.92
+      },
+      "total": {
+        "USD": 1831.98
+      },
+      "resources": [
+        {
+          "source": "azure",
+          "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-aly-azure-consumption-csp-web-api-prod-rg/providers/Microsoft.App/containerApps/aly-azure-consumption-csp-web-api-prod",
+          "cost": {
+            "USD": 680.93
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-aly-azure-consumption-csp-web-api-prod-rg/providers/Microsoft.Insights/components/aly-azure-consumption-csp-web-api-prod-ai",
+          "cost": {
+            "USD": 148.57
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-aly-azure-consumption-csp-web-api-prod-rg/providers/Microsoft.KeyVault/vaults/kv-aly-azure-cons-prod",
+          "cost": {
+            "USD": 37.14
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-aly-azure-consumption-csp-web-api-prod-rg/providers/Microsoft.Cache/Redis/aly-azure-consumption-csp-web-api-prod-redis",
+          "cost": {
+            "USD": 222.85
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-aly-azure-consumption-csp-web-api-prod-rg/providers/Microsoft.Storage/storageAccounts/stalyazureconsumptprod",
+          "cost": {
+            "USD": 148.57
+          },
+          "via": "tag"
+        }
+      ],
+      "shared_from": [
+        {
+          "shared": "shared-mssql-pyra",
+          "cost": {
+            "USD": 593.92
+          }
+        }
+      ]
+    },
+    {
+      "id": "activation-manager-bo-web-api",
+      "product": "pyracloud",
+      "team": "pyracloud-analytics",
+      "direct": {
+        "USD": 247.98
+      },
+      "shared": {},
+      "total": {
+        "USD": 247.98
+      },
+      "resources": [
+        {
+          "source": "azure",
+          "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-activation-manager-bo-web-api-prod-rg/providers/Microsoft.App/containerApps/activation-manager-bo-web-api-prod",
+          "cost": {
+            "USD": 136.38
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-activation-manager-bo-web-api-prod-rg/providers/Microsoft.Insights/components/activation-manager-bo-web-api-prod-ai",
+          "cost": {
+            "USD": 29.76
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-activation-manager-bo-web-api-prod-rg/providers/Microsoft.KeyVault/vaults/kv-activation-man-prod",
+          "cost": {
+            "USD": 7.44
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-activation-manager-bo-web-api-prod-rg/providers/Microsoft.Cache/Redis/activation-manager-bo-web-api-prod-redis",
+          "cost": {
+            "USD": 44.64
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/pyracloud-activation-manager-bo-web-api-prod-rg/providers/Microsoft.Storage/storageAccounts/stactivationmanageprod",
+          "cost": {
+            "USD": 29.76
+          },
+          "via": "tag"
+        }
+      ],
+      "shared_from": []
+    },
+    {
+      "id": "nova-anvil",
+      "product": "nova",
+      "team": "platform-team",
+      "direct": {
+        "USD": 373.4
+      },
+      "shared": {},
+      "total": {
+        "USD": 373.4
+      },
+      "resources": [
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/nova-nova-anvil-prod-rg/providers/Microsoft.App/containerApps/nova-anvil-prod",
+          "cost": {
+            "USD": 205.37
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/nova-nova-anvil-prod-rg/providers/Microsoft.Insights/components/nova-anvil-prod-ai",
+          "cost": {
+            "USD": 44.81
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/nova-nova-anvil-prod-rg/providers/Microsoft.KeyVault/vaults/kv-nova-anvil-prod",
+          "cost": {
+            "USD": 11.2
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/nova-nova-anvil-prod-rg/providers/Microsoft.Cache/Redis/nova-anvil-prod-redis",
+          "cost": {
+            "USD": 67.21
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/nova-nova-anvil-prod-rg/providers/Microsoft.Storage/storageAccounts/stnovaanvilprod",
+          "cost": {
+            "USD": 44.81
+          },
+          "via": "tag"
+        }
+      ],
+      "shared_from": []
+    },
+    {
+      "id": "podinfo",
+      "product": "cicd-infra",
+      "team": "platform-team",
+      "direct": {
+        "USD": 45.34
+      },
+      "shared": {},
+      "total": {
+        "USD": 45.34
+      },
+      "resources": [
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/cicd-infra-podinfo-prod-rg/providers/Microsoft.App/containerApps/podinfo-prod",
+          "cost": {
+            "USD": 24.94
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/cicd-infra-podinfo-prod-rg/providers/Microsoft.Insights/components/podinfo-prod-ai",
+          "cost": {
+            "USD": 5.44
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/cicd-infra-podinfo-prod-rg/providers/Microsoft.KeyVault/vaults/kv-podinfo-prod",
+          "cost": {
+            "USD": 1.36
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/cicd-infra-podinfo-prod-rg/providers/Microsoft.Cache/Redis/podinfo-prod-redis",
+          "cost": {
+            "USD": 8.16
+          },
+          "via": "tag"
+        },
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/cicd-infra-podinfo-prod-rg/providers/Microsoft.Storage/storageAccounts/stpodinfoprod",
+          "cost": {
+            "USD": 5.44
+          },
+          "via": "tag"
+        }
+      ],
+      "shared_from": []
+    }
+  ],
+  "shared": [
+    {
+      "id": "shared-postgres-mpt",
+      "cost": {
+        "USD": 2639.85
+      },
+      "split": "equal",
+      "services": [
+        "mpt-audit",
+        "mpt-billing",
+        "mpt-helpdesk",
+        "mpt-notifications",
+        "mpt-procurement",
+        "swo-auth"
+      ],
+      "resources": [
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/shared-prod-rg/providers/Microsoft.DBforPostgreSQL/flexibleServers/shared-postgres-mpt-prod",
+          "cost": {
+            "USD": 2639.85
+          },
+          "via": "tag"
+        }
+      ]
+    },
+    {
+      "id": "shared-mssql-prism",
+      "cost": {
+        "EUR": 1724.91
+      },
+      "split": "equal",
+      "services": [
+        "prism-minion-core",
+        "prism-minion-invoicing",
+        "prism-minion-recon",
+        "prism-web-api"
+      ],
+      "resources": [
+        {
+          "source": "azure",
+          "id": "/subscriptions/8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02/resourceGroups/shared-prod-rg/providers/Microsoft.Sql/servers/shared-mssql-prism-prod",
+          "cost": {
+            "EUR": 1724.91
+          },
+          "via": "tag"
+        }
+      ]
+    },
+    {
+      "id": "shared-mssql-pyra",
+      "cost": {
+        "USD": 3563.51
+      },
+      "split": "equal",
+      "services": [
+        "aly-azure-consumption-csp-web-api",
+        "aly-budgets-web-api",
+        "aly-cloud-utilization-web-api",
+        "aly-consumption-aws-web-api",
+        "aly-consumption-consolidation-web-api",
+        "aly-consumption-ea-web-api"
+      ],
+      "resources": [
+        {
+          "source": "azure",
+          "id": "/subscriptions/c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03/resourceGroups/shared-prod-rg/providers/Microsoft.Sql/servers/shared-mssql-pyra-prod",
+          "cost": {
+            "USD": 3563.51
+          },
+          "via": "tag"
+        }
+      ]
+    },
+    {
+      "id": "aks-mpt-weu",
+      "cost": {
+        "USD": 5529.36
+      },
+      "split": "equal",
+      "services": [
+        "mpt-billing",
+        "mpt-procurement",
+        "mpt-notifications",
+        "mpt-audit",
+        "mpt-currency",
+        "mpt-tasks",
+        "mpt-helpdesk",
+        "mpt-public-catalog",
+        "mpt-spotlight",
+        "mpt-scheduler",
+        "mpt-export",
+        "swo-auth",
+        "swo-platform",
+        "mpt-nav-stats",
+        "swo-web-shell",
+        "swo-web-billing",
+        "swo-web-commerce",
+        "swo-web-dashboard",
+        "mpt-web-procurement",
+        "mpt-extension-adobe",
+        "mpt-extension-aws-management",
+        "mpt-extension-installation",
+        "mpt-extension-operations",
+        "mpt-extension-producthub",
+        "mpt-extension-usage-reporting",
+        "swo-extension-mscsp",
+        "litellm"
+      ],
+      "resources": [
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/shared-prod-rg/providers/Microsoft.ContainerService/managedClusters/aks-mpt-weu-prod",
+          "cost": {
+            "USD": 5529.36
+          },
+          "via": "tag"
+        }
+      ]
+    },
+    {
+      "id": "servicebus-legacy",
+      "cost": {
+        "USD": 416.07
+      },
+      "split": "equal",
+      "services": [],
+      "unsplit": {
+        "USD": 416.07
+      },
+      "note": "No service is bound to this resource.",
+      "resources": [
+        {
+          "source": "azure",
+          "id": "/subscriptions/3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01/resourceGroups/shared-prod-rg/providers/Microsoft.ServiceBus/namespaces/servicebus-legacy-prod",
+          "cost": {
+            "USD": 416.07
+          },
+          "via": "tag"
+        }
+      ]
+    }
+  ],
+  "unallocated": {
+    "untagged": {
+      "USD": 7163.54
+    },
+    "unknown_tag": {
+      "USD": 462.51
+    },
+    "by_scope": [
+      {
+        "source": "azure",
+        "scope": "3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01",
+        "group": "networking-hub-rg",
+        "cost": {
+          "USD": 2909.49
+        }
+      },
+      {
+        "source": "azure",
+        "scope": "3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01",
+        "group": "MC_aks-mpt-weu_nodes",
+        "cost": {
+          "USD": 1796.12
+        }
+      },
+      {
+        "source": "azure",
+        "scope": "c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e03",
+        "group": "legacy-vms-rg",
+        "cost": {
+          "USD": 1363.32
+        }
+      },
+      {
+        "source": "aws",
+        "scope": "123456789012",
+        "group": "shared-networking",
+        "cost": {
+          "USD": 696.4
+        }
+      },
+      {
+        "source": "azure",
+        "scope": "3f2a9c41-7d1e-4b6a-9c0e-5a1d2b3c4d01",
+        "group": "mpt-legacy-sync-rg",
+        "cost": {
+          "USD": 462.51
+        }
+      },
+      {
+        "source": "azure",
+        "scope": "8b7c6d5e-4f3a-4e2b-8c1d-0a9b8c7d6e02",
+        "group": "backup-vault-rg",
+        "cost": {
+          "USD": 398.21
+        }
+      }
+    ]
+  }
+}
