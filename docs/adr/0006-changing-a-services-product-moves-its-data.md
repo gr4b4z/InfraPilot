@@ -31,8 +31,8 @@ of the event** in a column a move never rewrites. The plan is
   counts open promotions in the preview.
 - Today's remap moves deploy events and their work items, builds, promotion candidates and their
   work items, work-item sign-offs and comments, and deleted-service tombstones. The move must
-  **additionally cover five kinds of service data it skips today**: retired versions, pending
-  migration runs, incidents, service-level Promotion Freezes and release exclusions. A test fails when
+  **additionally cover five kinds of service data it skips today**: retired versions, unfinished
+  migration runs (pending, running or failed), incidents, service-level Promotion Freezes and release exclusions. A test fails when
   a new table carries a product and a service and the move does not know it.
 - **Product-level configuration stays**: approval policies, rollback policies, product freezes. They
   belong to the product, and the new product's are the ones that apply from now on. Rollback requests

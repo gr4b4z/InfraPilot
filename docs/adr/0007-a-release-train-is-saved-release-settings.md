@@ -44,7 +44,7 @@ of the two that has dates, progress and a record. The plan is `docs/plans/releas
 - **Completing** a release records what shipped: the version of each service, the services that did
   not ship (partial completion is allowed), and the union of its promotions' change sets. The live
   computed state stays next to the record, so a late deploy report still shows up; the record is what
-  release notes and analytics read (`docs/plans/release-notes-for-a-release.md`, stage 3). A release completed
+  release notes read; analytics by train reads the train's current scope (`docs/plans/release-notes-for-a-release.md`, stage 3). A release completed
   before the record existed gets one written on request, from the state at its completion.
 
 ## A Release gates nothing

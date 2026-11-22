@@ -219,7 +219,7 @@ one block per product when there are several, with the per-service lines of toda
 | `GET`/`PUT /api/release-notes/template` | New query/body field `scope=release` with optional `train`. |
 
 `releaseId` of a cancelled release: `400`. Unknown: `404`. With `features.releaseNotes` or
-`features.releaseTrains` off, a request carrying `releaseId` answers `404`; requests without it are not checked, as today.
+`features.releaseTrains` off, a request carrying `releaseId` answers `400` `feature_disabled`, as stage 2 does for its request fields; requests without it are not checked, as today.
 
 ## Webhooks
 

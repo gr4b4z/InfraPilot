@@ -83,6 +83,7 @@ Assumes the service inventory (`docs/plans/service-inventory.md`) is deployed an
 | D-5 | A product change moves the service's data; every event keeps the product at the time. | `ProductAtEvent`, Tasks 6, 12 |
 | D-6 | An admin executes the move after a preview; held while a promotion of the service is Approved or Deploying. | Task 13 |
 | D-7 | Identity is the service name; (product, service) stays the address. | `service_list` is keyed by name |
+| D-28 | Everyone signed in gets a read-only **Services** page: which services exist, in which product, group and team, and where each is deployed. | E-21, P-16, Task 8a |
 | D-24 | Names are normalised on write, warned about, refused only on collision; 14 existing names fixed once. | Tasks 16, 17 |
 
 ## Review focus
@@ -743,12 +744,25 @@ Changed, backward compatible:
 | E-5 | Service page header: product, group, team. Banner when the service is not in the catalog or the catalog names another product. Old URL redirects. One **Remove from portal** action, with the list of removed services and **Restore** on Settings → Services. | `app/deployments/ServiceDetailPage.tsx`, `DeploymentHistoryPage.tsx`; new `components/deployments/RemoveServiceDialog.tsx`; the row action leaves `ProductDeploymentsPage.tsx`; the "Removed services" block leaves `MaintenanceSettings.tsx` (a link stays) |
 | E-6 | One product picker and one service picker. | new `components/ui/ProductPicker.tsx`, `components/ui/ServicePicker.tsx` (on `ComboBox`), `lib/useProductList.ts`; used in `PromotionSettings`, `FreezeSettings`, `RollbackSettings`, `ReleaseNoteTemplateSettings`, `ServiceProductsSettings`, `ReleaseForm`, `IncidentsPage`, `MigrationsPage`, `AnalyticsPage`, `DeliveryMetricsPage`, `ArtifactsPage`, `PromotionsPage`, `PromotionsAuditPage`, `RollbacksPage`, `webhooks/webhookFilters.ts` |
 | E-7 | Promotion page: which policy the promotion uses (the service's own or the product's) and, after a move, where the service came from and whether the policy changed. Group and pattern levels are added in stage 2, which fills `policySource` from the snapshot's `MatchedBy` (`docs/plans/release-trains.md`). | `app/promotions/PromotionDetailPage.tsx` |
+| E-21 | **Services** (`/services`), for every signed-in user, read-only. One row per service: name, product, group, team, type, lifecycle, and the version on each environment; the labels "not in catalog" and "local" as on E-1. Filters: product, group, team, environment, text; grouping by product or by team. A row opens the service page. No move, no mismatch tab, no edit: those stay on Settings → Services, to which admins get a **Manage** link. Settings → Services is the admin view of the same list, not a second list. | new `app/services/ServicesPage.tsx`; `App.tsx` (`FeatureRoute`), `components/shell/Sidebar.tsx`, `navTargets.ts`, `lib/api.ts`, `lib/types.ts` |
+
+**E-21 reads two existing sources and adds no stored data.** The rows come from `GET /api/services`
+(P-1, already open to every signed-in user); the version per environment comes from the deployment
+state matrix (`GET /api/deployments/state?view=summary`), joined in the browser by service name.
+P-16 is therefore not a new endpoint: it is the guarantee that `GET /api/services` and
+`GET /api/services/{name}` never return anything admin-only (mismatch records, overrides and the
+move preview stay on their own admin routes or are left out for non-admins), with a test. A service
+with no deploy event yet (known from the catalog only) is listed with empty environment cells, which
+is the point of the page: it shows what exists, not only what has shipped. The three versions per
+environment (declared, applied, observed) are added to these cells by
+`docs/plans/declared-applied-observed-versions.md`; until then a cell shows the version last
+reported, as the matrix does.
 
 ## Feature flag and switches
 
 | Switch | Kind | Default | Controls |
 |---|---|---|---|
-| `features.serviceList` (`FeatureFlagKeys.ServiceList`, seeded by `FeatureFlagSeeder`, `Features:ServiceList:DefaultEnabled`) | feature flag | off | Server: the new endpoint groups; the list and catalog steps of `ResolveAsync`; mismatch recording; the redirect; the widened scope check. Off means today's behaviour on every write path. Web: Settings → Services, API Keys, the headers and banners, the pickers' source (they fall back to today's calls when off). |
+| `features.serviceList` (`FeatureFlagKeys.ServiceList`, seeded by `FeatureFlagSeeder`, `Features:ServiceList:DefaultEnabled`) | feature flag | off | Server: the new endpoint groups; the list and catalog steps of `ResolveAsync`; mismatch recording; the redirect; the widened scope check. Off means today's behaviour on every write path. Web: the **Services** page, Settings → Services, API Keys, the headers and banners, the pickers' source (they fall back to today's calls when off). |
 | `product_catalog_modes` | per product | report | what the catalog decides for a product's services |
 | `serviceList.normalizeNames` (`platform_settings`) | stored setting | off | normalisation on write; set by the one-off fix |
 
@@ -877,6 +891,8 @@ Acceptance: every row of the L-2 table reads its "After" source; `RollbackSettin
 free-text product; with the flag off each page behaves as before.
 
 #### Task 8: Screens E-1..E-5, E-7 and the key view (P-5)
+
+E-21 is Task 8a.
 
 **Files:** as in "Screens"; `Features/Settings/AppSettingsEndpoints.cs` (`GET /api/settings/api-keys`,
 reading `Deployments:ApiKeys` and `FluxIntegrationOptions`); `PromotionEndpoints.cs` (detail gains
@@ -1068,10 +1084,39 @@ Updated in the PR of the step that changes the behaviour:
   (ADR 0005); `scripts/service-inventory-identity-check.py` keeps working and its docstring points
   at `GET /api/service-list/export`.
 
+#### Task 8a: The Services page for everyone (E-21, P-16, D-28)
+
+Ships in 1a, after Task 8.
+
+**Files:** new `src/Platform.Web/src/app/services/ServicesPage.tsx`; `App.tsx` (route `/services`
+inside `FeatureRoute flag={FeatureFlag.ServiceList}`); `components/shell/Sidebar.tsx` and
+`navTargets.ts` (item **Services** in the first group, after **Deployments**, shown with the flag);
+`lib/api.ts`, `lib/types.ts`; `src/Platform.Api/Agent/PortalRoutes.cs` and its test (the route);
+`ServiceListEndpoints.cs` only if the non-admin shape needs trimming.
+
+Tests: `ServiceListApiTests.List_ForPlainUser_HasNoAdminFields` (no mismatch detail, no overrides,
+no move data), `Detail_ForPlainUser_HasNoAdminFields`, `List_NeedsSignIn`,
+`List_FlagOff_Is404`. Web: `npx tsc -b`; in the dev server as a plain user: filters, grouping by
+product and by team, a catalog-only service with empty cells, a "not in catalog" service, the row
+link; as an admin: the **Manage** link.
+
+Acceptance: a plain user answers "which services does product X have, whose are they and what runs
+where" on one page without opening Settings; nothing on the page changes data; with the flag off the
+sidebar item and the route are absent.
+
 #### Task 20: What's new entries
 
 Each in the PR that ships the change, dated the day it merges
 (`src/Platform.Web/src/app/whats-new/entries/`). Proposed files and drafts:
+
+`YYYY-MM-DD-services-page.md` (1a, with Task 8a) — audience `everyone`, link `/services`,
+linkLabel `Services`:
+
+> title: See every service, its team and where it runs
+>
+> The new **Services** page lists every service the portal knows with its product, group and team,
+> and the version on each environment. Filter by product, team or environment, or group the list by
+> team to see what is yours.
 
 `YYYY-MM-DD-services-in-settings.md` (1a) — audience `admins`, link `/settings/services`,
 linkLabel `Settings → Services`:

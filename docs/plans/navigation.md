@@ -65,6 +65,7 @@ Target:
 |---|---|---|---|
 | — | My Tasks | `/my-tasks` | QA, admin or promotion approver |
 | Delivery | Deployments | `/deployments` | |
+| | Services (stage 1) | `/services` | `features.serviceList` |
 | | Artifacts | `/artifacts` | |
 | | Promotions (with the freeze page, stage 2) | `/promotions`, `/promotions/freeze` | `features.promotions` |
 | | Work items queue | `/me/work-items` | `features.promotions` |
@@ -83,12 +84,16 @@ Target:
 
 A group with no visible item is not drawn (existing behaviour).
 
-**What stages 1–3 add to this structure.** None of them adds or removes a sidebar item, so the count
-stays 17 items in 5 groups (1 + 7 + 4 + 3 + 2), as in E-19:
+**What stages 1–3 add to this structure.** This plan delivers 17 items in 5 groups
+(1 + 7 + 4 + 3 + 2), as in E-19. Stage 1 adds one item, the read-only **Services** page for
+everyone (E-21, D-28), which makes 18 (1 + 8 + 4 + 3 + 2). Nothing else adds or removes an item:
 
 - Stage 1 (`docs/plans/service-list-and-catalog-product.md`): Settings → Service Products becomes
   **Settings → Services** (`/settings/services`; `/settings/service-products` redirects) and a
   read-only **Settings → API Keys** (`/settings/api-keys`) is added. Both are Settings sections.
+  The **Services** item (`/services`) is the same list without the admin actions; it is placed
+  after **Deployments** because both answer "what runs where", one by product and one by service
+  and team.
 - Stage 2 (`docs/plans/release-trains.md`): a **Trains** tab on the Releases page, and the freeze
   page moves from `/settings/freeze` to `/promotions/freeze` so that release managers can open it
   (ADR-0008; everything under `/settings` is admin-only). It gets no sidebar item: it sits under
@@ -182,7 +187,7 @@ Tests (`tests/Platform.Integration.Tests`, new `CurrentUserApproverTests.cs`): n
 
 **Files:** `Sidebar.tsx` (`navGroups`), `navTargets.ts`, `app/approvals/ApprovalsPage.tsx` and `ApprovalDetailPage.tsx` (title, "Back to request approvals"), `src/Platform.Api/Agent/CatalogAgent.cs` (labels).
 
-Acceptance: 17 items in 5 groups for an admin with every flag on; with all flags off, a plain user sees Deployments, Artifacts, Migrations.
+Acceptance: 17 items in 5 groups for an admin with every flag on (18 once stage 1 adds **Services**); with all flags off, a plain user sees Deployments, Artifacts, Migrations.
 
 ### Task 3: Merged pages and Webhooks under Settings
 
