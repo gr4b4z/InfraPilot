@@ -1,5 +1,5 @@
 ---
-status: accepted (key extended with an optional service by ADR-0003)
+status: accepted (key extended with an optional service by ADR-0003; train scope and release managers added by ADR-0008)
 date: 2026-10-15
 ---
 

@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: accepted (a third scope, the release train, added by ADR-0008)
 date: 2026-10-22
 ---
 
