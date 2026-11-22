@@ -89,5 +89,8 @@ others are lifted.
   of the release's products; that is enough for a Release, which holds nothing, and not enough for a
   freeze, which holds another product's promotions. The freeze check therefore asks per product.
   Admins may always, and set and lift stay symmetric.
+  For the same reason, while a freeze names a train, changing the train's products or its service
+  selection needs a release manager of every product of the old and the new set: membership is
+  read when the gate is evaluated, so such an edit moves what the freeze holds.
 - A service-level freeze follows its service when the service's product changes (ADR-0006).
 - `GLOSSARY.md`: the Promotion Freeze entry and its relationships name the train scope.

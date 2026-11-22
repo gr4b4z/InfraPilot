@@ -730,7 +730,10 @@ others. Callers:
   release manager of **every** product the train covers. `ReleaseService.IsReleaseManagerOfAsync`
   (`ReleaseService.cs:233-244`) and `CanManageAsync` must **not** be reused as they are: they answer
   true for a manager of any one of the products, which stays the rule for running a release and
-  managing a train, not for freezing. Add `IsReleaseManagerOfAllAsync(products, environment)`, which
+  for managing a train that no freeze names, not for freezing. While a freeze names a train, a
+  change to its products, selector or exclusions is a change to what the freeze holds, so it needs
+  the every-product check for the old and the new product set (see `PUT /api/release-trains/{id}`).
+  A test covers both bypasses: removing a product from a frozen train, and adding one. Add `IsReleaseManagerOfAllAsync(products, environment)`, which
   asks `GetManagerGatesAsync` per product and needs every answer; it is asked for the production
   environment (the train's `ProductionEnvironment`; `prod` for a product or service freeze),
   whichever environment is frozen. Set and lift are symmetric. The check lives in
@@ -792,7 +795,7 @@ Mapped in `Program.cs` next to `/api/releases` with `RequireAuthorization(Author
 | `POST /preview` | signed in | Same answer for an unsaved body — the form's live list |
 | `GET /membership?product=` | signed in | `{ services: { "<service>": [{ id, name }] } }` — for the product page and the Services page |
 | `POST /` | admin, or release manager of one of `products` | 201 `Train`; 409 on a duplicate name |
-| `PUT /{id}` | admin, or release manager of the train's products before **and** after | `Train` |
+| `PUT /{id}` | admin, or release manager of the train's products before **and** after. While a freeze names the train, a change to `products`, the selector or the exclusions needs a release manager of **every** product of the old **and** the new set (`IsReleaseManagerOfAllAsync`), because a train freeze resolves membership at gate evaluation: otherwise a manager of one product could release another product's held promotions by removing it, or hold a third product's by adding it. `403` names the freeze | `Train` |
 | `DELETE /{id}` | admin | 204; 409 while a freeze names it. Releases keep `trainName` |
 
 ```jsonc
