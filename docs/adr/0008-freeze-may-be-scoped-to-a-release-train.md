@@ -80,7 +80,9 @@ others are lifted.
 - `promotion.frozen` / `promotion.unfrozen` say which scope was frozen. Webhook subscriptions must
   keep a product filter under the governance rules; how a train freeze that spans products reaches
   them is in the plan.
-- Settings → Freeze gets the train in its scope select and is reachable by release managers. A
+- The freeze page gets the train in its scope select and moves from Settings → Freeze to
+  `/promotions/freeze`, because everything under `/settings` is admin-only and release managers must
+  reach it; `/settings/freeze` redirects and Settings keeps a **Freeze** entry that links there. A
   release manager may set or lift a product or service freeze for a product they are release manager
   of, and a train freeze only when they are release manager of **every** product the train covers.
   The rule that decides who runs a release (`ReleaseService.CanManageAsync`) is satisfied by any one

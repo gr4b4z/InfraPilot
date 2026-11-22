@@ -85,14 +85,15 @@ _Avoid_: Domain, sub-product, tag, component group
 **Release**:
 One run of shipping to production: it groups the promotions of its services, shows their progress on
 a checklist and, once completed, records what shipped. Today a Release always ships a version line
-(`major.minor`) for its products; ADR-0007 adds releases created from a Release Train and ad hoc
-releases, for which the version line is optional (not built yet). It holds no promotion; only an
+(`major.minor`) for its products; ADR-0007 adds releases created from a Release Train, and ad hoc
+releases of hand-picked services, for which alone the version line is optional (not built yet). It holds no promotion; only an
 Approval Gate or a Promotion Freeze does.
 _Avoid_: Release train (for one run), grouped promotion, deployment, rollout
 
 **Release Train**:
 Saved release settings — name, cadence, scope, environments, standing exclusions and checklist
-steps — from which Releases are created. It selects services, never approvers. Decided in ADR-0007;
+steps — from which Releases are created. It always names its Products and its scope lies within
+them. It selects services, never approvers. Decided in ADR-0007;
 not built yet.
 _Avoid_: Release (for the settings), release line, pipeline, schedule
 

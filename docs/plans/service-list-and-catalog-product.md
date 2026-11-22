@@ -33,7 +33,11 @@ Assumes the service inventory (`docs/plans/service-inventory.md`) is deployed an
   `docs/plans/release-notes-for-a-release.md`.
 - Navigation and My Tasks → `docs/plans/navigation.md`.
 - The **train** column of E-1 and E-5 is added by the release-trains plan; stage 1 leaves room for it.
-- Service groups are read from the catalog when it publishes them and are display-only here.
+- Service groups are read from the catalog when it publishes them and are display-only here. Stage 1
+  stores them — `service_list.CatalogGroup` per service, `product_list.GroupsJson` per product — and
+  nothing in stage 1 decides by them. Stage 2 builds on exactly these two columns (the "effective
+  group", the `service_group_changes` table and a hook in `ServiceListCatalogSync.ApplyAsync`, all in
+  `docs/plans/release-trains.md`); they are not part of this stage.
 
 ## Global constraints
 
@@ -137,7 +141,8 @@ Assumes the service inventory (`docs/plans/service-inventory.md`) is deployed an
 
 ## Name and glossary
 
-Added to `GLOSSARY.md` with this plan:
+`GLOSSARY.md` already has **Service**, **Product** and **Service Group** and describes the stored
+service list under **Service Inventory** (added with ADR 0005). Added to it when step 1a ships:
 
 > **Service list**: The portal's stored list of every service it knows, with the product its data is
 > filed under and the product, group and team the service catalog gives it. A copy: catalog fields
@@ -772,7 +777,8 @@ Migrations/Postgres`, and the same with `SqlServerPlatformDbContext` and `Migrat
 
 #### Task 1: Docs (this PR)
 
-This plan and the `GLOSSARY.md` entries. ADR 0005 and ADR 0006 are written separately.
+This plan. ADR 0005 and ADR 0006 are written separately and bring the `GLOSSARY.md` entries
+**Service**, **Product** and **Service Group**; the entries under "Name and glossary" follow in 1a.
 
 #### Task 2: Flag, entities, migrations
 
@@ -954,7 +960,7 @@ Tests (`ServiceMoveTests`, integration `ServiceMoveEndpointTests`):
 `Move_RecordsThePreviousAddress_AndClearsPending`; `OverrideRemapAlias_GivesTheSameResult`;
 `SignedOffWorkItems_StillCountAfterTheMove`; `SecondApply_IsANoOp`.
 
-Acceptance: the control scenario's variant C passes; the old remap endpoints return a superset of
+Acceptance: the control scenario's variant (b) passes (Task 21); the old remap endpoints return a superset of
 their previous response.
 
 #### Task 14: Old addresses (TDD)
@@ -1056,7 +1062,7 @@ Updated in the PR of the step that changes the behaviour:
   (1a–1c), listed in `AGENTS.md` next to the others.
 - `notes/mcp-server.md` and `.claude/skills/infrapilot-api/SKILL.md`: name resolution reads the
   service list; a moved service resolves with a note; the new read endpoints (1a, 1c).
-- `GLOSSARY.md` (Task 1); `knowledge/service-topology.yaml` (the list, modes, the move) so
+- `GLOSSARY.md` (the entries under "Name and glossary", 1a); `knowledge/service-topology.yaml` (the list, modes, the move) so
   diagnostics explain "stored under another product than sent".
 - `docs/plans/service-inventory.md`: a line under "Service identity" that the join is now stored
   (ADR 0005); `scripts/service-inventory-identity-check.py` keeps working and its docstring points
@@ -1179,8 +1185,9 @@ agrees with `GET /api/service-list/export`.
 
 ## Open points
 
-1. **The four variants of the control scenario.** The brief refers to them without a list. Task 21
-   proposes A–D; confirm or replace.
+1. **The control scenario** is settled: Task 21 carries the canonical flow and variants (a)–(d),
+   shared with `docs/plans/release-trains.md` (Task 27). Only the two stage-1 extras, S1-A and S1-D,
+   are this plan's own proposal; confirm or drop them.
 2. **Open rollback requests and the move.** The brief holds a move only for Approved or Deploying
    promotions. A rollback request that is `Approved` or `RollingBack` stays under the old product
    (it spans several services) while the deploy that completes it will arrive under the new one.

@@ -44,7 +44,7 @@ of the two that has dates, progress and a record. The plan is `docs/plans/releas
 - **Completing** a release records what shipped: the version of each service, the services that did
   not ship (partial completion is allowed), and the union of its promotions' change sets. The live
   computed state stays next to the record, so a late deploy report still shows up; the record is what
-  release notes read (`docs/plans/release-notes-for-a-release.md`, stage 3). A release completed
+  release notes and analytics read (`docs/plans/release-notes-for-a-release.md`, stage 3). A release completed
   before the record existed gets one written on request, from the state at its completion.
 
 ## A Release gates nothing
@@ -70,7 +70,9 @@ the release's products (`ReleaseService.IsReleaseManagerOfAsync`); they may mana
 
 Today a policy is looked up in `PromotionPolicyResolver` and separately in five other places
 (`Features/Builds/BuildIngestHook.cs`, the build-targets endpoint, `Mcp/BuildTools.cs`, the
-release-manager gates in `ReleaseService.cs`, `PromotionFreezeService.cs`). Selected-service policies
+release-manager gates in `ReleaseService.cs`, `PromotionFreezeService.cs`); the plan found two more
+readers of policy rows, the policy merge in `Features/Settings/EnvironmentMergeService.cs` and the
+duplicate pre-check in `PromotionAdminEndpoints.cs`. Selected-service policies
 come with **one shared resolution point** that all of them use.
 
 ## Considered options
@@ -106,8 +108,9 @@ come with **one shared resolution point** that all of them use.
   else. The portal does not use that term for a Release.
 - `Release.cs` describes a Release as "a versioned release train". From here on **train** means the
   saved settings only; the comment and any UI text using it for one run are corrected with the code.
-- Stage 2 ships behind its own feature flag, checked on the server too. Today the Promotions flag
-  hides Releases in the UI only.
+- Stage 2 ships behind its own feature flag, `features.releaseTrains`, checked on the server for
+  everything it adds. Today the Promotions flag hides Releases in the UI only, and today's calls to
+  `/api/releases` stay without a server-side check (an open point of the plan).
 - A change of service group in the catalog can change a service's policy or train. It is executed by
   an admin after a preview and audited, like a product change (ADR-0006).
 - A Promotion Freeze can be scoped to a train (ADR-0008).
