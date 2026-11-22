@@ -1170,14 +1170,21 @@ among them) with the `staging` environment key, and response status codes
 and bodies (allowing added fields only). It runs once per configuration: flag off; flag on with
 every product in report; warn; enforce with the scenario's services in a seeded catalog snapshot.
 
-The brief asks for four variants without listing them (open point 1); this plan uses:
+The four canonical variants, with what stage 1 can run of each:
+
+| Variant | What differs | Must hold | In stage 1 |
+|---|---|---|---|
+| (a) | a new extension service matching a group or pattern | it lands on dev automatically | a new service of the product lands on dev under the product's policy; matching by group or pattern needs stage 2's policies for selected services and is run there |
+| (b) | a service is moved during a release | the move is held while a promotion is Approved or Deploying, and afterwards work-item sign-offs follow the service | from 1c: the service is moved while its build→staging candidate is Pending (flow step 2) and a move is attempted between Mass approve and the deploy event (steps 5 and 6) — the Pending candidate continues under the new product with its sign-offs counted; the attempt while Approved is refused (`move_held`) and the deploy closes the promotion |
+| (c) | a freeze of the core train on prod | it stops step 5 for core but not step 1, and not extensions with their own train | trains and the train freeze are stage 2; stage 1 checks the first half with today's product freeze of `mkp` into prod (step 5 held, step 1 not) |
+| (d) | a pipeline sending the old product | the request is accepted, data is filed under the catalog product, the mismatch is on the admin's list | the pipeline sends `mkp-extensions`, the catalog says `mkp`, the key is scoped to `mkp-extensions`. Report and warn: stored and approved under `mkp-extensions` exactly as today, with a `product_differs` row on the **Mismatches** tab. Enforce after the move: stored under `mkp`, approved by `mkp`'s policy, same key accepted (the sent product is a previous product of the service) |
+
+Stage-1 additional variants (this plan's own, not part of the canonical four):
 
 | Variant | What differs | Must hold |
 |---|---|---|
-| A — not in catalog | the service is unknown to the catalog (as 359 of 361 are today) | the whole flow as above; the service is labelled, nothing is warned or held |
-| B — product differs | the pipeline sends `mkp-extensions`, the catalog says `mkp`, the key is scoped to `mkp-extensions` | report and warn: stored and approved under `mkp-extensions` exactly as today. Enforce after the move: stored under `mkp`, approved by `mkp`'s policy, same key accepted |
-| C — moved mid-flow | the service is moved between steps 3 and 4, and a move is attempted between steps 5 and 6 | the Pending candidate continues under the new product with its sign-offs counted; the attempt while Approved is refused and the deploy closes the promotion |
-| D — name not in normal form | the pipeline sends `Mkp.Spotlight` | before the fix: as today. After the fix and with normalisation on: the same service, a warning, no second service |
+| S1-A — not in catalog | the service is unknown to the catalog (as 359 of 361 are today) | the whole flow as above; the service is labelled, nothing is warned or held |
+| S1-D — name not in normal form | the pipeline sends `Mkp.Spotlight` | before the fix: as today. After the fix and with normalisation on: the same service, a warning, no second service |
 
 Each step's PR also records a manual run of the scenario on the test environment against the
 `mkp-release` (push) and `ops-release` (pull, Flux) paths.

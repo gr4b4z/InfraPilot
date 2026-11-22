@@ -1,10 +1,10 @@
 # Release notes for a release, release webhooks, analytics by train and team — implementation plan
 
 > **Status:** specification agreed 2026-11-22 (stage 3 of "Deployments and releases in the portal").
-> Not started. Depends on stage 2 (`docs/plans/release-trains.md`: trains, the completion record with
-> the union of the promotions' change sets) and, for team and product-at-the-time, on stage 1
-> (`docs/plans/service-list-and-catalog-product.md`: the stored service list, the never-rewritten
-> product column on deploy events). Items: L-19, L-20, P-13, P-14, P-15, E-16, E-17, E-18.
+> Not started. Depends on stage 2 (`docs/plans/release-trains.md`: trains, the completion record
+> `release_shipped_services` with the union of the promotions' change sets) and, for team and
+> product-at-the-time, on stage 1 (`docs/plans/service-list-and-catalog-product.md`: the stored
+> service list `service_list`, the never-rewritten `ProductAtEvent` column on deploy events). Items: L-19, L-20, P-13, P-14, P-15, E-16, E-17, E-18.
 
 **Goal:** A release manager publishes one release note for a release, built from what its promotions
 shipped; receivers can be told when a release starts and completes; analytics can be filtered and
@@ -23,8 +23,9 @@ for the product filter and grouping, not a second series key.
 **Tech stack:** ASP.NET Core net10.0 Minimal API + EF Core (Postgres and SQL Server migration sets),
 Handlebars.Net, xUnit + NSubstitute, React 19 + TypeScript.
 
-**Spec:** the agreed specification of 2026-11-22 (summarised here), ADR-0005, ADR-0006,
-`notes/release-notes.md`, `notes/releases-api.md`, `notes/analytics-api.md`.
+**Spec:** the agreed specification of 2026-11-22 (summarised here), ADR-0005, ADR-0006, ADR-0007
+(`docs/adr/0007-a-release-train-is-saved-release-settings.md`: the completion record; a Release
+gates nothing), `notes/release-notes.md`, `notes/releases-api.md`, `notes/analytics-api.md`.
 
 ## Global constraints
 
@@ -38,16 +39,23 @@ Handlebars.Net, xUnit + NSubstitute, React 19 + TypeScript.
   step, a promotion or the completion.
 - Portable SQL only: no JSON functions in queries, `""` instead of NULL in keys (ADR-0003). Every
   schema change ships a Postgres and a SQL Server migration.
-- Stage-3 behaviour is behind the stage-2 feature flag and `features.releaseNotes`, checked on the
-  server for the **new** request shapes only. Team filters additionally need
-  `features.serviceInventory`.
+- Stage-3 behaviour is behind stage 2's feature flag `features.releaseTrains` and
+  `features.releaseNotes`, checked on the server for the **new** request shapes only. Team filters
+  additionally need `features.serviceInventory`.
 - Public repository: fixtures and examples use the placeholder names only (`mkp`, `mkp-extensions`,
   `mkp-extension-adobe`, `mkp-spotlight`, org `acmetrix`).
-- Names of stage-1 and stage-2 tables, columns and flags are taken from those plans when they merge;
-  this plan describes them by role ("the stored service list", "the product-at-the-time column",
-  "the completion record", "the release's train").
+- Names of stage-1 and stage-2 tables, columns and flags are the ones those plans introduce. Where
+  this plan speaks by role it means: "the stored service list" = `service_list` (team in
+  `CatalogTeam`), read through stage 2's `IServiceDirectory`; "the product-at-the-time column" =
+  `ProductAtEvent`; "the completion record" = `release_shipped_services` (`Outcome`, `Version`,
+  `ReferencesJson`, `ChangeSetSource`) with `Release.RecordedAt`, read through
+  `GET /api/releases/{id}/shipped`; "the release's train" = `Release.TrainId` / `TrainName`, a row
+  of `release_trains`; a train's scope and the release's scope = `ReleaseTrainMembership` and
+  `ReleaseScope`. Stage 2's flag is `features.releaseTrains`; stage 1's is `features.serviceList`.
 
 ## Decisions
+
+Numbered locally (1–12); the specification's decisions are cited as D-n.
 
 | # | Question | Answer |
 |---|---|---|
@@ -80,7 +88,9 @@ Handlebars.Net, xUnit + NSubstitute, React 19 + TypeScript.
    edit); a reopened and re-completed release fires `release.completed` again. → Task 5 tests.
 6. Where the specification and the code disagree, the code was followed:
    - The specification says the release, release-note and analytics APIs have no server-side flag
-     check. True, and unchanged for today's calls; only the new request shapes are checked.
+     check. True (`Program.cs:520`, `:537`, `:540`), and unchanged for today's calls; only the new
+     request shapes are checked. No plan adds a check to today's calls; whether to is open point 5 of
+     `docs/plans/release-trains.md`.
    - `ReleaseNoteService.GetVersionsLiveBeforeAsync` and `MapService` are private and take one
      product. They are widened, not copied (Task 2).
    - `WebhookEventFilters` carries one product. A release has several, so the filter grows a set
@@ -110,7 +120,7 @@ Change:
 - `ReleaseNote.Product` stays `varchar(200) NOT NULL`. A release note stores `""`.
 - `Environment` is the release's `ProductionEnvironment`; `From`/`To` are the release's evidence
   window (`StartedAt ?? CreatedAt` to `CompletedAt ?? now`, as `ReleaseProgressService.ComputeAsync`
-  reads it).
+  reads it; bounded by stage 2's `WindowFrom` / `WindowTo` on a release that has them).
 
 Why this shape and not the alternatives:
 
@@ -145,17 +155,20 @@ prints it stays readable.
 members, so `TemplateEngine`, the stored `RawJson` and the detail page keep one shape.
 
 1. **Scope.** The services of the release that are not left out: for a completed release the
-   completion record of stage 2 (shipped versions, services that did not ship); otherwise the live
-   scope the release page shows (`ReleaseProgressService.ComputeAsync`, with the train scope of
-   stage 2).
+   completion record of stage 2 (`release_shipped_services`: shipped versions, services that did
+   not ship); otherwise the live scope the release page shows (`ReleaseProgressService.ComputeAsync`,
+   through stage 2's `ReleaseScope`). A release completed before stage 2 has no record until
+   `POST /api/releases/{id}/record` writes one; until then it is read live.
 2. **From promotions.** For each service, its promotions of the release into the production
    environment with status `Deployed` — the same selection the progress view makes (on the version
-   line, or inside the window for a service on a scheme of its own). One entry per service:
+   line, or inside the window for a service on a scheme of its own and for an ad hoc release without
+   a line). One entry per service:
    - `currentVersion`: the version of the newest deployed promotion; `previousVersion`: `FromVersion`
      of the oldest; `deployedAt`: the newest `DeployedAt`.
-   - work items, pull requests, pipelines: the union of the promotions' `References`, de-duplicated
-     by type and key (revision or URL when there is no key), newest promotion first. For a completed
-     release this is the union the completion record already stores.
+   - work items, pull requests, pipelines: the union of the promotions' `References`, built by the
+     rule of stage 2's completion record — oldest promotion first, de-duplicated by
+     `(type, provider, key)`, by `(type, url)` when there is no key, keeping the newest title. For a
+     completed release this is the union the completion record already stores (`ReferencesJson`).
    - participants: the promotions' `Participants` and the references' own, de-duplicated as today.
    - `source: "promotions"`.
 3. **Fallback to deploy events.** A service in scope with no deployed promotion but a succeeded
@@ -205,8 +218,8 @@ one block per product when there are several, with the per-service lines of toda
 | `GET /api/release-notes` | New filter `releaseId`; `product` also finds release notes covering it. |
 | `GET`/`PUT /api/release-notes/template` | New query/body field `scope=release` with optional `train`. |
 
-`releaseId` of a cancelled release: `400`. Unknown: `404`. With `features.releaseNotes` or the stage-2
-flag off, a request carrying `releaseId` answers `404`; requests without it are not checked, as today.
+`releaseId` of a cancelled release: `400`. Unknown: `404`. With `features.releaseNotes` or
+`features.releaseTrains` off, a request carrying `releaseId` answers `404`; requests without it are not checked, as today.
 
 ## Webhooks
 
@@ -232,7 +245,14 @@ A product note carries `products: ["<product>"]` and `release: null`; nothing el
 What existing consumers get: a subscription filtered to product `mkp` receives the release note of
 every release that includes `mkp`, once, with all the release's services. The default message
 template (`NotificationTemplates`, "Release notes — {{data.product}} / {{data.environment}}") keeps
-rendering. A consumer that wants only one kind tells them apart by `release`.
+rendering. A consumer that wants only one kind tells them apart by `release`. `release.version` is
+null for an ad hoc release without a line.
+
+This is what answers open point 1 of `docs/plans/release-trains.md` (release-note channels of the
+extension services): a channel whose subscription sets the **Trains** filter to the Extensions train
+receives that train's release notes and not the Core train's. Product notes carry no train and no
+service, so this stage does not route them per service or per train; such a channel still receives
+its product's product notes.
 
 ### `release.started`, `release.completed` (P-14)
 
@@ -263,15 +283,17 @@ refresh twice.
   empty or names any of them) and `Train`, both after `Service` so positional call sites compile.
 - `WebhookSubscription` gains `FilterTrainsJson` (`"[]"` = any), tested only when the event carries a
   train — so no existing subscription changes what it receives. `WebhookSubscriptionFilters.Matches`
-  is the one place that changes; it is the stage-2 version (service patterns narrow a mandatory
-  product filter). The copy in `DiagnosticsService` judges promotion events only and is not touched.
+  is the one place that changes; it is the stage-2 version (service patterns and
+  `FilterExcludedServicesJson` narrow a mandatory product filter). Stage 2 removes the copy in
+  `DiagnosticsService`, which calls this matcher from then on, so there is no second place to change.
 
 ## Analytics (L-20, P-15, E-18)
 
 ### Resolving train and team
 
 Both resolve, once per request, to a set of service names (service names are unique system-wide,
-D-7): a team through the stored service list, a train through its scope. Queries then add
+D-7): a team through the stored service list (`service_list.CatalogTeam`), a train through its scope
+(stage 2's `ReleaseTrainMembership`). Queries then add
 `services.Contains(x.Service)` with the list passed as one parameter (`EF.Parameter`, as
 `DeliveryMetricsService` already does for products). An unknown team or train is `400`; a team
 filter with the inventory off is `400` with `code: "team_unavailable"`.
@@ -282,9 +304,10 @@ block says so.
 ### Product-at-the-time
 
 `productBasis=at-event` makes the product filter and `groupBy=product` read the never-rewritten
-column on `DeployEvent` instead of `Product`. It applies to figures counted from deploy events.
-Figures counted from promotion candidates (queue, approval and deploy latency) and incidents use the
-current product unless stage 1 adds the column there; the `definition` names which basis each used.
+column `DeployEvent.ProductAtEvent` instead of `Product`. It applies to figures counted from deploy
+events. Stage 1 also puts `ProductAtEvent` on promotion candidates and incidents (not on builds);
+this plan still counts figures from promotion candidates (queue, approval and deploy latency) and
+incidents under the current product (see Open points); the `definition` names which basis each used.
 
 ### Queries that change
 
@@ -381,6 +404,7 @@ Each task: write the failing tests, implement, run both test projects.
 - [ ] `release_notes.ReleaseId` (nullable, indexed); `release_note_products` filled from existing
       rows by an `INSERT … SELECT Id, Product` in the migration.
 - [ ] `webhook_subscriptions.FilterTrainsJson` with default `"[]"`.
+- [ ] The index on `deploy_events.ProductAtEvent` that stage 1 leaves to this stage (with Task 7).
 
 Acceptance: both migration sets apply to a database holding notes; every existing note has exactly
 one product row; `Product` of existing rows is untouched.
@@ -589,7 +613,9 @@ If `docs/plans/navigation.md` has merged, the Webhooks link is `/settings/webhoo
 holding notes and subscriptions; `npx tsc -b` and `npm run build` in `src/Platform.Web`; open
 `/whats-new` and check the four entries; by hand: a product note through the old call before and
 after, compared field by field; a release note for a two-product release delivered to a test
-receiver filtered to one of the products.
+receiver filtered to one of the products. The canonical control scenario
+(`docs/plans/service-list-and-catalog-product.md`, Task 21: seven flow steps, variants (a)–(d)) still
+passes unchanged; this stage adds no variant of its own.
 
 ## Open points
 
@@ -601,6 +627,9 @@ receiver filtered to one of the products.
   choose one.
 - Team and train membership "as of now" misstates past periods after a service changes team or
   leaves a train. Keeping history is not planned.
-- Whether a service may be in the scope of two trains at once is settled in stage 2; if not, the
-  non-additive note on `groupBy=train` goes away.
+- Stage 2 settles that a service may be in the scope of several trains at once
+  (`docs/plans/release-trains.md`, "Membership"), so the non-additive note on `groupBy=train` stays.
+- Stage 1 stores `ProductAtEvent` on promotion candidates and incidents too. Whether
+  `productBasis=at-event` should also apply to the figures counted from them is not decided; this
+  plan leaves them on the current product.
 - How long `changeFailureRate` stays on the frequency response before it is removed.

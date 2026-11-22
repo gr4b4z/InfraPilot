@@ -55,7 +55,9 @@ Each step can ship on its own. Step 3 needs steps 1 and 2 in production and stag
 - A Release never holds a promotion: not on a step, not on its status, not on another service
   (D-19). Nothing in this plan adds a read of `Release` to `PromotionService.EvaluateGateAsync`.
 - No scheduler. A train's cadence is text for people; nobody opens a release automatically.
-- Release notes for a Release, release webhooks and analytics by train are stage 3.
+- Release notes for a Release, release webhooks (`release.started`, `release.completed`) and analytics
+  by train are stage 3 (`docs/plans/release-notes-for-a-release.md`). The sidebar and My Tasks are
+  `docs/plans/navigation.md`.
 
 ## Global constraints
 
@@ -105,7 +107,8 @@ Each step can ship on its own. Step 3 needs steps 1 and 2 in production and stag
 | D-23 | Approvers | Stay configured in the portal's policies. |
 | D-26 | Hotfix branches | Staging policies also auto-create from the hotfix branch pattern (configuration, Task 24). |
 
-Choices this plan makes inside those decisions (each is argued in the design section it belongs to):
+Choices this plan makes inside those decisions (each is argued in the design section it belongs to).
+The ids P-a..P-f are local to this plan; they are not the specification's API items P-7..P-12:
 
 | # | Choice |
 |---|---|
@@ -134,7 +137,7 @@ Choices this plan makes inside those decisions (each is argued in the design sec
    service resolves a policy whose approval steps equal the ones it had, or the script stops. → Task 17.
 6. **A product-scoped release of `mkp` after the move.** Extension services would join every `mkp`
    release as "open on every check". The core train excludes the groups, and the script leaves the
-   moved services out of open `mkp` releases. → Task 17, verification variant 1.
+   moved services out of open `mkp` releases. → Task 17, Task 27 variant S2-1.
 7. **Freeze union over three shapes.** Lifting a train freeze leaves a product or service freeze
    holding; a service that joins a frozen train is held on its next evaluation. → Task 19 tests.
 8. **A webhook filter never widens.** Patterns and exclusions without a product are refused; an
@@ -163,8 +166,10 @@ Where the specification's facts and the code disagree (the code is what this pla
   sign-off is keyed by service. A service filter does not narrow them today; this plan keeps that.
 - `Release.cs`, `ReleaseService.cs:695`, `ReleasesPage.tsx:14` and `notes/releases-api.md` call a
   Release "a release train". Corrected in Tasks 1 and 25.
-- The specification's file holds no control scenario. The one in Task 27 is derived from its facts
-  and from `docs/plans/migrate-mkp-services.md`; confirm it before step 3 (Open points).
+- The specification's file holds no control scenario. Task 27 runs the canonical one (seven flow
+  steps, variants (a)–(d)) shared with `docs/plans/service-list-and-catalog-product.md` (Task 21);
+  the extension-service check and the variants S2-1..S2-4 are this plan's own additions, derived
+  from the specification's facts and from `docs/plans/migrate-mkp-services.md`.
 - `/settings/*` is wrapped in `AdminRoute` (`App.tsx:153`), and the freeze routes sit in the
   `/api/promotions/admin` group (`Program.cs:534`, `CatalogAdmin`). "Release managers may freeze"
   therefore needs a route and a page outside both (Tasks 20, 21).
@@ -471,8 +476,8 @@ error says so.
 **A tie can still appear later** — a new service registers whose name two stored patterns match. The
 resolver then takes the older policy (`CreatedAt`, then `Id`), sets `Ambiguous` on the match, logs a
 warning, and Settings → Promotions shows the conflict until one rule is changed. It does not refuse
-the promotion (global constraint). ADR-0007 says there is "never a tie to break"; this is the one
-case save-time checking cannot see.
+the promotion (global constraint). ADR-0007 records this as the one tie that save-time checking
+cannot see.
 
 ### One shared resolver
 
@@ -520,8 +525,10 @@ Deleted: `ResolveForTargetAsync`, `SnapshotForTargetAsync` (no caller).
 `ResolvedPolicySnapshot` gains `MatchedBy { level, value }` — init-only, default null, so snapshots
 written before it deserialise (the pattern every other member follows,
 `ResolvedPolicySnapshot.cs:25-27`). `PromotionPolicyResolver.Project` takes the match. The promotion
-page's "where the policy came from" (E-7, stage 1) reads it; null reads as "service" when the
-candidate's `PolicyId` belongs to a single-service policy, else "product".
+page's "where the policy came from" (E-7, stage 1) reads it: stage 1's `policySource` on
+`GET /api/promotions/{id}` is filled from `MatchedBy` and its `level` gains `group` and `pattern`.
+Null reads as "service" when the candidate's `PolicyId` belongs to a single-service policy, else
+"product".
 
 Both comparisons of a stored snapshot with a fresh one (`PromotionService.cs:1609` in
 `RefreshPolicySnapshotsAsync`, `:4091` in `ResolveCurrentPolicyAsync`) go through one helper
@@ -587,7 +594,7 @@ Products and environments stay exact. Matching stays ordinal.
   `WebhookSubscriptionFilters.Matches(sub, new WebhookEventFilters(product, env, service))` and drops
   its private `MatchesFilter`/`ParseList`. Its answers become case-sensitive like the dispatcher's —
   a correction, noted in the task.
-- **Preview** (E-12 of the webhooks screen, part of P-12): `GET /api/webhooks/matches?product=&service=&environment=&eventType=`
+- **Preview** (part of P-12; the webhooks screen has no E- number in the specification): `GET /api/webhooks/matches?product=&service=&environment=&eventType=`
   returns, per active subscription listening to that event type, whether it would receive the event
   and why not (`product`, `service-not-included`, `service-excluded`, `environment`). Same matcher.
 
@@ -706,7 +713,7 @@ first — product, train, service (ADR-0008):
    for each, load the train and ask `ReleaseTrainMembership.Contains(train, product, service)`.
    Membership is resolved **now**, from the train's current scope and the service's effective group,
    not from a list copied when the freeze was set. A freeze whose train no longer exists holds
-   nothing and is listed in Settings → Freeze as orphaned until lifted (deleting a frozen train is
+   nothing and is listed on the freeze page (`/promotions/freeze`) as orphaned until lifted (deleting a frozen train is
    refused, so this needs a database edit to occur).
 
 A candidate is held when the list is not empty. No shape overrides another; lifting one leaves the
@@ -765,7 +772,7 @@ refresh (stage 1) brings a different group for a service:
 3. **Something changes** → a row in `service_group_changes` (`Service` unique, `Product`, `FromGroup`,
    `ToGroup`, `CatalogVersion`, `DetectedAt`). While it exists, resolution uses `FromGroup` — the
    **effective group** — everywhere this plan reads a group. The Services page lists it under
-   "Group changes to execute", next to stage 1's "Services to be moved".
+   "Group changes to execute", next to stage 1's **To be moved** tab.
 4. An administrator opens the preview — policies gained and lost per edge with the Pending promotions
    whose gate would change, trains joined and left, freezes that would start or stop holding — and
    executes it. Executing deletes the row, calls `RefreshPolicySnapshotsForServiceAsync`, re-evaluates
@@ -929,10 +936,10 @@ the controls below render and the pages look as they do today.
 | **E-11** Releases list | `app/releases/ReleasesPage.tsx` | **Train** and **Product** filters, kept in the URL; a train column. |
 | **E-12** Mass approve, Work items queue | `components/promotions/MassApproveDialog.tsx`, `app/promotions/PromotionsPage.tsx`, `app/promotions/promotionFilterParams.ts`, `app/me/MyQueuePage.tsx`, `app/me/queueFilterParams.ts` | Mass approve gets a **Release** select *inside the dialog*, next to environment and gate, default **All releases**. It is never initialised from the page — the dialog's own rule (`MassApproveDialog.tsx:38-40`); `PromotionsPage.tsx:979-985` passes no release. The Promotions page and the queue get their own **Release** filter. |
 | **E-13** Settings → Promotions | `app/settings/PromotionSettings.tsx`, new `components/promotions/PolicyMatchFields.tsx` | "Applies to": **All services** \| **Selected services** \| **Service group** \| **Name pattern**. Under it "Matches these services" updates as you type (`POST …/policies/preview`), marking services a more specific rule takes. A conflict is shown before saving. The policy list groups by product and edge and prints each rule's level. |
-| **E-14** Freeze | `app/settings/FreezeSettings.tsx` → content moves to new `app/promotions/FreezePage.tsx` at `/promotions/freeze`; `App.tsx` (route outside `AdminRoute`, `/settings/freeze` redirects); `app/promotions/FreezeNotice.tsx`, `app/promotions/FreezeCues.tsx`, `app/deployments/FreezeCues.tsx`, `app/deployments/freezeWindows.ts`, `lib/freezeScope.ts` | Scope select: **Product** \| **Release train** \| **Service**, offering only what the caller may freeze (`GET …/freezes/scopes`). Settings keeps a **Freeze** entry that links to the page. Banners and notices name the scope and list every freeze that holds. |
+| **E-14** Freeze | `app/settings/FreezeSettings.tsx` → content moves to new `app/promotions/FreezePage.tsx` at `/promotions/freeze`; `App.tsx` (route outside `AdminRoute`, `/settings/freeze` redirects); `app/promotions/FreezeNotice.tsx`, `app/promotions/FreezeCues.tsx`, `app/deployments/FreezeCues.tsx`, `app/deployments/freezeWindows.ts`, `lib/freezeScope.ts` | Scope select: **Product** \| **Release train** \| **Service**, offering only what the caller may freeze (`GET …/freezes/scopes`). Settings keeps a **Freeze** entry that links to the page. The page gets no sidebar item of its own, so the sidebar of `docs/plans/navigation.md` keeps its 17 items: it sits under **Promotions** (that item is active on `/promotions/freeze`) and is opened from a **Freeze** link on the Promotions page, shown to whoever `GET …/freezes/scopes` gives a scope, and from **Manage freezes** in the freeze banners, which today link to `/settings/freeze`. Banners and notices name the scope and list every freeze that holds. |
 | **E-15** Product page | `app/deployments/ProductDeploymentsPage.tsx` | Filters **Group**, **Train**, **Type** above the service list, shown when the product has more than one value of each; kept in the URL. Group and type from stage 1's service list, train from `GET /api/release-trains/membership`. |
 | Webhooks (P-12) | `app/webhooks/WebhookFilterFields.tsx`, `app/webhooks/webhookFilters.ts`, `app/webhooks/WebhookListPage.tsx`, `app/webhooks/WebhookDetailPage.tsx`, `app/webhooks/NotificationCreateForm.tsx` | Services field accepts `*`; new **Except services** field; both disabled with a hint until a product is chosen. Under the fields: "Receives events of N services" with the list. A **Who receives…** box on the list page (product, service, event) backed by `GET /api/webhooks/matches`. Banner for subscriptions without a product filter. |
-| Settings → Services (stage 1, E-1) | `app/settings/ServicesSettings.tsx` | Section **Group changes to execute** with preview and **Execute**; a **Train** column. |
+| Settings → Services (stage 1, E-1) | `app/settings/ServicesSettings.tsx` | Section **Group changes to execute** with preview and **Execute**; a **Train** column. The train in the service page header (E-5, `app/deployments/ServiceDetailPage.tsx`), which stage 1 leaves to this plan, reads the same membership call. |
 
 ---
 
@@ -1156,8 +1163,8 @@ support-tool services into `mkp`" in this file's log when it has run.
 #### Task 18: Run it in production
 
 Not code. In one sitting with the owners of both deployers: dry run, review the printed plan and the
-subscription mapping, `--apply`, the control scenario (Task 27) for one extension service, then the
-variants. Record date, counts and anything unexpected in this file.
+subscription mapping, `--apply`, the control scenario (Task 27: the canonical flow and variants, then
+the extension-service check and S2-1..S2-4). Record date, counts and anything unexpected in this file.
 
 ### Step 4 — train freeze, group changes
 
@@ -1229,7 +1236,7 @@ Patterns are full git refs matched with `*` (`PromotionPolicy.AutoCreateFromBran
 - [ ] Change it in **Settings → Promotions**, or `PUT /api/promotions/admin/policies/{id}` with the
   whole policy (the body replaces every field).
 - [ ] After: the next hotfix build opens a `build → staging` candidate with the same steps a release
-  build gets, and belongs to its line's release (variant 4 of the verification).
+  build gets, and belongs to its line's release (variant S2-4 in Task 27).
 - [ ] The governance repository records the pattern in its promotion policy (outside this repository).
 
 #### Task 25: Docs
@@ -1259,7 +1266,8 @@ Patterns are full git refs matched with `*` (`PromotionPolicy.AutoCreateFromBran
 
 One file each under `src/Platform.Web/src/app/whats-new/entries/`, dated the day its PR merges, added
 in the PR that ships the feature. The move in step 3 is a data change of one installation and gets no
-entry.
+entry. If `docs/plans/navigation.md` has merged, the Webhooks link is `/settings/webhooks` with the
+label `Settings → Webhooks`.
 
 | File | Audience | Ships with |
 |---|---|---|
@@ -1386,10 +1394,37 @@ On a product's page you can filter its services by **Group**, **Train** and **Ty
 - [ ] With `features.releaseTrains` **off** after all steps are merged: Releases, Promotions,
   Settings → Promotions, Freeze and Webhooks look and answer as before; stored rules still apply.
 - [ ] `/whats-new` shows the entries without console warnings.
-- [ ] **Control scenario** (development instance first, production in the Task 18 sitting). One
-  extension service, `mkp-extension-adobe`, after the move:
+- [ ] **Canonical control scenario** — the same flow and variants as
+  `docs/plans/service-list-and-catalog-product.md`, Task 21, whose `ControlScenarioTests` stays
+  green. The flow must pass unchanged after every step of this plan, flag off and on:
+  1. a build from the main branch creates a promotion build→dev and then dev→test; both approve
+     automatically, no work-item tracking;
+  2. a build from a release branch creates a promotion build→staging with steps **QA Review** and
+     **Release Approval**; work items are tracked, not required;
+  3. the Release page shows which services have a staging build and a signed QA gate;
+  4. the Release gathers the staging→prod promotions of the services of its products minus
+     exclusions — the composition is unchanged and a new service appears by itself;
+  5. staging→prod requires every work item decided; sign-off is counted per target environment;
+     **Mass approve** signs promotions in bulk;
+  6. the approval webhook triggers the deploy and the deploy event closes the promotion — the same
+     receivers as today;
+  7. completing the Release: the recorded state (`GET /api/releases/{id}/shipped`) agrees with the
+     live computed state (no row has `differs`).
+- [ ] **Canonical variants** (a)–(d):
+  - (a) a new extension service matching a group or pattern lands on dev automatically (from
+    step 2: group `extensions` or pattern `mkp-extension-*`; it also joins the Extensions train);
+  - (b) moving a service during a release is held while a promotion is Approved or Deploying, and
+    afterwards work-item sign-offs follow the service (stage 1's move; the step 3 script relies on it);
+  - (c) a freeze of the core train on prod stops step 5 for core but not step 1 and not extensions
+    with their own train (from step 4);
+  - (d) a pipeline sending the old product: the request is accepted, data is filed under the
+    catalog product, the mismatch is on the admin's list (after step 3, a moved service whose
+    pipeline still sends `mkp-extensions`; **Mismatches** on Settings → Services, stage 1).
+- [ ] **Stage-2 additional check: an extension service after the move** (development instance
+  first, production in the Task 18 sitting). `mkp-extension-adobe`:
   1. A build from `refs/heads/release/<line>` registers with the product its pipeline still sends
-     and is filed under `mkp`; the response warns about the product.
+     and is filed under `mkp`; the response carries stage 1's `warnings[]` when the product is in
+     warn or enforce mode.
   2. A `build → staging` candidate opens by itself with the steps **QA Review** and **Release
      Approval**; the promotion page says where its policy came from.
   3. The Extensions train's open release lists the service; the Core train's release does not, and
@@ -1400,7 +1435,8 @@ On a product's page you can filter its services by **Group**, **Train** and **Ty
   5. `staging → prod` waits for its work items, is approved, deploys; the release's checks complete.
   6. **Complete** records the version and the change set; the record survives reopening the page a
      day later with a hotfix of the line deployed.
-- [ ] **Variants**, each differing from the scenario in one thing:
+- [ ] **Stage-2 additional variants S2-1..S2-4** (this plan's own, not the canonical four), each
+  differing from the extension-service check in one thing:
   1. *A core service* (`mkp-spotlight`): it is in the Core release, not in the Extensions one;
      approvals reach both deployers and each skips what it does not own, as before the move.
   2. *The service with a policy of its own* (`mkp-extension-operations`): its service-level rule
@@ -1416,11 +1452,15 @@ On a product's page you can filter its services by **Group**, **Train** and **Ty
 
 1. **Release-note channels for the extension services.** Release notes are per product and carry no
    service, so after the move a channel that listened to `mkp-extensions` either receives all of
-   `mkp`'s notes or none. Release notes for a Release (stage 3) would give the Extensions train its
-   own notes. Until then: accept whole-product notes, or leave those channels silent? Per channel, in
-   the script's mapping file.
-2. **The control scenario** is derived here; the specification's file does not contain one. The
-   owner should confirm the scenario and the four variants before Task 18.
+   `mkp`'s notes or none. Stage 3 (`docs/plans/release-notes-for-a-release.md`, "Filter changes")
+   gives the Extensions train its own notes: a release note of a Release carries its train, and a
+   subscription with the **Trains** filter (`FilterTrainsJson`) receives only that train's. It does
+   not narrow product notes, which carry neither a service nor a train and stay per product. Until
+   stage 3 ships: accept whole-product notes, or leave those channels silent? Per channel, in the
+   script's mapping file.
+2. **The control scenario.** The flow and variants (a)–(d) in Task 27 are the canonical ones and are
+   settled. The extension-service check and S2-1..S2-4 are derived here; the owner should confirm
+   them before Task 18.
 3. **Group or pattern at cutover.** Whether the service catalog publishes the groups before step 3
    decides `--match groups` or `--match patterns`. The namespace of the `support-tools` group is
    undecided on the catalog side and does not block the portal.
@@ -1429,7 +1469,9 @@ On a product's page you can filter its services by **Group**, **Train** and **Ty
    1's catalog take-over, not this script.
 5. **Server-side flag for Releases themselves.** `/api/releases` has no flag check; the Promotions
    flag hides the pages only. This plan checks its own flag and leaves that as it is, because turning
-   a check on would reject calls that pass today. Decide separately whether to add it with a warning
-   period.
+   a check on would reject calls that pass today. The same holds for `/api/release-notes` and
+   `/api/analytics` (`Program.cs:520`, `:537`, `:540`): stage 3 checks flags for its new request
+   shapes only, so no plan of this work adds a server-side check to today's calls. Decide separately
+   whether to add one with a warning period.
 6. **Switching `Webhooks:RequireProductFilter` to `enforce`:** who decides, and when — after the
    list of subscriptions without a product filter is empty.

@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** A sidebar of 17 items in 5 groups instead of 20 in 8, ordered by what people come to do, and a **My Tasks** page that also serves people who approve promotions without being QA (E-19, E-20, D-21). Independent of stages 1–3.
+**Goal:** A sidebar of 17 items in 5 groups instead of 20 in 8, ordered by what people come to do, and a **My Tasks** page that also serves people who approve promotions without being QA (E-19, E-20, D-21). Independent of stages 1–3; what those stages add to the sidebar and to Settings is listed under "Sidebar: today and target".
 
 **Architecture:** Only the shell changes: `Sidebar.tsx`, `navTargets.ts`, the routes in `App.tsx`, two thin tab shells and the grouping inside `SettingsPage.tsx`. Merged pages keep their components and their URLs — a tab is a route, not a query parameter. One server addition tells the client whether the signed-in person is named on any promotion gate.
 
@@ -66,9 +66,9 @@ Target:
 | — | My Tasks | `/my-tasks` | QA, admin or promotion approver |
 | Delivery | Deployments | `/deployments` | |
 | | Artifacts | `/artifacts` | |
-| | Promotions | `/promotions` | `features.promotions` |
+| | Promotions (with the freeze page, stage 2) | `/promotions`, `/promotions/freeze` | `features.promotions` |
 | | Work items queue | `/me/work-items` | `features.promotions` |
-| | Releases | `/releases` | `features.promotions` |
+| | Releases (tabs **Releases**, **Trains**, stage 2) | `/releases` | `features.promotions`; the Trains tab also `features.releaseTrains` |
 | | Rollbacks | `/rollbacks` | `features.rollbacks` |
 | | Migrations | `/migrations` | |
 | Insights | Analytics (tabs **Operations**, **Delivery metrics**) | `/analytics`, `/analytics/delivery` | `features.analytics` |
@@ -83,6 +83,21 @@ Target:
 
 A group with no visible item is not drawn (existing behaviour).
 
+**What stages 1–3 add to this structure.** None of them adds or removes a sidebar item, so the count
+stays 17 items in 5 groups (1 + 7 + 4 + 3 + 2), as in E-19:
+
+- Stage 1 (`docs/plans/service-list-and-catalog-product.md`): Settings → Service Products becomes
+  **Settings → Services** (`/settings/services`; `/settings/service-products` redirects) and a
+  read-only **Settings → API Keys** (`/settings/api-keys`) is added. Both are Settings sections.
+- Stage 2 (`docs/plans/release-trains.md`): a **Trains** tab on the Releases page, and the freeze
+  page moves from `/settings/freeze` to `/promotions/freeze` so that release managers can open it
+  (ADR-0008; everything under `/settings` is admin-only). It gets no sidebar item: it sits under
+  **Promotions**, is opened from the Promotions page and the freeze banners, and Settings keeps a
+  **Freeze** entry that links to it. Stage 2 opens that one page to release managers; this plan
+  changes who may open My Tasks only.
+- Stage 3 (`docs/plans/release-notes-for-a-release.md`): new filters and tables inside Analytics and
+  Delivery metrics, which are the two tabs of the merged **Analytics** item here; no new item.
+
 **URLs**
 
 | Old URL | After |
@@ -91,6 +106,7 @@ A group with no visible item is not drawn (existing behaviour).
 | `/analytics`, `/analytics/delivery`, `/inventory/cost`, `/inventory/coverage` | unchanged; each is a tab of its merged page |
 | `/approvals`, `/approvals/:id`, `/incidents`, `/promotions/audit`, `/my-tasks` | unchanged; label or group only |
 | `/builds`, `/settings/deployment-maintenance`, `/work-items/:key` | existing redirects, kept |
+| `/settings/service-products`, `/settings/freeze` | not changed by this plan; stage 1 redirects the first to `/settings/services`, stage 2 the second to `/promotions/freeze` |
 
 **Command palette** (`components/shell/navTargets.ts`): add **Artifacts** (`b`), **Service cost** (`o`, `features.serviceInventory`) and **Cost coverage** (`v`, same flag); rename **Approvals** → **Request approvals** and **Promotions audit** → **Audit**; point **Webhooks** (`h`) at `/settings/webhooks`; **My tasks** (`t`) follows the new rule instead of `qaOnly`; **Delivery metrics** (`m`) stays as a direct way to its tab.
 
@@ -112,6 +128,10 @@ The 14 sections of `SettingsPage.tsx` plus Webhooks, under four headings. Routes
 | People | Participant Roles, Agent Tokens |
 | Request catalog | Request Catalog |
 
+The table lists today's sections. When the stage plans have merged: **Service Products** is
+**Services** and **API Keys** is one more section, placed under a heading with the others in Task 0
+(stage 1), and **Freeze** stays in the list as a link to `/promotions/freeze` (stage 2).
+
 ## My Tasks
 
 **Today.** `app/me/MyTasksPage.tsx` is a read-only list fed by `stores/myTasksStore.ts`, which every signed-in session already polls:
@@ -130,6 +150,10 @@ Both API groups require only a signed-in caller. What hides the page from an app
 - Client: one hook `useCanSeeTasks()` = QA or admin or approver replaces the five checks; `QaRoute` becomes `TasksRoute`.
 - For someone who is an approver only, the page shows the promotions section alone, and the store skips the two work-item calls.
 - The landing page follows the same rule: an approver lands on **My Tasks**.
+
+Stage 2 (`docs/plans/release-trains.md`, E-12) gives approvers a **Release** filter on Promotions,
+inside Mass approve and on the Work items queue; it adds nothing to **My Tasks**, and its freeze
+page asks its own endpoint (`GET /api/promotions/freezes/scopes`), not `GET /api/me/approver`.
 
 **Must not change for QA and admins:** the three sections and their order, the counts on the bell and the sidebar, the environment filter, landing on **My Tasks**, and every QA/admin check in `WorkItemApprovalService` and `PromotionService`.
 
