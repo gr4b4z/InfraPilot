@@ -71,11 +71,14 @@ _Avoid_: Application, component, microservice
 **Product**:
 A group of Services for the same audience. A Service has exactly one. The service catalog is the
 source of a Service's Product (ADR-0005); until a product is switched over, the portal stores what
-the pipeline sent. Shared platform services belong to the catalog's product `platform`. A Product has
-an **id** — its short prefix, the one name used in requests, URLs, filters and tags — and a
+the pipeline sent. Shared platform services belong to the catalog's pseudo-product `ops` (one name with the `ops-…` repositories). A Product has
+an **id** — its short prefix, the one name used in requests, URLs, filters and tags: lower-case
+letters and digits, starting with a letter, no hyphen, at most 8 characters — and a
 **display name** shown next to it as "Display name (id)". The display name comes from the service
 catalog; for a product added locally in the portal an admin sets it. Nothing is ever looked up by
-display name.
+display name. A former product name a pipeline still sends (`mkp-extensions`) is a **product alias**:
+the portal translates it to the product for a transition period and records each use until the
+pipeline is fixed.
 _Avoid_: Project, application, domain, tenant
 
 **Service Group**:

@@ -110,8 +110,9 @@ What changes:
 - The portal ships and versions the agent: a job with read-only access to workloads, pods (for the
   running image digest) and namespaces, and a blob data reader role on the storage accounts of the
   static sites; its manifest and its tests live in this repository. It is deployed to the clusters as a platform
-  component by the pull-model release repository with Flux; a cluster without Flux needs Flux first
-  or another route.
+  component: by Flux from the pull-model release repository where Flux runs, and on a cluster without
+  Flux by that product's own deployment pipeline through the push-model release repository, or by
+  hand.
 - A rollback that Flux performs and reports as succeeded is recorded as a deploy event of the
   version rolled back to, marked as a rollback, so the applied version names what runs.
 - No history of differences is kept. An audit entry per drift can be added later without changing

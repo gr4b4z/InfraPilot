@@ -62,7 +62,7 @@ Assumes the service inventory (`docs/plans/service-inventory.md`) is deployed an
   means the build registry or the OCI registry). Code: `Features/ServiceList`; API: `/api/services`,
   `/api/products`, `/api/teams`, `/api/service-list/...`; UI: `/settings/services`; flag:
   `features.serviceList`; tables: `service_list`, `service_addresses`, `product_list`, `team_list`,
-  `product_catalog_modes`, `product_mismatches`.
+  `product_catalog_modes`, `product_aliases`, `product_mismatches`.
 - Portable SQL only: no JSON functions in queries, no provider-specific DDL, `""` instead of NULL in
   unique keys (ADR-0003). Every schema change ships a Postgres and a SQL Server migration
   (`Migrations/Postgres`, `Migrations/SqlServer`).
@@ -240,6 +240,14 @@ erDiagram
         string ChangedBy
         datetime ChangedAt
     }
+    product_aliases {
+        string Alias PK "a former product name pipelines still send"
+        string Product "the product it is translated to"
+        string Reason
+        string CreatedBy
+        datetime CreatedAt
+        datetime RetiredAt "null while active"
+    }
     product_mismatches {
         guid Id PK
         string Kind
@@ -261,6 +269,7 @@ erDiagram
 | `product_list` | `Id varchar(200)`; `GroupsJson` text | PK `Id`; index `(Source)` |
 | `team_list` | `Id varchar(200)` | PK `Id` |
 | `product_catalog_modes` | `Mode varchar(20)` | PK `Product` |
+| `product_aliases` | `Alias`, `Product varchar(200)`; `Reason varchar(500)` | PK `Alias`; index `(Product)` |
 | `product_mismatches` | `Kind varchar(40)`, `Caller varchar(200)`, `LastEndpoint varchar(200)` | PK `Id`; unique `(Kind, Service, SentProduct, Caller)`; index `(ExpectedProduct)`, `(LastSeenAt)` |
 
 New columns on existing tables:
@@ -292,6 +301,7 @@ count and first/last time. It cannot grow with traffic. Kinds:
 | `scope_sent_only` | the caller's scope covers the sent product but not the product the service is stored under | 1b |
 | `name_not_normalised` | the sent product or service name is not in normal form | 1b |
 | `name_collision` | the normalised name matches a different stored name | 1b; refused from 1d |
+| `product_alias_used` | a write was translated by a product alias (`SentProduct` = the alias, `ExpectedProduct` = the product it became); the list of pipelines still to fix | from the first alias |
 
 ### Example rows (fictional)
 
@@ -316,7 +326,7 @@ count and first/last time. It cannot grow with traffic. Kinds:
 |---|---|---|---|---|
 | mkp | Marketplace | catalog | storefront-team | 7 |
 | mkp-extensions | mkp-extensions | reported | | |
-| mkp-labs | Marketplace labs | local | | |
+| mkplabs | Marketplace labs | local | | |
 
 `product_catalog_modes`
 
@@ -469,7 +479,9 @@ Order, per request (memoised per request like the override table is today):
    where the existing data is until the move flips both together. An override for the service is
    ignored and shown as superseded.
 4. Otherwise an override that matches → its product (today's rule, unchanged).
-5. Otherwise the sent product. A blank product cannot pass validation today and still cannot; the
+5. Otherwise, when the sent product is an active **product alias** and the service is stored under
+   the alias's product (its `service_list.Product`) → that product. See "Product aliases".
+6. Otherwise the sent product. A blank product cannot pass validation today and still cannot; the
    fallback `default` exists for rows the backfill finds with no product at all.
 
 Mode behaviour, keyed by the **catalog's** product for the service (no row = `report`):
@@ -481,6 +493,59 @@ Mode behaviour, keyed by the **catalog's** product for the service (no row = `re
 | enforce | the list's product for the service | the same | `warnings[]` gains `product_resolved_by_catalog` with the product used |
 
 A service that is not in the catalog is never a mismatch and never produces a warning.
+
+### Product aliases
+
+Pipelines keep sending product names the catalog no longer uses — `mkp-extensions` and
+`mkp-support-tools` after their services move into `mkp` (D-8), `cicd-infra` after the
+infrastructure products go to the pseudo-product `ops` (D-9), and former long product ids that break
+the product id rule. They are **not** migrated now (decided 2026-11-22): release-repository
+annotations, namespaces, key scopes and pipeline configuration keep the old name, and the portal
+translates it during a transition period.
+
+- **Where.** A small per-product list, `product_aliases` (alias → product), consulted by step 5 of
+  the resolution order in `ServiceProductOverrideService.ResolveAsync`. Not per-service overrides:
+  one alias covers every service of the old product, and an override (step 4), being per service,
+  still wins over it.
+- **Only for services that already live there.** The alias translates a write only when the service
+  is stored under the alias's product, i.e. its data was moved there (by the move of "Moving a
+  service", which leaves a `previous` address of the old product). For a service still stored under
+  the old name the sent product is used as today, so a translation never splits a service's data.
+  Under `enforce` step 3 decides first and the alias is not consulted.
+- **Configured** by an admin on Settings → Services, tab **Products** (E-2): add an alias with a
+  reason, see its uses, retire it. API: `GET /api/products/aliases`, `POST /api/products/aliases`
+  (`{ alias, product, reason }`; `409` when the alias is an existing product with data of its own
+  that is not moved, or already an alias; `400` when the product is unknown), `DELETE
+  /api/products/aliases/{alias}` (retires it: sets `RetiredAt`). Audited
+  (`product.alias.added`, `product.alias.retired`). The service-list flag gates it with the rest.
+- **Shows in the mismatch records.** Every translated write records `product_alias_used` (service,
+  alias, product, caller, count, last seen) — the list of pipelines and keys to fix, on the
+  **Mismatches** tab. With the target product in `warn` or `enforce` the response also carries the
+  warning `product_alias_used`, so the sender sees it too. Nothing is refused because of an alias.
+- **Temporary, and how it is retired.** Each alias shows its last use. An admin retires it once no
+  write used it for the look-back window (30 days); retiring earlier is allowed after a
+  confirmation that names the callers still sending it. After retirement the old name is just a sent
+  product again: in `report`/`warn` it would be stored as sent (a reported product), so the alias is
+  retired either when its callers are fixed or after the product has gone to `enforce`, where the
+  catalog decides the product whatever is sent.
+- **Scope is never widened by an alias.** A write translated by an alias is authorised against the
+  product it is **stored under**, in every step — the stored-product rule of step 1d applies to
+  aliased writes from the day the first alias exists. A key scoped to the old name keeps working
+  for the services that moved from it, because their `previous` address makes the old name a
+  recorded previous product of that service (the existing narrow exception). It can never write a
+  service that did not come from the old product: sending `product: mkp-extensions` with the name of
+  a core `mkp` service translates to `mkp`, finds no `previous` address `mkp-extensions` for that
+  service, and is refused (`403`).
+- **Tests** (`ProductAliasTests`, `ProductScopeTests` extended):
+  `Alias_TranslatesASentProduct_ForAServiceMovedThere`;
+  `Alias_IsNotApplied_ToAServiceStillStoredUnderTheOldName`;
+  `Override_WinsOverAlias`; `Enforce_IgnoresAliases`;
+  `AliasedWrite_IsRecordedAsProductAliasUsed_Once_AndCounted`;
+  `AliasedWrite_InWarnMode_CarriesTheWarning`;
+  `Alias_DoesNotLetAKeyScopedToTheOldNameWriteAServiceThatNeverLivedThere` (`403`);
+  `Alias_KeyScopedToTheOldName_StillWritesItsMovedServices`;
+  `RetiredAlias_IsNoLongerApplied`; `Alias_ForAnUnknownProduct_IsRefused`;
+  `Alias_IsAudited`.
 
 ### Scope checks
 
@@ -554,7 +619,7 @@ call `CatalogName.Normalize` directly:
 | Releases: products, excluded services | `ReleaseService` (`SetExcludedServicesAsync` and create/update) |
 | Webhook filters | `WebhookEndpoints` (create/update subscription) |
 | Removed services, product overrides | `ServiceDeletionService.DeleteAsync`, `ServiceProductOverrideService.UpsertAsync` |
-| Local products and teams | `ServiceListService` (new; refuses an id that is not in normal form, since nothing sends these today) |
+| Local products and teams | `ServiceListService` (new). A local **product** id must follow the product id rule (decided 2026-11-22): lower-case letters and digits, starting with a letter, no hyphen, at most 8 characters — `^[a-z][a-z0-9]{1,7}$`; anything else is `400`, since nothing sends these today. The display name is separate (see "Product id and display name"). A local **team** id follows the catalog id rule |
 
 Reads accept either spelling: a product or service name in a path or filter is matched as given and,
 when that finds nothing, by its normal form.
@@ -755,7 +820,8 @@ of them answer `404` while `features.serviceList` is off (the endpoint filter
 | `POST /api/services/{name}/move` (P-1) | admin | `{ product, reason? }` → the plan with `applied: true`; `409 move_held`; `404` unknown service; `400` unknown target product |
 | `GET /api/products` (P-2) | signed in | `name` is the display name (see "Product id and display name"). `[{ id, name, source, lifecycle, businessOwner, technicalOwner, groups, catalogMode, services, catalogVersion }]` |
 | `GET /api/products/{id}` (P-2) | signed in | one entry |
-| `POST /api/products`, `PUT /api/products/{id}`, `DELETE /api/products/{id}` (P-2) | admin | local entries only: `{ id, name }`. `400` when the id is not in normal form; `409` when the id exists; `PUT`/`DELETE` on a catalog or reported entry → `409 not_local`; `DELETE` while services use it → `409` |
+| `POST /api/products`, `PUT /api/products/{id}`, `DELETE /api/products/{id}` (P-2) | admin | local entries only: `{ id, name }`. `400` when a product id breaks the product id rule (`^[a-z][a-z0-9]{1,7}$`) or a team id is not in normal form; `409` when the id exists; `PUT`/`DELETE` on a catalog or reported entry → `409 not_local`; `DELETE` while services use it → `409` |
+| `GET`/`POST /api/products/aliases`, `DELETE /api/products/aliases/{alias}` | read: signed in; write: admin | Product aliases (see "Product aliases") with each alias's last use and callers |
 | `PUT /api/products/{id}/catalog-mode` | admin | `{ mode }` → the entry. `409 not_fully_in_catalog` with the services when `enforce` is asked for a product that has services not in the catalog. Leaving `enforce`: see Task 18. |
 | `GET /api/teams`, `GET /api/teams/{id}`, `POST`/`PUT`/`DELETE` (P-2) | as products | `{ id, name, source, lead, deputy, lifecycle }` |
 | `GET /api/service-list/mismatches?kind=&product=&since=` | admin | the `product_mismatches` rows |
@@ -783,7 +849,7 @@ Changed, backward compatible:
 | # | Screen | Files |
 |---|---|---|
 | E-1 | **Settings → Services** (`/settings/services`; `/settings/service-products` redirects). Tabs **Services** (name, product, group, team, type, state: not in catalog / differs from catalog / to be moved / under several products / removed; filters), **To be moved** (the move dialog with the preview: promotions, policies, webhook subscriptions, keys), **Mismatches**, and the existing overrides as **Product overrides**. | new `app/settings/ServicesSettings.tsx`, `app/settings/ServiceMoveDialog.tsx`; `ServiceProductsSettings.tsx` becomes the overrides panel; `SettingsPage.tsx` (nav label **Services**), `App.tsx`, `lib/api.ts`, `lib/types.ts` |
-| E-2 | Same page, tabs **Products** and **Teams**: source (catalog / local / reported), owners, catalog mode per product; add, rename and delete local entries only. | new `app/settings/ProductTeamDictionaries.tsx` |
+| E-2 | Same page, tabs **Products** and **Teams**: source (catalog / local / reported), owners, catalog mode per product; add, rename and delete local entries only; per product its **aliases** with last use and the callers still sending them, add and retire. | new `app/settings/ProductTeamDictionaries.tsx` |
 | E-3 | **Settings → API Keys** (`/settings/api-keys`): read-only table of configured API keys and Flux clients with roles, scopes and products; a product the list does not know is flagged. | new `app/settings/ApiKeysSettings.tsx`; `SettingsPage.tsx`, `App.tsx` |
 | E-4 | Product page header: "Display name (`id`)" and the owners from the list; "local" or "not in catalog" beside the name. | `app/deployments/ProductDeploymentsPage.tsx` |
 | E-5 | Service page header: product, group, team. Banner when the service is not in the catalog or the catalog names another product. Old URL redirects. One **Remove from portal** action, with the list of removed services and **Restore** on Settings → Services. | `app/deployments/ServiceDetailPage.tsx`, `DeploymentHistoryPage.tsx`; new `components/deployments/RemoveServiceDialog.tsx`; the row action leaves `ProductDeploymentsPage.tsx`; the "Removed services" block leaves `MaintenanceSettings.tsx` (a link stays) |
@@ -959,7 +1025,7 @@ no secret reaches the browser (`SecretRedactor` test over the key view response)
 #### Task 9: Modes and mismatch recording (TDD)
 
 **Files:** `ProductCatalogModes.cs` (read, memoised per request), `ProductMismatchRecorder.cs`,
-`ServiceProductOverrideService.cs` (`Resolution` widened; steps 1, 4, 5 of the resolution order —
+`ServiceProductOverrideService.cs` (`Resolution` widened; steps 1, 4, 5, 6 of the resolution order —
 the enforce step is Task 18), `PUT /api/products/{id}/catalog-mode` accepting `report` and `warn`
 only until Task 18, `GET /api/service-list/mismatches`, `ServiceListCatalogSync` step 4.
 
@@ -967,7 +1033,10 @@ Tests (`ProductMismatchTests`, `ServiceProductOverrideTests` extended):
 `ReportMode_StoresAsSent_AndRecordsTheDifference`;
 `ServiceNotInCatalog_IsNeverAMismatch`; `SameMismatch_IsCountedNotRepeated`;
 `RecorderFailure_DoesNotFailTheIngest`; `FlagOff_ResolvesExactlyAsBefore`;
-`WithNoMatchingOverride_TheSendersProductIsKept` still passes unchanged.
+`WithNoMatchingOverride_TheSendersProductIsKept` still passes unchanged;
+`LocalProductId_MustFollowTheProductIdRule` (`mkplabs` accepted; `mkp-labs`, `9mkp`,
+`marketplace`, `Mkp` refused). Product aliases: the table, `ProductAliasStore`, step 5 of the
+resolution order and the endpoints ship here too, with the tests under "Product aliases".
 
 Acceptance: with every product in report mode no response, status code or stored row differs from
 1a; Settings → Services shows the mismatches.

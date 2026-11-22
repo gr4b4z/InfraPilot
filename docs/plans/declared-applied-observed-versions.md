@@ -828,13 +828,16 @@ and which are mapped, static sites, unmapped namespaces, workloads and sites, re
 
 A deliverable of this plan, kept and versioned with the portal.
 
-- **Deployed by Flux from the pull-model release repository** (decided 2026-11-22). The agent is a
-  platform component: `ops-release` holds one `HelmRelease` of the chart per cluster, with the
-  cluster's values (name, namespace selector, static sites) and a reference to the key's `Secret`,
-  and Flux installs and upgrades it like any other component there. A new agent version is a
-  version bump in that repository. **Rollout caveat:** a cluster without Flux gets no agent this
-  way — it needs Flux first, or another route (the same chart installed by that cluster's own
-  pipeline); until then its environments are "not compared".
+- **How it reaches a cluster** (decided 2026-11-22), always the same chart and image:
+  - **clusters with Flux**: deployed by Flux from the pull-model release repository as a platform
+    component — `ops-release` holds one `HelmRelease` of the chart per cluster, with the cluster's
+    values (name, namespace selector, static sites) and a reference to the key's `Secret`. A new
+    agent version is a version bump in that repository;
+  - **clusters without Flux**: installed by that product's own deployment pipeline through the
+    push-model release repository (`mkp-release`), like the product's services, or installed by hand
+    with `helm install` and the same values. Nothing about the agent differs; only who upgrades it.
+  Until the agent is installed in a cluster, its environments are "not compared". The guide (Task
+  13) describes both routes.
 - **Where the code lives: this repository** (decided; the service catalog records the same).
   `src/Platform.ClusterReporter` (a .NET console project, added to `InfraPilot.slnx`),
   tests in `tests/Platform.ClusterReporter.Tests`, the chart in `infra/cluster-reporter/chart`, its
@@ -1062,8 +1065,8 @@ as the reference for pipelines),
 
 **Files:** new `infra/cluster-reporter/chart` (`CronJob`, `ServiceAccount`, `ClusterRole`, binding,
 values and schema), `.github/workflows/ci.yml` (build, test, `helm template`),
-`.github/workflows/release-image.yml` (the agent's image). The `HelmRelease` for each cluster is added in `ops-release`
-(outside this repository; listed in the guide). **Accept:** installed on the test
+`.github/workflows/release-image.yml` (the agent's image). The `HelmRelease` for each Flux cluster is added in `ops-release`, and the agent's component for
+each cluster without Flux in `mkp-release` (both outside this repository; listed in the guide). **Accept:** installed on the test
 cluster through Flux with a scoped key, the cluster appears on **Settings → Environments** within a minute; the
 rendered `ClusterRole` holds no verb but `get` and `list` and no `secrets`; a configured storage
 container appears as a static site.

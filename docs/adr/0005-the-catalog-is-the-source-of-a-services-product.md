@@ -98,7 +98,7 @@ product's service by naming it.
 ## Local products and teams
 
 An admin may add a product or a team the catalog does not have yet, so that a new service is not
-blocked on a catalog pull request. A local entry's id follows the catalog rule. When the catalog
+blocked on a catalog pull request. A local team id follows the catalog rule; a local product id is 2 to 8 lowercase letters and digits, starting with a letter, with no hyphen, because a product id is also the name prefix of its resources. When the catalog
 publishes an entry with the same id, the catalog entry replaces the local one; nothing is merged.
 
 ## Considered options

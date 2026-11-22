@@ -1469,7 +1469,7 @@ On a product's page you can filter its services by **Group**, **Train** and **Ty
 3. **Group or pattern at cutover.** Whether the service catalog publishes the groups before step 3
    decides `--match groups` or `--match patterns`. The namespace of the `support-tools` group is
    undecided on the catalog side and does not block the portal.
-4. **The two infrastructure products** move to the catalog pseudo-product `platform` (D-9). The
+4. **The two infrastructure products** move to the catalog pseudo-product `ops` (D-9). The
    stage order names only extensions and support tools for step 3. Assumed here: they follow stage
    1's catalog take-over, not this script.
 5. **Server-side flag for Releases themselves.** `/api/releases` has no flag check; the Promotions
