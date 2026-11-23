@@ -274,7 +274,7 @@ public class PromotionFreezeHistoryTests : IDisposable
     }
 
     [Fact]
-    public void History_reason_is_null_when_payload_has_none()
+    public async Task History_reason_is_null_when_payload_has_none()
     {
         _db.AuditLog.Add(new AuditEntry
         {
@@ -283,7 +283,7 @@ public class PromotionFreezeHistoryTests : IDisposable
         });
         _db.SaveChanges();
 
-        var only = Assert.Single(_sut.GetHistoryAsync(10).Result);
+        var only = Assert.Single(await _sut.GetHistoryAsync(10));
         Assert.Null(only.Reason);
     }
 }

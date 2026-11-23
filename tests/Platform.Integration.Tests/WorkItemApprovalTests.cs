@@ -562,7 +562,7 @@ public class WorkItemApprovalTests
             Assert.Equal(2, detail!.Candidates.Count);
             Assert.Equal(newerId, detail.PrimaryCandidateId);
             Assert.True(detail.CanManage);
-            Assert.Single(detail.Candidates.Where(c => c.IsPrimary));
+            Assert.Single(detail.Candidates, c => c.IsPrimary);
         }
     }
 
