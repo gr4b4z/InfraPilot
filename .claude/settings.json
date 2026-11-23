@@ -1,0 +1,13 @@
+{
+  "extraKnownMarketplaces": {
+    "ss-architecture": {
+      "source": {
+        "source": "github",
+        "repo": "softwareone-platform/ss-architecture"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "infraportal@ss-architecture": true
+  }
+}

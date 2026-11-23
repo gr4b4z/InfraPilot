@@ -170,11 +170,11 @@ or a project `.mcp.json` (this repo has one) that reads both from the environmen
 ```
 
 Without an MCP client (scheduled agent runs, scripts, a session where the server is not added), the
-`infrapilot-api` skill bundles `scripts/mcp_call.py`, which calls the same tools over plain HTTP from
+`infrapilot-api` skill (plugin `infraportal` in `softwareone-platform/ss-architecture`) bundles `scripts/mcp_call.py`, which calls the same tools over plain HTTP from
 the same two environment variables — one stateless `tools/call` request per call:
 
 ```bash
-python -I -X utf8 .claude/skills/infrapilot-api/scripts/mcp_call.py list_promotions '{"status":"Approved"}'
+python -I -X utf8 <skill-dir>/scripts/mcp_call.py list_promotions '{"status":"Approved"}'
 ```
 
 Portal links use `Portal:BaseUrl` when set, else the request's host (https unless localhost) — right
