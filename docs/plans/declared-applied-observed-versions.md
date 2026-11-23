@@ -170,7 +170,8 @@ of build metadata: the portal says "different", never "newer".
    applied digest falls back to versions and says so, and is never reported as "content matches";
    the fingerprint of a static site is byte-for-byte the same in the pipeline and in the agent
    (shared test vectors). → Tasks 5, 9.
-9. **The join.** `stage` → `staging`; the pull-model `dev`; a name that differs by case, `.` or `_`;
+9. **The join.** The catalog's `staging` joins `staging`, and a key that differs goes through the
+   environment aliases; the pull-model `dev`; a name that differs by case, `.` or `_`;
    a retired environment; a service running in two clusters of one environment; one name under two
    products. → Tasks 3, 5 tests.
 
@@ -189,7 +190,7 @@ versions flag):
   "declared": [
     { "name": "mkp-extension-adobe",      // component name in the release repository
       "service": "mkp-extension-adobe",   // catalog id, or null when the component is not in the catalog
-      "environment": "stage",             // catalog environment key
+      "environment": "staging",           // catalog environment key
       "source": "mkp-release", "path": "staging/mkp-extension-adobe/build-metadata.yaml",
       "state": "known",                   // known | unknown
       "version": "1.4.0",                 // null when unknown
@@ -228,7 +229,10 @@ document):
 - service: `service` when set, else `name`, in normal form — stage 1's `CatalogName.Normalize`
   (trim, lower-case, `.` and `_` → `-`); until stage 1 merges, trim and lower-case as
   `ServiceInventoryEndpoints.Key` does;
-- environment: `EnvironmentAliasMap.Resolve` of the published key, so `stage` lands on `staging`;
+- environment: `EnvironmentAliasMap.Resolve` of the published key. The catalog publishes the portal's
+  keys (`staging`; its former `stage` was an error, renamed by the catalog, owner 2026-11-23), so
+  this is the identity for them; a key that differs lands on the portal's key through the aliases,
+  with no special case;
   entries in a retired environment (`EnvironmentAliasResolver.RetiredKeysAsync`) are left out;
 - **two entries for one (service, environment)** — the component is in both release repositories.
   The portal takes the entry of the repository that matches how the cell is deployed: when the
@@ -263,12 +267,12 @@ same `.RequireAuthorization(ApiKeyAuthHandler.PolicyName)` and
   "agent": { "version": "1.0.0", "mode": "job" },  // "controller" for step 2
   "complete": {                                  // what this report is the whole truth for
     "namespaces": true,                          // the namespace list was read
-    "workloadNamespaces": ["mkp-staging", "mkp-extensions-staging"],
+    "workloadNamespaces": ["mkp", "mkp-extensions"],
     "staticSiteAccounts": ["mkpwebstaging"]
   },
   "items": [
     { "kind": "workload",
-      "namespace": "mkp-staging", "workloadKind": "Deployment", "name": "mkp-extension-adobe-api",
+      "namespace": "mkp", "workloadKind": "Deployment", "name": "mkp-extension-adobe-api",
       "service": "mkp-extension-adobe",          // value of the service label, null when unlabelled
       "version": "1.4.0",                        // label app.kubernetes.io/version, null when absent
       "containers": [
@@ -285,7 +289,7 @@ same `.RequireAuthorization(ApiKeyAuthHandler.PolicyName)` and
       "blobCount": 412, "blobsWithoutMd5": 0,
       "lastModified": "2026-11-21T16:02:11Z" },  // newest blob
 
-    { "kind": "namespace", "name": "mkp-staging", "labels": { "service-namespace": "true" } }
+    { "kind": "namespace", "name": "mkp", "labels": { "service-namespace": "true" } }
   ]
 }
 ```
@@ -407,7 +411,11 @@ The portal does not guess from the workload's name.
 
 Edited on **Settings → Environments** (`EnvironmentsSettings.tsx`, a **Clusters** block), stored and
 validated by `AppSettingsService` (the environment must be a configured, not retired, key). A
-namespace pattern is tried first, then the cluster's default. What is **unmapped**:
+namespace pattern is tried first, then the cluster's default. A service group's namespace is the
+same in every environment (owner, 2026-11-23), so a group's namespace never says which environment
+a workload is in: that comes from the cluster's default, and namespace patterns are only for
+namespaces outside the groups that run another environment in the same cluster. What is
+**unmapped**:
 
 - a cluster with no entry — all its workloads; the report is still stored, and the cluster shows up
   on the settings block as "reporting, not mapped" so an admin can map it in one step;
@@ -540,7 +548,7 @@ the consumer is another system and not a portal page.
       "receivedAt": "2026-11-22T10:07:02Z",
       "stale": false,                            // true: no report for StaleAfterMinutes — treat every answer as unknown
       "staleAfterMinutes": 5,
-      "namespaces": [ { "name": "mkp-staging", "labels": { "service-namespace": "true" }, "firstSeenAt": "…" } ] }
+      "namespaces": [ { "name": "mkp", "labels": { "service-namespace": "true" }, "firstSeenAt": "…" } ] }
   ]
 }
 ```
@@ -957,9 +965,9 @@ returns them; without, the event is byte-for-byte today's; a replay does not dup
 `Features/Settings/Models/AppSettingsDtos.cs` (`ClusterConfigDto`, `AppSettingsDto.Clusters`),
 `AppSettingsService` (validation).
 
-**Tests** (`DeclaredVersionsTests`, `ClusterEnvironmentMapTests`): `stage` joins `staging`; `dev`
-joins `dev`; `service` wins over `name`; a name differing by case, `.` or `_` joins; a retired
-environment is left out; two entries for one pair give unknown with both paths; a source not read
+**Tests** (`DeclaredVersionsTests`, `ClusterEnvironmentMapTests`): `staging` joins `staging`; a key
+mapped by an environment alias joins the alias's target; `dev` joins `dev`; `service` wins over
+`name`; a name differing by case, `.` or `_` joins; a retired environment is left out; two entries for one pair give unknown with both paths; a source not read
 in the last run is flagged; no list, no snapshot and the inventory flag off give not available.
 Mapping: namespace pattern before the cluster default; first pattern wins; an unknown cluster and an
 unmatched namespace without a default are unmapped; an entry naming a retired or unknown environment
