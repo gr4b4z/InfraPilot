@@ -5,7 +5,11 @@
 This repository is InfraPilot, also branded **InfraPortal**. Any task that involves talking to
 a running InfraPilot instance — reading deployment state or history, ingesting deploy events,
 creating or querying promotions, registering builds, pulling analytics or release notes — must
-use the **`infrapilot-api` skill** (`.claude/skills/infrapilot-api/SKILL.md`).
+use the **`infrapilot-api` skill** from the `infraportal` plugin (`/infraportal:infrapilot-api`). The plugin
+lives in the Shared Services marketplace, `softwareone-platform/ss-architecture`
+(`plugins/infraportal/`); this repository's `.claude/settings.json` declares that marketplace and
+enables the plugin, so Claude Code offers to install it when you open the repository. The skill moves
+back into this repository when it becomes public.
 
 Connection is defined by two environment variables; use them, never a hardcoded host or key:
 
