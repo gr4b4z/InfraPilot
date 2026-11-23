@@ -802,8 +802,10 @@ one current product. Otherwise the request is answered as today (usually `404`).
 
 `?inCatalog=false` narrows it to what the catalog has yet to register. A service filed under a local
 product or under `default` is exported with `"product": null`; local products and teams are not
-listed. Environments are the portal's canonical keys (`staging`); the catalog's `stage` is an alias
-on the portal side (rollout note in Task 8).
+listed. Environments are the portal's canonical keys (`staging`), which are also the keys the catalog
+publishes: the catalog's former `stage` was an error and the catalog renames it to `staging`
+(owner, 2026-11-23). A catalog key that differs from the portal's goes through the environment
+aliases like any other key; there is no special case.
 
 ## API
 
@@ -1014,8 +1016,9 @@ Tests: `SettingsApiAccessTests.ApiKeys_ListScopesAndNeverSecrets`,
 `ApiKeys_NeedAdmin`; `PromotionIntegrationTests.Detail_SaysWhichPolicyApplies`. Web: `npx tsc -b`, and
 the service header banner and each settings tab opened in the dev server.
 
-Rollout note: add the environment alias `stage` → `staging` in **Settings → Environments** so the
-catalog's key reads as the portal's (ADR 0005). No code.
+No environment alias is needed: the catalog publishes `staging`, the portal's key (owner,
+2026-11-23; see the note in ADR 0005). Should a catalog key ever differ, it is mapped through the
+environment aliases in **Settings → Environments** like any other key.
 
 Acceptance: an admin sees every service with product, group and team; local products can be added;
 no secret reaches the browser (`SecretRedactor` test over the key view response).

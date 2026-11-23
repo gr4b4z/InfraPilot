@@ -1468,7 +1468,8 @@ On a product's page you can filter its services by **Group**, **Train** and **Ty
    them before Task 18.
 3. **Group or pattern at cutover.** Whether the service catalog publishes the groups before step 3
    decides `--match groups` or `--match patterns`. The namespace of the `support-tools` group is
-   undecided on the catalog side and does not block the portal.
+   undecided on the catalog side and does not block the portal; whatever it is, it is the same in
+   every environment, as for every service group (owner, 2026-11-23).
 4. **The two infrastructure products** move to the catalog pseudo-product `ops` (D-9). The
    stage order names only extensions and support tools for step 3. Assumed here: they follow stage
    1's catalog take-over, not this script.

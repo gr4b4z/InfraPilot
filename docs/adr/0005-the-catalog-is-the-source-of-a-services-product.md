@@ -127,8 +127,11 @@ publishes an entry with the same id, the catalog entry replaces the local one; n
   path asks for a service's product, also consults the service list and the product's mode.
 - A change of product in the catalog does not rewrite anything by itself: it marks the service "to be
   moved" and an admin executes the move (ADR-0006).
-- The catalog calls the pre-production environment `stage`; the portal and the release repositories
-  say `staging`. The portal keeps `staging` in its webhook payloads and adds the alias.
+- The pre-production environment is `staging` in the portal, the release repositories and the
+  catalog. *Corrected 2026-11-23:* this record first said the catalog calls it `stage` and that the
+  portal adds an alias; the owner confirmed that `stage` in the catalog was an error and the catalog
+  renames its key to `staging`, so no alias is added. Environment aliases stay the generic mechanism
+  for any key that differs, with no special case.
 - The portal shows catalog readiness (not in catalog, product differs) but **never gates a promotion
   on it** (ADR-0007).
 - The service group read here is what approval policies for selected services and release-train

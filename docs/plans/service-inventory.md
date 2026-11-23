@@ -46,7 +46,7 @@ sets, `IHttpClientFactory`, xUnit + NSubstitute; React 19 + TypeScript for Phase
 | 1 | Service identity | The catalog `id` is the service name. |
 | 2 | Can the portal's environment reach the registry over 443? | Yes. |
 | 3 | Who sees cost? | Everyone signed in. The feed status panel is admin-only. |
-| 4 | Catalog environment keys (`dev`, `test`, `stage`, `prod`, `sandbox`, `nonprod`) | Mapped through the portal's existing environment aliases. |
+| 4 | Catalog environment keys (`dev`, `test`, `staging`, `prod`, `sandbox`, `nonprod`) | Mapped through the portal's existing environment aliases. (2026-11-23: the catalog's `stage` was an error and is renamed `staging`, the portal's key, so it needs no alias.) |
 | 5 | Product on the cost page | The catalog's product and team. Deploys will be brought in line with the catalog. |
 | 6 | Sorting across currencies | By the period's largest currency, others shown beside it. |
 | 7 | Retention | As under "History kept". |

@@ -13,7 +13,9 @@ are taken from the participants recorded **on the candidate**, as the D17 note i
 when the candidate is created, so removing yourself as a participant cannot unblock you. The rule is
 checked in two places. When an approval is recorded, an initiator is refused. When the gate is
 evaluated, approvals and work-item sign-offs by an initiator do not count. The second check covers
-snapshots refreshed after a policy edit, and sign-offs that are shared across candidates.
+snapshots refreshed after a policy edit, and sign-offs that are shared across candidates. A promotion
+the portal creates by itself (from a registered build) is initiated by **the system**: the candidate
+records that (`InitiatedBySystem`), no person is its initiator, and the switch blocks nobody on it.
 
 **Tech Stack:** ASP.NET Core net10.0 Minimal API + EF Core (Postgres & SQL Server migrations), xUnit + NSubstitute, React 19 + TypeScript.
 
@@ -30,7 +32,8 @@ described this re-add, which this plan carries out.
 ## Global Constraints
 
 - Payload-driven: initiators come from `PromotionCandidate.Participants` (and the creator stamped
-  there); nothing reads deploy events.
+  there); nothing reads deploy events. The only other input is whether the portal itself created the
+  candidate (`InitiatedBySystem`, Decision 10), which a caller cannot set.
 - The switch narrows who may **approve**. Reject, cancel an approval, comment, assign participants,
   the admin bypass and the admin reject are unchanged.
 - Nothing that passes today starts failing on an edge whose policy has the switch off. Turning it
@@ -52,7 +55,9 @@ described this re-add, which this plan carries out.
      `Mcp/PromotionTools.cs`), so that creator is covered by the first rule. `POST /api/promotions`
      is API-key only (`ApiKeyAuthHandler.PolicyName`). A key is not a person, so there the
      initiators are whoever the payload names with those roles. The candidate stores no other
-     "created by" field.
+     "created by" field;
+   - **nobody**, when the portal created the promotion by itself: the system is the initiator
+     (Decision 10).
 2. **Reference participants do not count** (recommendation, adopted). A PR's author, a ticket's
    QA or the participants of a work-item reference are not initiators. A promotion bundles many
    changes. Counting every PR author would make everyone whose code is in a release unable to approve
@@ -75,7 +80,7 @@ described this re-add, which this plan carries out.
      to be that person, and it is never silently dropped. The approval progress panel says
      "Initiator not identified: <display name or role>", diagnostics report
      `initiator_unidentified`, and the gate otherwise works as for a promotion with no initiator
-     (Open point 1). A signed-in caller always has an address (`ICurrentUser.Email`), so a person
+     (Decision 11). A signed-in caller always has an address (`ICurrentUser.Email`), so a person
      who creates a promotion in the UI or with a personal token is always identified; only
      pipelines and keys can produce an unidentified initiator.
    - For recorded approvals and sign-offs, the stored address is compared in the canonical form
@@ -114,6 +119,46 @@ described this re-add, which this plan carries out.
      editor shows a hint instead.
 9. **Rollbacks are out of scope.** Rollback requests have their own policy and an admin override;
    the owner's decision names promotions.
+10. **The system initiates the promotions the portal creates by itself** (owner, 2026-11-23). No
+    person is their initiator, so the switch blocks nobody on them; anyone eligible may approve.
+    - **Which paths.** Read from the code, every candidate goes through
+      `PromotionService.CreateExternalCandidateAsync`. Its callers are:
+
+      | Caller | Who initiates |
+      |---|---|
+      | `BuildIngestHook.OnRegisteredAsync` (`Features/Builds/BuildIngestHook.cs`): on build registration, one candidate per `build → *` edge whose policy's `AutoCreateFromBranches` matches the build's branch. It sends `Participants: null`. | **The system** |
+      | `POST /api/promotions/from-build` (`PromotionEndpoints.cs`) and MCP `promote_build` | The caller, stamped `triggered-by` |
+      | MCP `create_promotion` (`Mcp/PromotionTools.cs`) | The caller, stamped `triggered-by` |
+      | `POST /api/promotions` (API key) | Whoever the payload names (Decision 1), else nobody identified (Decision 11) |
+
+      `PromotionIngestHook` creates no candidate: since D18/D19 it only closes (`MatchCompletionAsync`)
+      and supersedes (`SupersedeOvertakenAsync`) them on deploy events. "Auto-create from branches"
+      is the `BuildIngestHook` path above, not a separate one. So today the only system-initiated
+      path is build registration; a later path that creates candidates by itself (a deploy event,
+      a schedule, a release train) passes the same marker.
+    - **How it is recorded.** `CreateExternalCandidateAsync` gains a parameter
+      `PromotionInitiator initiator = PromotionInitiator.Caller`; `BuildIngestHook` passes
+      `PromotionInitiator.System`. It is a code parameter, not a field of `CreatePromotionDto`, so no
+      API or MCP caller can claim to be the system. A new candidate stores it as
+      `PromotionCandidate.InitiatedBySystem = true`. No participant is invented for it: a
+      `triggered-by` "system" entry without an email would read as an unidentified initiator
+      (Decision 4), and it would appear among the participants in the UI and the API.
+    - **Set at creation only.** When the natural-key reuse (D15) updates an existing candidate, the
+      flag does not change: a build registration replay over a candidate a person opened keeps it
+      person-initiated. A person who later opens the same promotion from the build (from-build reuses
+      the system's candidate and records them as `triggered-by`) becomes an initiator by Decision 3,
+      because they asked for that move.
+    - **What it shows.** The approval progress panel says "Initiated by the system"; the detail and
+      list carry `initiatedBySystem`; diagnostics report `initiated_by_system` and never select the
+      initiator cause for it.
+    - **Existing candidates** keep `false`. Those the hook created before this change have no
+      participants and read as "initiator not identified" (Decision 11), which blocks nobody either,
+      so no backfill guesses at their origin.
+11. **API promotions without an identified initiator are not refused** (owner, 2026-11-23). A
+    `POST /api/promotions` with no participants, or whose initiators have no email, is accepted as
+    today, also on an edge whose policy has the switch on. The switch does not apply to it, and it is
+    shown as "Initiator not identified" (Decision 4). Refusing them would break pipelines that pass
+    today; the owner may revisit this, and would then need a warning period.
 
 ## Review Focus
 
@@ -135,6 +180,9 @@ described this re-add, which this plan carries out.
    **Awaiting your approval**, My Tasks and the bulk selection do not offer it. → Task 3.
 5. **Defaults.** Only production-target policies are switched on by the backfill, and a second
    startup changes nothing. → Task 2.
+6. **The system as initiator.** Only `BuildIngestHook` marks a candidate as system-initiated; no
+   request body can set it; a replay never changes it; a person recorded later is still an
+   initiator. → Tasks 1, 3.
 
 ---
 
@@ -152,7 +200,9 @@ described this re-add, which this plan carries out.
   and seed data uses it too.
 - `PromotionCandidate.InitiatorsJson : string = "[]"` with a `List<PromotionParticipant> Initiators`
   accessor (same pattern as `ParticipantsJson`).
-- The migration adds both columns with defaults (`false`, `'[]'`). The companion startup step fills
+- `PromotionCandidate.InitiatedBySystem : bool = false` (Decision 10), and a new
+  `enum PromotionInitiator { Caller, System }` in `Features/Promotions/Models`.
+- The migration adds the three columns with defaults (`false`, `'[]'`, `false`). The companion startup step fills
   `InitiatorsJson` of existing Pending candidates from their current participants.
 
 Tests (`PromotionPolicyResolverTests`): `Project_CopiesInitiatorCannotApprove`;
@@ -178,7 +228,9 @@ Tests (new `InitiatorRuleBackfillTests`; `PromotionPolicyGateTests` extended):
 
 **Files:**
 - `PromotionService.cs`:
-  - initiators are stamped in `CreateExternalCandidateAsync`;
+  - initiators are stamped in `CreateExternalCandidateAsync`, which gains
+    `PromotionInitiator initiator = PromotionInitiator.Caller` and sets `InitiatedBySystem` on a new
+    candidate only (not in `UpdateExistingCandidateAsync`);
   - new `IsInitiator(candidate)` for the current user, and `InitiatorEmails(candidate)`;
   - in `ApproveAsync`, after `EnsureUserCanApproveAsync`, throw `InitiatorCannotApproveException`
     when the snapshot has the switch on and the caller is an initiator;
@@ -205,8 +257,11 @@ Tests (new `InitiatorRuleBackfillTests`; `PromotionPolicyGateTests` extended):
     `code: "initiator_cannot_approve"`, per row on bulk;
   - the detail gains `initiatorCannotApprove`, `initiators`, `youAreInitiator`, and `canApprove`
     false for them.
+- `Features/Builds/BuildIngestHook.cs`: `CreateCandidateAsync` passes `PromotionInitiator.System`.
+  The from-build endpoint and the MCP tools keep the default.
 - `BypassAsync` writes `initiator: true` into its audit entry when the admin is an initiator;
   `AdminRejectAsync` is unchanged.
+- The detail and list gain `initiatedBySystem`.
 
 Tests (`PromotionServiceTests`, integration `PromotionCanApproveTests`,
 `PromotionMassApproveTests`, `WorkItemApprovalTests`, `PromotionApproveAllWorkItemsTests`,
@@ -233,6 +288,20 @@ Tests (`PromotionServiceTests`, integration `PromotionCanApproveTests`,
 - `CanApproveMany_IsFalseForTheInitiator`;
 - `OnlyEligibleApproverIsTheInitiator_StaysPending`.
 
+**The system as initiator** (`BuildIngestHookTests`, `PromotionServiceTests`, integration
+`PromotionCanApproveTests`)
+- `BuildAutoCreate_RecordsTheSystemAsInitiator_AndNoParticipant`;
+- `SystemInitiated_AnyEligibleApproverCanApprove_WhenTheSwitchIsOn`;
+- `FromBuild_And_McpCreate_And_ApiCreate_AreNotSystemInitiated`;
+- `CreatePromotionDto_CannotSetTheSystemMarker` (an extra JSON field is ignored);
+- `RegistrationReplay_OverAPersonsCandidate_KeepsItPersonInitiated`;
+- `FromBuild_OverTheSystemsCandidate_MakesThePersonAnInitiator`;
+- `Detail_SaysInitiatedBySystem`.
+
+**No identified initiator** (Decision 11)
+- `ApiCreate_WithoutParticipants_IsAccepted_WhenTheSwitchIsOn`;
+- `ApiCreate_InitiatorWithoutEmail_IsAccepted_AndShownAsNotIdentified`.
+
 ### Task 4: Diagnostics
 
 **Files:** `Features/Diagnostics/Observations.cs` (`InitiatorCannotApprove`,
@@ -246,6 +315,8 @@ Tests (`PromotionServiceTests`, integration `PromotionCanApproveTests`,
   the only member".
 - `initiator_approval_ignored` is emitted when a recorded approval or sign-off was not counted
   because its author is an initiator.
+- `initiated_by_system` (informational) is emitted when the candidate is system-initiated with the
+  switch on: the rule blocks nobody here. The initiator cause is never selected for it.
 - The cause reads: "The person who started this promotion cannot approve it, and nobody else can
   clear this gate." The fix: "Ask another approver, add one to the policy, or have an administrator
   bypass the gate with a reason."
@@ -263,7 +334,9 @@ cause selected only for an initiator-only requirement.
 - `app/promotions/PromotionDetailPage.tsx`: `approveBlockedReason` gains the case "You started
   this promotion, and this edge's policy does not let the person who started a promotion approve
   it." The Approve button renders disabled with that reason; the card stays.
-- `components/approvals/ApprovalProgress.tsx`: a line "The initiator cannot approve: <names>".
+- `components/approvals/ApprovalProgress.tsx`: a line "The initiator cannot approve: <names>";
+  "Initiated by the system" for a system-initiated candidate; "Initiator not identified: <display
+  name or role>" as in Decision 4.
 - `components/promotions/MassApproveDialog.tsx`: rows refused with `initiator_cannot_approve` say
   "You started this promotion".
 - `components/promotions/ApproveAllWorkItems.tsx`: disabled with the same reason.
@@ -274,7 +347,10 @@ non-production edge.
 ### Task 6: Endpoints and API docs
 
 - Admin policy endpoints take `initiatorCannotApprove?`.
-- The candidate detail and list carry `initiatorCannotApprove`, `initiators` and `youAreInitiator`.
+- The candidate detail and list carry `initiatorCannotApprove`, `initiators`, `initiatedBySystem` and
+  `youAreInitiator`.
+- `POST /api/promotions` is unchanged: no field marks a promotion as system-initiated, and a request
+  without an identified initiator is accepted (Decision 11).
 - `403 initiator_cannot_approve` on approve and bulk approve.
 - The single sign-off response carries `notCountedFor`.
 
@@ -282,7 +358,9 @@ non-production edge.
 
 - `notes/promotions-api.md`:
   - the policy field and its default;
-  - who counts as the initiator;
+  - who counts as the initiator, and that a promotion the portal opens from a build is initiated
+    by the system, so the rule blocks nobody on it;
+  - that a create without an identified initiator is accepted and the rule does not apply to it;
   - the `403` code and the new response fields;
   - that a pipeline sending participants decides who the initiators are.
 - `.claude/skills/infrapilot-api/SKILL.md`: an approval through a token can now be refused for the
@@ -290,7 +368,8 @@ non-production edge.
 - `GLOSSARY.md`, a new term:
   > **Initiator** (of a promotion): A person recorded on the Promotion Candidate as `triggered-by` or
   > `author`, including whoever created it from the portal. When the edge's Approval Policy says so,
-  > an Initiator cannot approve it.
+  > an Initiator cannot approve it. A Promotion Candidate the portal creates by itself (from a
+  > registered build) is initiated by the system and has no Initiator.
   > _Avoid_: Requester, owner, author (for the whole set)
 - `docs/plans/external-promotion-creation.md`: a note under the D17 row and §6.2 item 2: "Reversed
   2026-11-23 by `docs/plans/no-self-approval-switch.md`".
@@ -312,8 +391,9 @@ linkLabel: Promotions
 ---
 On edges into production, the person who started a promotion can no longer approve it: their
 **Approve** button is disabled and says why, and the approval progress shows who cannot approve.
-Another approver has to clear it. Admins can turn this on or off per edge in
-**Settings → Promotions** with **The initiator cannot approve**.
+Another approver has to clear it. Promotions the portal opens by itself from a new build show
+**Initiated by the system**, and any approver can clear them. Admins can turn this on or off per edge
+in **Settings → Promotions** with **The initiator cannot approve**.
 ```
 
 ### Task 9: Verify
@@ -329,11 +409,13 @@ release into production must not be the one who approves it. With the default on
 edges, the portal now enforces that rule instead of relying on people. An admin who turns the switch
 off on a production edge departs from the governance rules. The change is audited like every policy
 edit, and the policy list marks such an edge. The portal does not refuse the change: which edges
-count is configuration, and the governance rules, not the portal, are the authority.
+count is configuration, and the governance rules, not the portal, are the authority. A promotion the
+portal opens by itself has no person as initiator, so any eligible approver clears it without
+departing from the rule. A promotion created through the API without an identified initiator is
+accepted (Decision 11); separation of duties then rests on the pipeline naming its initiator.
 
 ## Open points
 
-1. **Who is the initiator of an API-key promotion with no participants, or with initiators that
-   have no email.** Then there is no identified initiator and the rule cannot apply. Whether the create endpoint should refuse such a request on an edge
-   whose policy has the switch on is undecided. Refusing would break pipelines that pass today, so
-   it would need a warning period first.
+None. Open point 1 (who initiates an API-key promotion with no participants, or with initiators
+without an email, and whether to refuse it) was decided by the owner on 2026-11-23: it is not
+refused, the switch does not apply to it, and it is shown as "Initiator not identified" (Decision 11).
