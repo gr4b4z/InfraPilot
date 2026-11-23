@@ -69,6 +69,15 @@ described this re-add, which this plan carries out.
      (`Infrastructure/Auth/ICurrentUser.cs`, `CurrentUserEmails`). It covers every address the
      directory knows for them, so a sign-in name that differs from the mail recorded in the payload
      still matches.
+   - **An initiator without an email cannot be matched** (`PromotionParticipant.Email` is nullable,
+     and the MCP create paths send `null` for a caller that has none). Such an entry is kept in
+     `InitiatorsJson` as an **unidentified initiator**: it blocks nobody, because nobody can be shown
+     to be that person, and it is never silently dropped. The approval progress panel says
+     "Initiator not identified: <display name or role>", diagnostics report
+     `initiator_unidentified`, and the gate otherwise works as for a promotion with no initiator
+     (Open point 1). A signed-in caller always has an address (`ICurrentUser.Email`), so a person
+     who creates a promotion in the UI or with a personal token is always identified; only
+     pipelines and keys can produce an unidentified initiator.
    - For recorded approvals and sign-offs, the stored address is compared in the canonical form
      approvals are stored in (`PromotionService.NormalizeEmail`: trim, lower-case). Other people's
      addresses cannot be widened (`SamePersonAs`). The record-time check is therefore the strong
@@ -180,9 +189,13 @@ Tests (new `InitiatorRuleBackfillTests`; `PromotionPolicyGateTests` extended):
     `ApprovalMatcher` runs.
 - `WorkItemApprovalService.cs`:
   - in the gate's sign-off read (the overall status behind `RequireAllWorkItemsApproved` and
-    `AutoApproveOnAllWorkItemsApproved`), an `Approved` sign-off by one of the candidate's initiators
-    counts as not signed. `Issues` and `Blocked` from them still count, because they hold rather than
-    clear;
+    `AutoApproveOnAllWorkItemsApproved`), an initiator's sign-off that would
+    clear the gate counts as not signed. Today both `Approved` and `Issue` clear it
+    (`WorkItemOverallStatus.ClearsGate`); only `Blocked` holds. So an initiator's `Approved` **and**
+    `Issue` are not counted for their own promotion — otherwise marking an issue would be a way to
+    clear one's own gate — while their `Blocked` still holds it. For everyone else nothing changes:
+    an issue still clears, a block still holds. The ticket stays undecided for that promotion
+    until someone who is not an initiator rules on it;
   - `ApproveAllOnCandidateAsync` refuses for an initiator;
   - the single sign-off is still recorded, because it may clear the same ticket for someone else's
     promotion. Its response gains `notCountedFor: [candidateId]` for the candidates the signer
@@ -320,7 +333,7 @@ count is configuration, and the governance rules, not the portal, are the author
 
 ## Open points
 
-1. **Who is the initiator of an API-key promotion with no participants.** Then there is no initiator
-   and the rule cannot apply. Whether the create endpoint should refuse such a request on an edge
+1. **Who is the initiator of an API-key promotion with no participants, or with initiators that
+   have no email.** Then there is no identified initiator and the rule cannot apply. Whether the create endpoint should refuse such a request on an edge
    whose policy has the switch on is undecided. Refusing would break pipelines that pass today, so
    it would need a warning period first.
