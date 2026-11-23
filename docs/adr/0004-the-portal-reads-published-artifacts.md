@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: accepted (stored service list and local entries added by ADR-0005; observed versions pushed by a cluster agent, and compared in the portal, by ADR-0009)
 date: 2026-11-20
 ---
 
